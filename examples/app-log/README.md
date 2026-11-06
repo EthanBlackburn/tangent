@@ -52,7 +52,8 @@ prebuilt from the tangent release of this tangent's version, checked
 against GitHub's attestation of their build (it needs `gh`, not a login).
 To build them here instead, for a pack you are changing or a tangent built
 from a checkout: `make test PLUGINS=compile` and `make run PLUGINS=compile`,
-which install the Rust WASM toolchain first.
+which install the Rust WASM toolchain first; `make fetch` puts the release's
+builds back.
 
 The judge defaults to a local model on `:8080`
 ([packs/judge](/packs/judge#the-model) says how to serve it); `JUDGE_URL`,
