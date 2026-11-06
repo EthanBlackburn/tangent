@@ -285,19 +285,14 @@ fn not_there(name: &str, plugin: &PluginConfig, p: &Prebuilt, url: &str) -> Stri
     )
 }
 
-/// The body at `url`, or `None` when there is nothing there.
+/// The body at `url`, or `None` when there is nothing there. A failed
+/// request's or status's error names the URL itself; a body's does not.
 async fn download(client: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
+    let resp = client.get(url).send().await?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    let resp = resp
-        .error_for_status()
-        .with_context(|| format!("GET {url}"))?;
+    let resp = resp.error_for_status()?;
     let bytes = resp
         .bytes()
         .await
@@ -673,9 +668,12 @@ mod tests {
         let e = download(&client, url).await.unwrap_err();
         let err = format!("{:#}", unreached("cloudtrail", e));
         assert!(
-            err.starts_with(&format!("cloudtrail: GET {url}: ")),
+            err.starts_with(&format!(
+                "cloudtrail: error sending request for url ({url})"
+            )),
             "{err}"
         );
+        assert_eq!(err.matches(url).count(), 1, "{err}");
         assert!(
             err.ends_with(
                 "\ntangent fetches each pack's plugin once per version and needs the network for it"
