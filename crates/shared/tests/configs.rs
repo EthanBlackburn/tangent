@@ -90,7 +90,8 @@ fn every_config_in_the_repo_loads() {
 }
 
 /// Every edge's nodes exist, which `tangent run` checks before it starts and
-/// loading does not: in the examples, and in a pipeline of every pack in
+/// loading does not: in the examples and the config `tangent init` writes
+/// (its packs by name, the ones built in), and in a pipeline of every pack in
 /// packs/ without the judge, so no pack names a node of the judge's.
 #[test]
 fn pipelines_validate_with_and_without_the_judge() {
@@ -101,6 +102,7 @@ fn pipelines_validate_with_and_without_the_judge() {
     for example in [
         "examples/cloud-infra/tangent.yaml",
         "examples/app-log/tangent.yaml",
+        "crates/cli/src/init.yaml",
     ] {
         let cfg = Config::load(&repo.join(example)).unwrap().config;
         cfg.validate()
