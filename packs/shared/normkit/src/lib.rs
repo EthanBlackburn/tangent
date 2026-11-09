@@ -40,7 +40,8 @@ pub struct Norm {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// Who the actor is, when the log itself says: `aws` (AWS acting on its
-    /// own), `none` (a repository or nothing, not a principal). Unset, the
+    /// own), `user` (one of the product's users, whom no profile lists),
+    /// `none` (a repository or nothing, not a principal). Unset, the
     /// profile decides. `_facts.principal` carries it.
     #[serde(skip)]
     pub principal: Option<&'static str>,

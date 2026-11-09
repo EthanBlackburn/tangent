@@ -1,0 +1,147 @@
+[
+ {
+  "ts": "2026-11-09T12:00:00Z",
+  "source": "supabase",
+  "log": "auth_logs",
+  "id": "3f6c1d0a-0001-4b7e-9a51-000000000001",
+  "timestamp": "2026-11-09 12:00:00.412000",
+  "severity_text": "INFO",
+  "event_message": "{\"auth_event\":{\"action\":\"login\",\"actor_id\":\"8d2b7c1e-1111-4a6f-b0c3-000000000001\",\"actor_username\":\"ana@example.com\",\"log_type\":\"account\",\"traits\":{\"provider\":\"email\"}},\"component\":\"api\",\"duration\":81234567,\"level\":\"info\",\"method\":\"POST\",\"msg\":\"request completed\",\"path\":\"/token\",\"remote_addr\":\"203.0.113.9\",\"status\":200}",
+  "log_attributes": {
+   "auth_event.action": "login",
+   "auth_event.actor_id": "8d2b7c1e-1111-4a6f-b0c3-000000000001",
+   "auth_event.actor_username": "ana@example.com",
+   "auth_event.actor_via_sso": "false",
+   "auth_event.log_type": "account",
+   "auth_event.traits.provider": "email",
+   "component": "api",
+   "duration": "81234567",
+   "host": "db-abcdefghijklmnopqrst",
+   "level": "info",
+   "method": "POST",
+   "msg": "request completed",
+   "path": "/token",
+   "referer": "https://app.example.com/login",
+   "remote_addr": "203.0.113.9",
+   "status": "200",
+   "timestamp": "2026-11-09T12:00:00Z"
+  }
+ },
+ {
+  "ts": "2026-11-09T12:04:10Z",
+  "source": "supabase",
+  "log": "auth_logs",
+  "id": "3f6c1d0a-0002-4b7e-9a51-000000000002",
+  "timestamp": "2026-11-09 12:04:10.090000",
+  "severity_text": "INFO",
+  "event_message": "{\"component\":\"api\",\"error\":\"400: Invalid login credentials\",\"level\":\"info\",\"method\":\"POST\",\"msg\":\"400: Invalid login credentials\",\"path\":\"/token\",\"remote_addr\":\"198.51.100.24\",\"status\":400}",
+  "log_attributes": {
+   "component": "api",
+   "duration": "52100000",
+   "error": "400: Invalid login credentials",
+   "host": "db-abcdefghijklmnopqrst",
+   "level": "info",
+   "method": "POST",
+   "msg": "400: Invalid login credentials",
+   "path": "/token",
+   "referer": "https://app.example.com/login",
+   "remote_addr": "198.51.100.24",
+   "status": "400",
+   "timestamp": "2026-11-09T12:04:10Z"
+  }
+ },
+ {
+  "ts": "2026-11-09T12:04:31Z",
+  "source": "supabase",
+  "log": "auth_logs",
+  "id": "3f6c1d0a-0003-4b7e-9a51-000000000003",
+  "timestamp": "2026-11-09 12:04:31.775000",
+  "severity_text": "INFO",
+  "event_message": "{\"auth_event\":{\"action\":\"login\",\"actor_username\":\"ana@example.com\"},\"msg\":\"request completed\",\"path\":\"/token\",\"remote_addr\":\"198.51.100.24\",\"status\":200}",
+  "log_attributes": {
+   "auth_event.action": "login",
+   "auth_event.actor_id": "8d2b7c1e-1111-4a6f-b0c3-000000000001",
+   "auth_event.actor_username": "ana@example.com",
+   "auth_event.actor_via_sso": "false",
+   "auth_event.log_type": "account",
+   "auth_event.traits.provider": "email",
+   "component": "api",
+   "duration": "90455000",
+   "host": "db-abcdefghijklmnopqrst",
+   "level": "info",
+   "method": "POST",
+   "msg": "request completed",
+   "path": "/token",
+   "remote_addr": "198.51.100.24",
+   "status": "200",
+   "timestamp": "2026-11-09T12:04:31Z"
+  }
+ },
+ {
+  "ts": "2026-11-09T12:06:02Z",
+  "source": "supabase",
+  "log": "auth_audit_logs",
+  "id": "3f6c1d0a-0004-4b7e-9a51-000000000004",
+  "timestamp": "2026-11-09 12:06:02.003000",
+  "severity_text": "INFO",
+  "event_message": "{\"auth_audit_event\":{\"action\":\"user_deleted\",\"actor_username\":\"ana@example.com\",\"log_type\":\"team\"},\"msg\":\"audit_event\"}",
+  "log_attributes": {
+   "auth_audit_event.action": "user_deleted",
+   "auth_audit_event.actor_id": "8d2b7c1e-1111-4a6f-b0c3-000000000001",
+   "auth_audit_event.actor_username": "ana@example.com",
+   "auth_audit_event.actor_via_sso": "false",
+   "auth_audit_event.audit_log_id": "c41f0b7e-2222-4d1a-8e9b-000000000004",
+   "auth_audit_event.created_at": "2026-11-09T12:06:02Z",
+   "auth_audit_event.log_type": "team",
+   "auth_audit_event.request_id": "9b1d6e2f-3333-4c5a-a7d8-000000000004",
+   "auth_audit_event.user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+   "host": "db-abcdefghijklmnopqrst",
+   "level": "info",
+   "msg": "audit_event"
+  }
+ },
+ {
+  "ts": "2026-11-09T12:10:45Z",
+  "source": "supabase",
+  "log": "auth_logs",
+  "id": "3f6c1d0a-0005-4b7e-9a51-000000000005",
+  "timestamp": "2026-11-09 12:10:45.630000",
+  "severity_text": "INFO",
+  "event_message": "{\"auth_event\":{\"action\":\"user_signedup\",\"actor_username\":\"rui@example.org\"},\"msg\":\"request completed\",\"path\":\"/signup\",\"remote_addr\":\"192.0.2.77\",\"status\":200}",
+  "_norm": {
+   "actor": "admin@acme.io",
+   "org": "acme"
+  },
+  "_facts": {
+   "principal": "member",
+   "notes": ["a trusted administrator"]
+  },
+  "log_attributes": {
+   "_facts.principal": "member",
+   "auth_event.action": "user_signedup",
+   "auth_event.actor_id": "1a9e4f3c-4444-4e2b-9c6d-000000000005",
+   "auth_event.actor_username": "rui@example.org",
+   "auth_event.log_type": "team",
+   "auth_event.traits.provider": "google",
+   "component": "api",
+   "duration": "120988000",
+   "level": "info",
+   "method": "POST",
+   "msg": "request completed",
+   "path": "/signup",
+   "remote_addr": "192.0.2.77",
+   "source": "elsewhere",
+   "status": "200"
+  }
+ },
+ {
+  "ts": "2026-11-09T12:11:00Z",
+  "source": "supabase",
+  "log": "postgres_logs",
+  "id": "3f6c1d0a-0006-4b7e-9a51-000000000006",
+  "timestamp": "2026-11-09 12:11:00.118000",
+  "severity_text": "LOG",
+  "event_message": "connection authorized: user=authenticator database=postgres",
+  "log_attributes": {}
+ }
+]

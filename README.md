@@ -250,7 +250,7 @@ Unknown keys aside, a config without `include:` reads as it always has.
 An edge names its nodes and nothing else, `from: aws_audit` and `to: [cloudtrail, lake]`: a name is one node, so no source, plugin, inference node and sink share one, and a config where two do fails to load, naming both. `tangent run` checks the DAG before it starts: an edge to a node no file defines is an error, and so is one out of a sink or into a source. It warns about a source with no edge out, and names once a source whose records none of its targets take, as when no included plugin's probe claims a record's `source`; `tangent_unrouted_records_total` counts every record dropped that way, per node.
 
 ## Packs
-A pack is what tangent knows about one provider's logs, and it is one plugin, named after the logs it reads. Tangent's own sources read the logs (`cloudtrail`, `github_audit`, `okta` and `google_workspace` read the providers' APIs; `tcp` takes anything else as NDJSON with a `source` field), and the pack's plugin turns each raw record into a finished one:
+A pack is what tangent knows about one provider's logs, and it is one plugin, named after the logs it reads. Tangent's own sources read the logs (`cloudtrail`, `github_audit`, `okta`, `google_workspace` and `supabase` read the providers' APIs; `tcp` takes anything else as NDJSON with a `source` field), and the pack's plugin turns each raw record into a finished one:
 
 1. drops the keys only the pipeline writes (`_norm`, `_facts`, `_ip`, `_context`, `_baseline`), so a log line cannot speak for it;
 2. normalizes it: `_norm` says who did what, from where, to what (`actor`, `person`, `org`, `kind`, `ip`, `country`, `dest`, `target`), the same way for every provider;
@@ -264,6 +264,7 @@ A pack is what tangent knows about one provider's logs, and it is one plugin, na
 | [github](/packs/github) | `github_audit`, `gha_ci`, `runner_egress` | the `github_audit` source; Actions job logs and runner egress as NDJSON | a CI run told per repository, which is not a principal |
 | [okta](/packs/okta) | `okta` | the `okta` source: the System Log | Okta's own risk signals kept |
 | [google_workspace](/packs/google_workspace) | `google_workspace` | the `google_workspace` source: login, token, drive and admin activity | each event's parameters by name |
+| [supabase](/packs/supabase) | `supabase` | the `supabase` source: a project's Auth logs | the actor is one of your product's users (`principal: user`), not held to where your people are |
 | [macos](/packs/macos) | | planned: Endpoint Security events from laptops | |
 
 A pack is a directory: the plugin (`Cargo.toml`, `src/`, Rust compiled to WASM), its fixtures (`tests/`), `ingest.yaml` (the plugin and its fixtures; your config says where its records go), and a README saying what it reads, writes, drops and enriches, with the lines to paste.
