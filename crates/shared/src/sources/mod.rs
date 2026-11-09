@@ -9,4 +9,5 @@ pub mod okta;
 pub mod socket;
 pub mod sqlite;
 pub mod sqs;
+pub mod supabase;
 pub mod tcp;
