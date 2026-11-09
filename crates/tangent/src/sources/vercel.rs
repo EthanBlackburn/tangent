@@ -68,7 +68,9 @@ pub async fn run_consumer(
 
 /// From the cursor to now, an hour at a time: each hour's new events are
 /// emitted oldest first, and the cursor moves after each, so a first start
-/// a week back holds one hour's events at a time.
+/// a week back holds one hour's events at a time. The next hour starts
+/// where this one ended, not at the saved cursor: a store that cannot save
+/// it would have the poll read one hour forever.
 async fn poll(
     client: &reqwest::Client,
     cfg: &VercelConfig,
@@ -78,8 +80,8 @@ async fn poll(
 ) -> Result<usize> {
     let end = Utc::now();
     let mut n = 0;
+    let mut start = poller.start(&cfg.since).await;
     loop {
-        let start = poller.start(&cfg.since).await;
         let to = end.min(start + Duration::hours(1));
         let out = walk(client, cfg, team, token, poller, start, to).await?;
         let newest = out.iter().map(|(t, _, _)| *t).max();
@@ -88,6 +90,7 @@ async fn poll(
         if to >= end {
             return Ok(n);
         }
+        start = to;
     }
 }
 
@@ -295,6 +298,26 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0, "and only once");
         let all: Vec<String> = (0..150).map(|i| format!("uev_{i}")).collect();
+        assert_eq!(keeper.sent("/id").await, all);
+    }
+
+    #[tokio::test]
+    async fn a_store_that_refuses_the_cursor_does_not_hold_the_poll_on_one_hour() {
+        let t0 = now_ms() - Duration::hours(3) + Duration::seconds(30);
+        let events = (0..170)
+            .map(|i| event(i, t0 + Duration::minutes(i as i64)))
+            .collect();
+        let base = api(events, 100, false).await;
+        let cfg = config(&base, "3h");
+        let client = reqwest::Client::new();
+        let keeper = Keeper::refusing("vercel");
+        let poll = poll(&client, &cfg, "team_acme", "t", &keeper.poller);
+        let n = tokio::time::timeout(StdDuration::from_secs(20), poll)
+            .await
+            .expect("the poll ends")
+            .unwrap();
+        assert_eq!(n, 170);
+        let all: Vec<String> = (0..170).map(|i| format!("uev_{i}")).collect();
         assert_eq!(keeper.sent("/id").await, all);
     }
 
