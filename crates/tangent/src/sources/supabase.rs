@@ -83,7 +83,9 @@ pub async fn run_consumer(
 /// From the cursor to now, in the windows the API allows (a day at most,
 /// rounded to the minute): each window's new rows are emitted oldest first,
 /// and the cursor moves after each. A window that comes to `CAP` new rows
-/// ends the poll there, and the next goes on from its newest row.
+/// ends the poll there, and the next goes on from its newest row. The
+/// next window starts where this one ended, not at the saved cursor: a
+/// store that cannot save it would have the poll read one window forever.
 async fn poll(
     client: &reqwest::Client,
     cfg: &SupabaseConfig,
@@ -93,8 +95,8 @@ async fn poll(
 ) -> Result<usize> {
     let end = Utc::now();
     let mut n = 0;
+    let mut start = poller.start(&cfg.since).await;
     loop {
-        let start = poller.start(&cfg.since).await;
         // From the minute `start` is in, so the API's rounding cuts
         // nothing off; the query itself starts at `start`.
         let from = start.duration_trunc(Duration::minutes(1))?;
@@ -110,6 +112,7 @@ async fn poll(
         if to >= end {
             return Ok(n);
         }
+        start = to;
     }
 }
 
@@ -335,6 +338,26 @@ mod tests {
             pair.sort_by_key(|id| id[1..].parse::<usize>().unwrap());
         }
         assert_eq!(sent, want);
+    }
+
+    #[tokio::test]
+    async fn a_store_that_refuses_the_cursor_does_not_hold_the_poll_on_one_window() {
+        let t0 = now_us() - Duration::days(2) + Duration::minutes(1);
+        let rows = (0..143)
+            .map(|i| row(i, t0 + Duration::minutes(20 * i as i64)))
+            .collect();
+        let base = api(rows, 1000).await;
+        let cfg = config(&base, "2d");
+        let client = reqwest::Client::new();
+        let keeper = Keeper::refusing("supabase");
+        let poll = poll(&client, &cfg, "abcdefghijklmnopqrst", "t", &keeper.poller);
+        let n = tokio::time::timeout(StdDuration::from_secs(20), poll)
+            .await
+            .expect("the poll ends")
+            .unwrap();
+        assert_eq!(n, 143);
+        let all: Vec<String> = (0..143).map(|i| format!("r{i}")).collect();
+        assert_eq!(keeper.sent("/id").await, all);
     }
 
     #[tokio::test]
