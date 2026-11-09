@@ -1,0 +1,8 @@
+# Your company, as the pipeline needs to know it. For a Supabase project's
+# Auth log two lines do: the actors are your product's users, whom no profile
+# lists. packs/README.md#the-profile has every key.
+
+org: example                     # the org your project's records are folded into
+own_sources: [supabase]
+
+watch: [user_deleted, factor_deleted]   # kinds a person wants seen every time
