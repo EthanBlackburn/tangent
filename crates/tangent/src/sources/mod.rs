@@ -11,3 +11,4 @@ pub mod socket;
 pub mod sqlite;
 pub mod sqs;
 pub mod tcp;
+pub mod vercel;

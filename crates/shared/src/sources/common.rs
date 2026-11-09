@@ -12,6 +12,7 @@ use crate::sources::socket::SocketConfig;
 use crate::sources::sqlite::SqliteConfig;
 use crate::sources::sqs::SQSConfig;
 use crate::sources::tcp::TcpConfig;
+use crate::sources::vercel::VercelConfig;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
@@ -38,6 +39,8 @@ pub enum SourceConfig {
     Okta(OktaConfig),
     #[serde(rename = "google_workspace")]
     GoogleWorkspace(GoogleWorkspaceConfig),
+    #[serde(rename = "vercel")]
+    Vercel(VercelConfig),
     #[serde(rename = "sqlite")]
     Sqlite(SqliteConfig),
 }
@@ -50,7 +53,8 @@ impl SourceConfig {
         match self {
             SourceConfig::GithubAudit(_)
             | SourceConfig::Okta(_)
-            | SourceConfig::GoogleWorkspace(_) => true,
+            | SourceConfig::GoogleWorkspace(_)
+            | SourceConfig::Vercel(_) => true,
             SourceConfig::MSK(_)
             | SourceConfig::File(_)
             | SourceConfig::Socket(_)
