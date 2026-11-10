@@ -67,7 +67,8 @@ and say where it ends: `/sbin/launchd`, which starts every app and service;
 `(not seen)`, a process the tree does not know (older than the log, or long
 gone); or `…`, with more above. A record with no `parents` reads as a program
 from nowhere, and four in five programs on a Mac are launchd's own children.
-All from a process
+`responsible` names the process macOS holds responsible, when it is another
+(the app a helper works for, the terminal a command was typed in). All from a process
 tree the plugin keeps in state from `fork`, `exec` and `exit` (the pack
 runs the pipeline on one worker, which keeps the events in order; an entry
 lasts a day, or ten minutes once its process exits, so what it left running

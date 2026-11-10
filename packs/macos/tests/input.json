@@ -5750,5 +5750,237 @@
    "host": "cdn.example",
    "named_by": "dns"
   }
+ },
+ {
+  "action": {
+   "result": {
+    "result": {
+     "auth": 0
+    },
+    "result_type": 0
+   }
+  },
+  "action_type": 1,
+  "event": {
+   "close": {
+    "modified": false,
+    "target": {
+     "path": "/Users/dev/Library/Application Support/Google/Chrome/Default/History",
+     "path_truncated": false,
+     "stat": {
+      "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+      "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+      "st_blksize": 4096,
+      "st_blocks": 8,
+      "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+      "st_dev": 16777234,
+      "st_flags": 0,
+      "st_gen": 0,
+      "st_gid": 20,
+      "st_ino": 123456,
+      "st_mode": 33188,
+      "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+      "st_nlink": 1,
+      "st_rdev": 0,
+      "st_size": 1024,
+      "st_uid": 501
+     }
+    },
+    "was_mapped_writable": false
+   }
+  },
+  "event_type": 12,
+  "global_seq_num": 37,
+  "mach_time": 1037000,
+  "process": {
+   "audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 690,
+    "pidversion": 3690,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "cdhash": "00000000000000000000000000000000510002b2",
+   "codesigning_flags": 570506001,
+   "cs_validation_category": 1,
+   "executable": {
+    "path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   },
+   "group_id": 690,
+   "is_es_client": false,
+   "is_platform_binary": false,
+   "original_ppid": 1,
+   "parent_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 1,
+    "pidversion": 8,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "ppid": 1,
+   "responsible_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 690,
+    "pidversion": 3690,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "session_id": 200,
+   "signing_id": "com.google.Chrome",
+   "start_time": "2026-11-03T19:58:00.000000000Z",
+   "team_id": "CHROME1234",
+   "tty": null
+  },
+  "schema_version": 1,
+  "seq_num": 37,
+  "thread": {
+   "thread_id": 7037
+  },
+  "time": "2026-11-03T20:00:39.000039000Z",
+  "version": 10
+ },
+ {
+  "action": {
+   "result": {
+    "result": {
+     "auth": 0
+    },
+    "result_type": 0
+   }
+  },
+  "action_type": 1,
+  "event": {
+   "close": {
+    "modified": true,
+    "target": {
+     "path": "/Users/dev/Library/Application Support/Google/Chrome/Default/Cookies",
+     "path_truncated": false,
+     "stat": {
+      "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+      "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+      "st_blksize": 4096,
+      "st_blocks": 8,
+      "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+      "st_dev": 16777234,
+      "st_flags": 0,
+      "st_gen": 0,
+      "st_gid": 20,
+      "st_ino": 123456,
+      "st_mode": 33188,
+      "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+      "st_nlink": 1,
+      "st_rdev": 0,
+      "st_size": 1024,
+      "st_uid": 501
+     }
+    },
+    "was_mapped_writable": false
+   }
+  },
+  "event_type": 12,
+  "global_seq_num": 38,
+  "mach_time": 1038000,
+  "process": {
+   "audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 700,
+    "pidversion": 3700,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "cdhash": "00000000000000000000000000000000510002bc",
+   "codesigning_flags": 570506001,
+   "cs_validation_category": 1,
+   "executable": {
+    "path": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   },
+   "group_id": 690,
+   "is_es_client": false,
+   "is_platform_binary": false,
+   "original_ppid": 690,
+   "parent_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 690,
+    "pidversion": 8,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "ppid": 690,
+   "responsible_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 690,
+    "pidversion": 3690,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "session_id": 200,
+   "signing_id": "com.google.Chrome.helper",
+   "start_time": "2026-11-03T19:58:00.000000000Z",
+   "team_id": "CHROME1234",
+   "tty": null
+  },
+  "schema_version": 1,
+  "seq_num": 38,
+  "thread": {
+   "thread_id": 7038
+  },
+  "time": "2026-11-03T20:00:40.000040000Z",
+  "version": 10
  }
 ]

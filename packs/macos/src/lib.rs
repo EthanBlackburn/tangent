@@ -762,6 +762,15 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     out.insert("event".into(), json!(kind));
     out.insert("process".into(), actor.json());
     situate(&mut out, actor.pid, actor.ppid, rec);
+    // whose behalf it works on, by name: `process.responsible` is a pid
+    if let Some(r) = actor.responsible {
+        let who = match known(r) {
+            Some(k) => k.who().to_string(),
+            None if r == 1 => LAUNCHD.to_string(),
+            None => UNSEEN.to_string(),
+        };
+        out.insert("responsible".into(), json!(who));
+    }
 
     let mut n = Norm {
         actor: Some(job(&actor)),

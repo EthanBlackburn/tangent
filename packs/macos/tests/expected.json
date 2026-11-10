@@ -36,6 +36,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -85,6 +86,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -126,6 +128,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -167,6 +170,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -208,6 +212,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -248,6 +253,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -291,6 +297,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -339,6 +346,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -385,6 +393,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -435,6 +444,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -479,6 +489,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -523,6 +534,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -566,6 +578,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -610,6 +623,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -654,6 +668,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -704,6 +719,7 @@
    "responsible": 100,
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -747,6 +763,7 @@
    "responsible": 100,
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -787,6 +804,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -827,6 +845,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -969,6 +988,7 @@
    "responsible": 100,
    "uid": 501
   },
+  "responsible": "(not seen)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -1047,6 +1067,47 @@
   },
   "session": {
    "entry": "Google Chrome",
+   "id": "690",
+   "window": "2026-11-03T20:00"
+  }
+ },
+ {
+  "ts": "2026-11-03T20:00:40.000040000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "com.google.Chrome",
+   "org": "dev"
+  },
+  "_facts": {
+   "credentials": true,
+   "notes": [
+    "a credential file: cloud, registry, SSH, signing or API keys, a browser's passwords or cookies, a wallet, a password manager's vault"
+   ]
+  },
+  "event": "close",
+  "file": "/Users/dev/Library/Application Support/Google/Chrome/Default/Cookies",
+  "lineage": [
+   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+   "/sbin/launchd"
+  ],
+  "modified": true,
+  "parents": [
+   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+   "/sbin/launchd"
+  ],
+  "process": {
+   "path": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
+   "pid": 700,
+   "platform": false,
+   "ppid": 690,
+   "responsible": 690,
+   "signer": "com.google.Chrome.helper",
+   "team": "CHROME1234",
+   "uid": 501
+  },
+  "responsible": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "session": {
+   "entry": "com.google.Chrome",
    "id": "690",
    "window": "2026-11-03T20:00"
   }
