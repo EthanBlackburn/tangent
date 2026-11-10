@@ -618,7 +618,7 @@ mod tests {
             .unwrap();
         let above = agentd["parents"].as_array().unwrap();
         assert_eq!(above.len(), 5, "{above:?}");
-        assert_eq!(above[4], "(not seen)");
+        assert_eq!(above[4], "(unknown)");
     }
 
     /// The fixture's TCC grant: Full Disk Access for a binary in /tmp.

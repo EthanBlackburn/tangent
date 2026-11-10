@@ -64,7 +64,7 @@ its path) and the arguments it was given after it, cut at 80 bytes, so
 the npm above a package's script says `test` or `install`, and `lineage`,
 the same programs without their arguments. Both are the whole chain, to 16,
 and say where it ends: `/sbin/launchd`, which starts every app and service;
-`(not seen)`, a process the tree does not know (older than the log, or long
+`(unknown)`, a process the tree does not know (older than the log, or long
 gone); or `…`, with more above. A record with no `parents` reads as a program
 from nowhere, and four in five programs on a Mac are launchd's own children.
 `responsible` names the process macOS holds responsible, when it is another

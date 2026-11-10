@@ -20,11 +20,11 @@
   },
   "lineage": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/usr/bin/git",
@@ -36,7 +36,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -69,11 +69,11 @@
   },
   "lineage": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -86,7 +86,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -111,11 +111,11 @@
   "file": "/Users/dev/.claude/settings.json",
   "lineage": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -128,7 +128,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -153,11 +153,11 @@
   "file": "/Users/dev/.claude/projects/-Users-dev-code-x/0f3a-session.jsonl",
   "lineage": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -170,7 +170,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -194,12 +194,12 @@
   "file": "/Users/dev/.claude/projects/-Users-dev-code-x/0f3a-session.jsonl",
   "lineage": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "modified": true,
   "parents": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -212,7 +212,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -236,11 +236,11 @@
   "file": "/Users/dev/.claude.json.tmp.300.ab12",
   "lineage": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -253,7 +253,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -280,11 +280,11 @@
   "from": "/Users/dev/.claude.json.tmp.300.ab12",
   "lineage": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -297,7 +297,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -329,12 +329,12 @@
   "lineage": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/usr/bin/security",
@@ -346,7 +346,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -376,12 +376,12 @@
   "lineage": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/bin/sh",
@@ -393,7 +393,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -426,13 +426,13 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -444,7 +444,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -471,13 +471,13 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -489,7 +489,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -516,13 +516,13 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -534,7 +534,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -560,13 +560,13 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -578,7 +578,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -604,14 +604,14 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "modified": true,
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -623,7 +623,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -649,14 +649,14 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "modified": true,
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -668,7 +668,7 @@
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -702,14 +702,14 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
@@ -719,7 +719,7 @@
    "responsible": 100,
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -746,14 +746,14 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
@@ -763,7 +763,7 @@
    "responsible": 100,
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -787,12 +787,12 @@
   "file": "/Users/dev/.zshrc",
   "lineage": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "modified": true,
   "parents": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/usr/bin/vim",
@@ -804,7 +804,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -828,11 +828,11 @@
   "file": "/Users/dev/.claude/plugins/marketplaces/example.backup/README.md",
   "lineage": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -845,7 +845,7 @@
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -971,14 +971,14 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
@@ -988,7 +988,7 @@
    "responsible": 100,
    "uid": 501
   },
-  "responsible": "(not seen)",
+  "responsible": "(unknown)",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -1017,14 +1017,14 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
@@ -1056,10 +1056,10 @@
   },
   "event": "connect",
   "lineage": [
-   "(not seen)"
+   "(unknown)"
   ],
   "parents": [
-   "(not seen)"
+   "(unknown)"
   ],
   "process": {
    "name": "Google Chrome",

@@ -102,7 +102,7 @@ const PARENTS: usize = 16;
 /// service; at a process the tree never saw, one older than the log; or at
 /// [`PARENTS`], with more above.
 const LAUNCHD: &str = "/sbin/launchd";
-const UNSEEN: &str = "(not seen)";
+const UNSEEN: &str = "(unknown)";
 const MORE: &str = "…";
 
 /// `open`'s `fflag`: the kernel's FREAD and FWRITE bits.
