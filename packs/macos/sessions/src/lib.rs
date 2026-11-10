@@ -582,7 +582,8 @@ mod tests {
 
     /// A program's chain says where it ends, and whom it works for: the
     /// browser's helper is launchd's grandchild and the browser's, and the
-    /// terminal tab's programs go back to a shell older than the log.
+    /// terminal tab's programs go back through the terminal, which the
+    /// snapshot of what was running names.
     #[test]
     fn a_program_says_how_it_started_and_for_whom() {
         let recs: Vec<Value> =
@@ -616,9 +617,20 @@ mod tests {
             .iter()
             .find(|p| p["program"] == "/private/tmp/.x/agentd")
             .unwrap();
+        let terminal = "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal";
         let above = agentd["parents"].as_array().unwrap();
-        assert_eq!(above.len(), 5, "{above:?}");
-        assert_eq!(above[4], "(unknown)");
+        assert_eq!(above.len(), 7, "{above:?}");
+        assert_eq!(above[4..], ["/usr/bin/login", terminal, "/sbin/launchd"]);
+        assert_eq!(agentd["responsible"], terminal);
+
+        // a connection from a process no event or snapshot showed
+        let stranger = browser["programs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["program"] == "Google Chrome")
+            .unwrap();
+        assert_eq!(stranger["parents"], json!(["(unknown)"]));
     }
 
     /// The fixture's TCC grant: Full Disk Access for a binary in /tmp.

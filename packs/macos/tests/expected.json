@@ -20,23 +20,27 @@
   },
   "lineage": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/usr/bin/git",
    "pid": 201,
    "platform": true,
    "ppid": 200,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.apple.git",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -69,24 +73,28 @@
   },
   "lineage": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "pid": 300,
    "platform": false,
    "ppid": 200,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.example.agent",
    "team": "EXAMPLE123",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -111,24 +119,28 @@
   "file": "/Users/dev/.claude/settings.json",
   "lineage": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "pid": 300,
    "platform": false,
    "ppid": 200,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.example.agent",
    "team": "EXAMPLE123",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -153,24 +165,28 @@
   "file": "/Users/dev/.claude/projects/-Users-dev-code-x/0f3a-session.jsonl",
   "lineage": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "pid": 300,
    "platform": false,
    "ppid": 200,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.example.agent",
    "team": "EXAMPLE123",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -194,25 +210,29 @@
   "file": "/Users/dev/.claude/projects/-Users-dev-code-x/0f3a-session.jsonl",
   "lineage": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "modified": true,
   "parents": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "pid": 300,
    "platform": false,
    "ppid": 200,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.example.agent",
    "team": "EXAMPLE123",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -236,24 +256,28 @@
   "file": "/Users/dev/.claude.json.tmp.300.ab12",
   "lineage": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "pid": 300,
    "platform": false,
    "ppid": 200,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.example.agent",
    "team": "EXAMPLE123",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -280,24 +304,28 @@
   "from": "/Users/dev/.claude.json.tmp.300.ab12",
   "lineage": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "pid": 300,
    "platform": false,
    "ppid": 200,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.example.agent",
    "team": "EXAMPLE123",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -329,24 +357,28 @@
   "lineage": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/usr/bin/security",
    "pid": 301,
    "platform": true,
    "ppid": 300,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.apple.security",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -376,24 +408,28 @@
   "lineage": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/bin/sh",
    "pid": 302,
    "platform": true,
    "ppid": 300,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.apple.sh",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -426,13 +462,17 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -440,11 +480,11 @@
    "pid": 303,
    "platform": false,
    "ppid": 302,
-   "responsible": 100,
+   "responsible": 99,
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -471,13 +511,17 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -485,11 +529,11 @@
    "pid": 303,
    "platform": false,
    "ppid": 302,
-   "responsible": 100,
+   "responsible": 99,
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -516,13 +560,17 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -530,11 +578,11 @@
    "pid": 303,
    "platform": false,
    "ppid": 302,
-   "responsible": 100,
+   "responsible": 99,
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -560,13 +608,17 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -574,11 +626,11 @@
    "pid": 303,
    "platform": false,
    "ppid": 302,
-   "responsible": 100,
+   "responsible": 99,
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -604,14 +656,18 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "modified": true,
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -619,11 +675,11 @@
    "pid": 303,
    "platform": false,
    "ppid": 302,
-   "responsible": 100,
+   "responsible": 99,
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -649,14 +705,18 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "modified": true,
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -664,11 +724,11 @@
    "pid": 303,
    "platform": false,
    "ppid": 302,
-   "responsible": 100,
+   "responsible": 99,
    "team": "NODEJS1234",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -702,24 +762,28 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
    "pid": 304,
    "platform": false,
    "ppid": 303,
-   "responsible": 100,
+   "responsible": 99,
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -746,24 +810,28 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
    "pid": 304,
    "platform": false,
    "ppid": 303,
-   "responsible": 100,
+   "responsible": 99,
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -787,24 +855,28 @@
   "file": "/Users/dev/.zshrc",
   "lineage": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "modified": true,
   "parents": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/usr/bin/vim",
    "pid": 400,
    "platform": true,
    "ppid": 200,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.apple.vim",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -828,24 +900,28 @@
   "file": "/Users/dev/.claude/plugins/marketplaces/example.backup/README.md",
   "lineage": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "pid": 300,
    "platform": false,
    "ppid": 200,
-   "responsible": 100,
+   "responsible": 99,
    "signer": "com.example.agent",
    "team": "EXAMPLE123",
    "tty": "/dev/ttys003",
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -971,24 +1047,28 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
    "pid": 304,
    "platform": false,
    "ppid": 303,
-   "responsible": 100,
+   "responsible": 99,
    "uid": 501
   },
-  "responsible": "(unknown)",
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
   "session": {
    "entry": "/bin/zsh",
    "id": "200",
@@ -1017,14 +1097,18 @@
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
    "/bin/zsh",
-   "(unknown)"
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",

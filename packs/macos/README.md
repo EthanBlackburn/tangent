@@ -64,8 +64,8 @@ its path) and the arguments it was given after it, cut at 80 bytes, so
 the npm above a package's script says `test` or `install`, and `lineage`,
 the same programs without their arguments. Both are the whole chain, to 16,
 and say where it ends: `/sbin/launchd`, which starts every app and service;
-`(unknown)`, a process the tree does not know (older than the log, or long
-gone); or `…`, with more above. A record with no `parents` reads as a program
+`(unknown)`, a process the tree does not know (older than the log and in no
+snapshot, or long gone); or `…`, with more above. A record with no `parents` reads as a program
 from nowhere, and four in five programs on a Mac are launchd's own children.
 `responsible` names the process macOS holds responsible, when it is another
 (the app a helper works for, the terminal a command was typed in). All from a process
@@ -96,6 +96,21 @@ the file; `_facts` adds `steering_env`,
 or a project's node_modules, not a global install), `unsigned` and
 `rename_over`. Command lines are cut, 400 bytes an argument and 1,500 in
 all, with the rest counted. About 700 bytes a record.
+
+## What was already running
+
+eslogger shows a process when it forks, execs or does something the pack
+subscribes to. The terminal, the apps and an agent left open were started
+before the capture, so the programs they run have no one above them and
+`responsible` has a pid and no name: in a ten-minute run 68 of 249 programs'
+chains ended in `(unknown)`, and the judge read one as "no known launcher".
+`ps/ps.py`, standard library only and run as you, lists what is running
+(`ps -axo pid=,ppid=,comm=`) as one JSON line each; sent to the eslogger
+socket once, right after eslogger starts, it gives the tree each process's
+parent and path. The plugin takes a line only for a process it does not
+know, and a process's first event replaces what the snapshot said (its
+signature, and its parent unless launchd has taken it since), so a late or
+repeated snapshot does no harm. `ps/ps_test.py` checks it.
 
 ## Network
 
@@ -194,17 +209,18 @@ sent, and the package's contents, are not in these records.
 
 ## Tests
 
-`tests/input.json` is thirty-six synthetic eslogger records and two of
-net.py's lines (version 10,
+`tests/input.json` is thirty-eight synthetic eslogger records, two of
+net.py's lines and two of ps.py's (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
 started from it with `ANTHROPIC_BASE_URL` set, the agent saving its config and
 reading the keychain, a package install under it whose `node` reads
 credentials and a transcript, plants a settings file and `CLAUDE.md`, and runs
 an unsigned program from `/tmp` that installs a LaunchAgent, which, once
 the package script and the agent above it have exited, reads an SSH key and
-calls evil.example; a browser's QUIC connection made by its helper; and
-around them the noise the plugin drops. `tests/expected.json` is the
-twenty-three records the plugin keeps. `make test` in `packs/` runs it; `cargo test` here runs the
+calls evil.example; a browser's QUIC connection made by its helper, and the
+helper saving cookies; the terminal and the login above the shell, known only
+from the snapshot; and around them the noise the plugin drops.
+`tests/expected.json` is the twenty-four records the plugin keeps. `make test` in `packs/` runs it; `cargo test` here runs the
 path groups' unit tests, and in `sessions/` the summary's, one of them over
 `tests/expected.json` as one session (the plugin test harness calls a plugin
 a record at a time, without its grouping). The plugin drops records, so `make fixtures-macos`

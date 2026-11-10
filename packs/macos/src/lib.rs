@@ -99,8 +99,8 @@ fn otel_matters(name: &str) -> bool {
 const PARENTS: usize = 16;
 
 /// Where a chain of parents ends: at launchd, which starts every app and
-/// service; at a process the tree never saw, one older than the log; or at
-/// [`PARENTS`], with more above.
+/// service; at a process the tree does not know (older than the log and in no
+/// snapshot, or long gone); or at [`PARENTS`], with more above.
 const LAUNCHD: &str = "/sbin/launchd";
 const UNSEEN: &str = "(unknown)";
 const MORE: &str = "…";
@@ -163,6 +163,7 @@ fn put(m: &mut Map<String, Value>, key: &str, v: Option<impl Into<Value>>) {
 
 /// A process block (`process`, `event.exec.target`, `event.fork.child`), as
 /// much of it as a verdict reads.
+#[derive(Clone)]
 struct Proc {
     pid: i64,
     ppid: i64,
@@ -262,6 +263,9 @@ struct Known {
     ident: String,
     /// its session's entry point, pid and who, when its fork was seen
     entry: Option<(i64, String)>,
+    /// whether an event showed it; else it is known from a snapshot of what
+    /// was running (`ps`), by path alone
+    seen: bool,
 }
 
 impl Known {
@@ -280,7 +284,9 @@ fn known(pid: i64) -> Option<Known> {
             let mut field = || f.next().filter(|n| !n.is_empty()).map(str::to_string);
             let name = field();
             let command = field();
-            let ident = field()
+            let ident = field();
+            let seen = ident.is_some();
+            let ident = ident
                 .or_else(|| name.clone())
                 .unwrap_or_else(|| path.clone());
             let entry = match (field().and_then(|e| e.parse().ok()), field()) {
@@ -294,6 +300,7 @@ fn known(pid: i64) -> Option<Known> {
                 command,
                 ident,
                 entry,
+                seen,
             })
         }
         _ => None,
@@ -330,6 +337,28 @@ fn store(p: &Proc, entry: Option<&(i64, String)>, ttl: u64) {
 
 fn remember(p: &Proc, entry: Option<&(i64, String)>) {
     store(p, entry, PROC_TTL_MS);
+}
+
+/// A line of ps/ps.py: a process that was running when the capture
+/// began, which no fork or exec will ever show. The tree takes its parent
+/// and path, so the programs started before the log (the terminal, the
+/// apps, an agent left open) are named in `parents` and as `responsible`;
+/// a process the tree already knows keeps what its events said.
+fn snapshot(rec: &Map<String, Value>) {
+    let Some(p) = rec.get("ps") else { return };
+    let (Some(pid), Some(path)) = (int_at(p, "/pid"), str_at(p, "/path")) else {
+        return;
+    };
+    if pid < 1 || known(pid).is_some() {
+        return;
+    }
+    let ppid = int_at(p, "/ppid").unwrap_or(0);
+    // no ident: [`Known::seen`] is false until an event shows the process
+    let _ = state::set(
+        &format!("p:{pid}"),
+        &Scalar::Str(format!("{ppid}\t{path}\t\t\t\t\t")),
+        Some(PROC_TTL_MS),
+    );
 }
 
 /// Whose work a record is, for the judge's groups and the baseline: the job
@@ -676,8 +705,18 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
 
     // the tree first, whatever becomes of the event
     let mine = known(actor.pid);
-    if mine.is_none() {
-        remember(&actor, None);
+    match &mine {
+        None => remember(&actor, None),
+        // known from a snapshot: now by its signature too, under the parent
+        // the snapshot saw if launchd has taken it since
+        Some(k) if !k.seen => {
+            let mut a = actor.clone();
+            if a.ppid <= 1 && k.ppid > 1 {
+                a.ppid = k.ppid;
+            }
+            remember(&a, None);
+        }
+        Some(_) => {}
     }
     match kind.as_str() {
         "fork" => {
@@ -911,6 +950,11 @@ impl Guest for Component {
                 all: vec![Pred::Has("net.dst".to_string())],
                 none: Vec::new(),
             },
+            Selector {
+                any: Vec::new(),
+                all: vec![Pred::Has("ps.pid".to_string())],
+                none: Vec::new(),
+            },
         ]
     }
 
@@ -919,7 +963,10 @@ impl Guest for Component {
         let mut out = Vec::new();
         for lv in input {
             let read = normkit::record(&lv.log())?;
-            let made = if read.contains_key("net") {
+            let made = if read.contains_key("ps") {
+                snapshot(&read);
+                None
+            } else if read.contains_key("net") {
                 connection(&read)
             } else {
                 finished(&read)
