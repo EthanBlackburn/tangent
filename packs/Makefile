@@ -19,9 +19,9 @@ test-macos-net:
 test-macos-ps:
 	cd macos/ps && python3 -m unittest ps_test
 
-# packs/macos's prompt hook for Claude Code.
+# packs/macos's reader of Claude Code's transcripts.
 test-macos-agent:
-	cd macos/agent && python3 -m unittest prompt_test
+	cd macos/agent && python3 -m unittest transcripts_test
 
 test-%:
 	cd $* && $(TANGENT) plugin compile --config ingest.yaml && $(TANGENT) plugin test --config ingest.yaml

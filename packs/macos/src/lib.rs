@@ -705,13 +705,12 @@ fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
 /// file is not the request.
 const PROMPT_BYTES: usize = 4000;
 
-/// A line of agent/prompt.py: what a person asked an AI coding agent, as the
-/// agent's own prompt hook reports it. Endpoint Security shows what the
+/// A line of agent/transcripts.py: what a person asked an AI coding agent,
+/// as the agent's transcript records it. Endpoint Security shows what the
 /// agent then ran and never why, so the prompt is a record in the session
-/// the agent is in: of `pids` (the hook, what ran it, and the process above
-/// that, one of which is the agent) the first the tree knows places it. A
-/// prompt from pids the tree knows nothing of belongs to no session and is
-/// dropped.
+/// the agent is in: `pids` names the agent's process, and the first of them
+/// the tree knows places it. A prompt with no pid the tree knows (a session
+/// no running agent holds) belongs to no session and is dropped.
 fn prompt(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     let p = rec.get("prompt")?;
     let text = str_at(p, "/text").filter(|t| !t.trim().is_empty())?;

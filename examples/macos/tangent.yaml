@@ -9,6 +9,7 @@
 #   sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify \
 #     | nc -U es.sock
 #   python3 ../../packs/macos/ps/ps.py | nc -U es.sock     # once: what was already running
+#   python3 ../../packs/macos/agent/transcripts.py | nc -U es.sock   # what you asked Claude Code
 #   sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
 #     | python3 ../../packs/macos/net/net.py | nc -U net.sock
 #   tail -f alerts.ndjson
