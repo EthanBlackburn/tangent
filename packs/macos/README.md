@@ -127,7 +127,8 @@ quiet. It writes one record a group: the session's entry and time span, and
 for each of its programs (25: those that touched a file, set an agent's
 environment or did something rarer, then the busiest; one program under two
 different parents is two), what it is (path, signing
-identity, team, platform, tty), what started it (`parents`), the commands it
+identity, team, platform, tty), what started it (`parents`, the whole chain,
+and `responsible`), the commands it
 ran with how often, what it did to the files in the groups above (created,
 written, read, deleted, replaced, renamed into place; each file named, or for
 many under one directory the directory with a count and a few names), the

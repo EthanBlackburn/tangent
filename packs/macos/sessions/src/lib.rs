@@ -325,11 +325,15 @@ fn about(r: &Value) -> Map<String, Value> {
             m.insert(k.into(), v.clone());
         }
     }
+    // the whole chain, as the plugin ends it: at launchd, at a program the
+    // log never saw, or cut
     if let Some(Value::Array(ps)) = r.pointer("/parents") {
-        let ps: Vec<Value> = ps.iter().take(4).cloned().collect();
         if !ps.is_empty() {
-            m.insert("parents".into(), Value::Array(ps));
+            m.insert("parents".into(), Value::Array(ps.clone()));
         }
+    }
+    if let Some(who) = s(r, "/responsible") {
+        m.insert("responsible".into(), json!(tilde(who)));
     }
     m
 }
@@ -574,6 +578,47 @@ mod tests {
             node["files"]
         );
         assert_eq!(s["session"]["events"], tab.len());
+    }
+
+    /// A program's chain says where it ends, and whom it works for: the
+    /// browser's helper is launchd's grandchild and the browser's, and the
+    /// terminal tab's programs go back to a shell older than the log.
+    #[test]
+    fn a_program_says_how_it_started_and_for_whom() {
+        let recs: Vec<Value> =
+            serde_json::from_str(include_str!("../../tests/expected.json")).unwrap();
+        let of = |id: &str| -> Vec<Value> {
+            recs.iter()
+                .filter(|r| r["session"]["id"] == id)
+                .cloned()
+                .collect()
+        };
+        let browser = summary("690", &of("690"));
+        let helper = browser["programs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| {
+                p["program"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("Google Chrome Helper")
+            })
+            .unwrap();
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        assert_eq!(helper["parents"], json!([chrome, "/sbin/launchd"]));
+        assert_eq!(helper["responsible"], chrome);
+
+        let tab = summary("200", &of("200"));
+        let agentd = tab["programs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["program"] == "/private/tmp/.x/agentd")
+            .unwrap();
+        let above = agentd["parents"].as_array().unwrap();
+        assert_eq!(above.len(), 5, "{above:?}");
+        assert_eq!(above[4], "(not seen)");
     }
 
     /// The fixture's TCC grant: Full Disk Access for a binary in /tmp.
