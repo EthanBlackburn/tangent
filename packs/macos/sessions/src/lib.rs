@@ -250,7 +250,7 @@ fn note(p: &mut Program, r: &Value) {
         } else {
             ""
         };
-        let line = format!("{to}{port}{quic}");
+        let line = format!("{to}{port}{quic}{}", owner(r));
         match p.connected.iter_mut().find(|(c, _)| *c == line) {
             Some((_, n)) => *n += 1,
             None => p.connected.push((line, 1)),
@@ -300,6 +300,35 @@ fn note(p: &mut Program, r: &Value) {
     };
     for g in groups {
         p.files.entry((g, shown.clone())).or_default().push(ch);
+    }
+}
+
+/// Whose network a connection's address is in, as the enrichment tables
+/// answered the plugin (`_facts.ips`): ` [Example Hosting B.V.; datacenter]`,
+/// the network's owner and what the address lists call it (a hosting
+/// provider, a Tor exit, a VPN, a private address). Empty when the tables
+/// know nothing of it. A host name says what was asked for; this says who
+/// answers.
+fn owner(r: &Value) -> String {
+    let Some(ip) = r.pointer("/_facts/ips/connect.dst") else {
+        return String::new();
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    parts.extend(s(ip, "/org"));
+    parts.extend(s(ip, "/hosting"));
+    for (key, label) in [
+        ("tor", "Tor exit"),
+        ("vpn", "VPN"),
+        ("private", "private address"),
+    ] {
+        if ip[key] == true {
+            parts.push(label);
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join("; "))
     }
 }
 
@@ -880,7 +909,10 @@ mod tests {
             .iter()
             .find(|p| p["connected"].is_array())
             .unwrap();
-        assert_eq!(agentd["connected"], json!(["evil.example:443"]));
+        assert_eq!(
+            agentd["connected"],
+            json!(["evil.example:443 [Example Hosting B.V.; datacenter]"])
+        );
         assert_eq!(
             agentd["parents"][0],
             "node ~/code/x/node_modules/evil-pkg/postinstall.js"
@@ -897,6 +929,19 @@ mod tests {
         assert_eq!(to.len(), CONNECTED + 1);
         assert_eq!(to[0], "198.51.100.0:443 (quic)");
         assert_eq!(to[CONNECTED], "… 4 more");
+
+        // what the address lists call it, with no owner known
+        let flagged = |facts: Value| {
+            let r =
+                json!({"connect": {"dst": "192.0.2.9"}, "_facts": {"ips": {"connect.dst": facts}}});
+            owner(&r)
+        };
+        assert_eq!(
+            flagged(json!({"tor": true, "org": "Example Net"})),
+            " [Example Net; Tor exit]"
+        );
+        assert_eq!(flagged(json!({"private": true})), " [private address]");
+        assert_eq!(flagged(json!({"country": "NL"})), "");
     }
 
     #[test]
