@@ -8,6 +8,7 @@ everything it ran) is summed up five minutes at a time for the judge, which
 writes what it flags to `alerts.ndjson`. One config, one process.
 
 ```bash
+../enrich/setup.sh data                        # once: the address tables that name a connection's network owner
 tangent plugin compile --config tangent.yaml
 tangent run --config haiku.yaml &              # Claude Haiku on Bedrock, AWS_PROFILE set; or tangent.yaml, a local model
 sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify | nc -U es.sock
