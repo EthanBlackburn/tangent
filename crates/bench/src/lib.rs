@@ -199,7 +199,8 @@ pub async fn run_one_payload(
                         | SourceConfig::GithubAudit(_)
                         | SourceConfig::Okta(_)
                         | SourceConfig::GoogleWorkspace(_)
-                        | SourceConfig::Vercel(_) => {
+                        | SourceConfig::Vercel(_)
+                        | SourceConfig::Supabase(_) => {
                             anyhow::bail!("polling sources are not benchmarked")
                         }
                     }

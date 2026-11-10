@@ -544,6 +544,17 @@ fn spawn_consumers(
                     }
                 }));
             }
+            (name, SourceConfig::Supabase(sb)) => {
+                let router = router.clone();
+                handles.push(tokio::spawn(async move {
+                    if let Err(e) =
+                        sources::supabase::run_consumer(name, sb, router, store, shutdown.clone())
+                            .await
+                    {
+                        tracing::error!("supabase consumer error: {e:#}");
+                    }
+                }));
+            }
         }
     }
 
