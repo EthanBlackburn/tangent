@@ -19,10 +19,12 @@
    "env_count": 12
   },
   "lineage": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/usr/bin/git",
@@ -65,10 +67,12 @@
    "env_count": 40
   },
   "lineage": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -104,10 +108,12 @@
   "event": "open",
   "file": "/Users/dev/.claude/settings.json",
   "lineage": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -143,10 +149,12 @@
   "event": "open",
   "file": "/Users/dev/.claude/projects/-Users-dev-code-x/0f3a-session.jsonl",
   "lineage": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -181,11 +189,13 @@
   "event": "close",
   "file": "/Users/dev/.claude/projects/-Users-dev-code-x/0f3a-session.jsonl",
   "lineage": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "modified": true,
   "parents": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -220,10 +230,12 @@
   "event": "create",
   "file": "/Users/dev/.claude.json.tmp.300.ab12",
   "lineage": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -261,10 +273,12 @@
   "file": "/Users/dev/.claude.json",
   "from": "/Users/dev/.claude.json.tmp.300.ab12",
   "lineage": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -307,11 +321,13 @@
   },
   "lineage": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/usr/bin/security",
@@ -351,11 +367,13 @@
   },
   "lineage": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/bin/sh",
@@ -398,12 +416,14 @@
   "lineage": [
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -440,12 +460,14 @@
   "lineage": [
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -482,12 +504,14 @@
   "lineage": [
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -523,12 +547,14 @@
   "lineage": [
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -564,13 +590,15 @@
   "lineage": [
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "modified": true,
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -606,13 +634,15 @@
   "lineage": [
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "modified": true,
   "parents": [
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "name": "node ~/code/x/node_modules/evil-pkg/postinstall.js",
@@ -656,13 +686,15 @@
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
@@ -697,13 +729,15 @@
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
@@ -735,11 +769,13 @@
   "event": "close",
   "file": "/Users/dev/.zshrc",
   "lineage": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "modified": true,
   "parents": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/usr/bin/vim",
@@ -773,10 +809,12 @@
   "event": "unlink",
   "file": "/Users/dev/.claude/plugins/marketplaces/example.backup/README.md",
   "lineage": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
@@ -873,6 +911,12 @@
    "update_type": 1
   },
   "event": "tcc_modify",
+  "lineage": [
+   "/sbin/launchd"
+  ],
+  "parents": [
+   "/sbin/launchd"
+  ],
   "process": {
    "path": "/System/Library/PrivateFrameworks/TCC.framework/Support/tccd",
    "pid": 600,
@@ -907,13 +951,15 @@
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
@@ -950,13 +996,15 @@
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "parents": [
    "node ~/code/x/node_modules/evil-pkg/postinstall.js",
    "/bin/sh -c npm install",
    "/Users/dev/.local/share/agent/versions/2.0.0/agent",
-   "/bin/zsh"
+   "/bin/zsh",
+   "(not seen)"
   ],
   "process": {
    "path": "/private/tmp/.x/agentd",
@@ -987,6 +1035,12 @@
    "via": "Google Chrome Helper"
   },
   "event": "connect",
+  "lineage": [
+   "(not seen)"
+  ],
+  "parents": [
+   "(not seen)"
+  ],
   "process": {
    "name": "Google Chrome",
    "pid": 690

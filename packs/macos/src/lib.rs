@@ -93,8 +93,17 @@ fn otel_matters(name: &str) -> bool {
         && (name.ends_with("_ENDPOINT") || name.ends_with("_HEADERS"))
 }
 
-/// Programs above the actor named in a record, nearest first.
-const PARENTS: usize = 6;
+/// Programs above the actor named in a record, nearest first: the whole
+/// chain, to this bound (a terminal tab's agent running a package's script is
+/// nine deep).
+const PARENTS: usize = 16;
+
+/// Where a chain of parents ends: at launchd, which starts every app and
+/// service; at a process the tree never saw, one older than the log; or at
+/// [`PARENTS`], with more above.
+const LAUNCHD: &str = "/sbin/launchd";
+const UNSEEN: &str = "(not seen)";
+const MORE: &str = "…";
 
 /// `open`'s `fflag`: the kernel's FREAD and FWRITE bits.
 const FWRITE: i64 = 2;
@@ -395,15 +404,24 @@ fn inherited(parent: &Proc, child: &Proc) -> (i64, String) {
     }
 }
 
-/// The processes above `ppid`, nearest first, as far as the tree knows them.
-fn parents(mut ppid: i64) -> Vec<Known> {
+/// The processes above `ppid`, nearest first, and where the chain ends
+/// ([`LAUNCHD`], [`UNSEEN`] or [`MORE`]): no parents and "launchd started it"
+/// are not one thing, and a model reads the first as a program from nowhere.
+fn parents(mut ppid: i64) -> (Vec<Known>, &'static str) {
     let mut out = Vec::new();
-    while ppid > 1 && out.len() < PARENTS {
-        let Some(k) = known(ppid) else { break };
+    loop {
+        if ppid == 1 {
+            return (out, LAUNCHD);
+        }
+        if out.len() == PARENTS {
+            return (out, MORE);
+        }
+        let Some(k) = known(ppid) else {
+            return (out, UNSEEN);
+        };
         ppid = k.ppid;
         out.push(k);
     }
-    out
 }
 
 /// A command's arguments past this many bytes are cut: enough to tell
@@ -571,21 +589,24 @@ fn environment(env: Option<&Value>) -> (Map<String, Value>, usize) {
 }
 
 /// A record's place in the tree: the programs above `pid` (`parents`, with
-/// their arguments, and `lineage`, without), and its `session`.
+/// their arguments, and `lineage`, without), each ending where the chain
+/// does, and its `session`. launchd itself has none.
 fn situate(out: &mut Map<String, Value>, pid: i64, ppid: i64, rec: &Map<String, Value>) {
-    let above = parents(ppid);
-    if !above.is_empty() {
-        let shown: Vec<String> = above
+    if pid > 1 {
+        let (above, end) = parents(ppid);
+        let mut shown: Vec<String> = above
             .iter()
             .map(|k| match &k.command {
                 Some(c) => format!("{} {c}", k.who()),
                 None => k.who().to_string(),
             })
             .collect();
+        shown.push(end.to_string());
         out.insert("parents".into(), json!(shown));
         // who each is without its arguments, for the summary to tell the same
         // program run by the person from one run by a package's script
-        let lineage: Vec<&str> = above.iter().map(Known::who).collect();
+        let mut lineage: Vec<&str> = above.iter().map(Known::who).collect();
+        lineage.push(end);
         out.insert("lineage".into(), json!(lineage));
     }
     let (sid, who) = entry(pid);
