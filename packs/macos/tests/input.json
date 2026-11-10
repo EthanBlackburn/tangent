@@ -1204,8 +1204,6 @@
    "cwd": "/Users/dev/code/x",
    "text": "install the dependencies and run the tests",
    "pids": [
-    310,
-    309,
     300
    ]
   }

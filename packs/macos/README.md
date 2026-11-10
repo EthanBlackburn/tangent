@@ -116,28 +116,29 @@ repeated snapshot does no harm. `ps/ps_test.py` checks it.
 
 Endpoint Security shows what an AI coding agent ran and never why: the same
 `aws` calls are the person's request or an injected instruction, and only the
-prompt tells them apart. Claude Code runs a hook on every prompt the person
-submits; `agent/prompt.py`, standard library only, is that hook, and writes
-the prompt (to 4000 characters), the agent's session id and working directory,
-and three pids (itself, its parent, its grandparent: one of the last two is
-the agent) as one JSON line to the eslogger socket. In
-`~/.claude/settings.json`:
+prompt tells them apart. Claude Code writes each session to a transcript
+(`~/.claude/projects/<project>/<session id>.jsonl`), marks the entries a
+person typed (`origin.kind` is `human`; a tool's result, a system notice and
+the agent's prompt to a subagent are entries too), and keeps
+`~/.claude/sessions/<pid>.json` for each running agent. `agent/transcripts.py`,
+standard library only and run as you, follows the transcripts and writes each
+typed prompt (to 4000 characters) with the agent's session id, working
+directory and pid as one JSON line:
 
-```json
-{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command",
-  "command": "python3 /path/to/packs/macos/agent/prompt.py /path/to/es.sock"}]}]}}
-```
+    python3 agent/transcripts.py | nc -U es.sock
 
-The plugin makes it a `prompt` record in the session of the first of those
-pids it knows, and the summary shows the session's latest three prompts, each
-to 600 bytes with its time, as `asked`: this window's and, from state for two
-hours, the ones before, since what an agent runs for an hour was asked for
-once. A window that holds only a prompt is not judged alone. The hook prints
-nothing (a prompt hook's output goes into the agent's context), never fails
-the prompt, and gives up after a second when nothing listens. Anything running
-as the person can write a line to the socket, so a prompt is what the hook
-reported, not proof: the agent's transcript holds the same text.
-`agent/prompt_test.py` checks it.
+It starts with the latest prompt of each session touched in the last two
+hours, since what an agent is doing was asked for before the capture began,
+and then reads what is appended. Nothing in Claude Code's settings changes,
+and sessions already open are covered. The plugin makes each line a `prompt`
+record in the session of the agent's process, and the summary shows the
+session's latest three prompts, each to 600 bytes with its time, as `asked`:
+this window's and, from state for two hours, the ones before, since what an
+agent runs for an hour was asked for once. A window that holds only a prompt
+is not judged alone. The transcript's format is Claude Code's own and may
+change with a release; a line the script cannot read is skipped. Anything
+running as the person can write a transcript or a line to the socket, so a
+prompt is what was recorded, not proof. `agent/transcripts_test.py` checks it.
 
 ## Network
 
@@ -237,7 +238,7 @@ sent, and the package's contents, are not in these records.
 ## Tests
 
 `tests/input.json` is thirty-eight synthetic eslogger records, two of
-net.py's lines, two of ps.py's and one of prompt.py's (version 10,
+net.py's lines, two of ps.py's and one of transcripts.py's (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
 started from it with `ANTHROPIC_BASE_URL` set, the person's prompt to it, the agent saving its config and
 reading the keychain, a package install under it whose `node` reads
