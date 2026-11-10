@@ -21,7 +21,8 @@ wit_bindgen::generate!({
 use exports::tangent::logs::mapper::{Guest, Meta, Pred, Selector};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use tangent::logs::log::Logview;
+use tangent::logs::log::{Logview, Scalar};
+use tangent::logs::state;
 
 struct Component;
 
@@ -43,6 +44,14 @@ const CONNECTED: usize = 10;
 /// Other events shown per program (a permission granted, a login item
 /// added): each is rare and its own story.
 const OTHER: usize = 10;
+
+/// Prompts shown per session, the latest: a long task still has its request.
+const ASKED: usize = 3;
+/// A prompt shown to this many bytes.
+const PROMPT_BYTES: usize = 600;
+/// A session's prompts are kept this long for its later windows: what an
+/// agent runs for an hour was asked for once, at the start.
+const ASKED_TTL_MS: u64 = 7_200_000;
 
 /// `_facts` keys that are not a file's group.
 const NOT_GROUPS: &[&str] = &["rename_over", "scratch_program", "unsigned", "steering_env"];
@@ -357,12 +366,55 @@ fn key_of(r: &Value) -> (String, Vec<String>) {
     (program_of(r), above)
 }
 
+/// A session's prompts with this window's added: the latest [`ASKED`].
+fn latest(mut earlier: Vec<Value>, now: Vec<Value>) -> Vec<Value> {
+    earlier.extend(now);
+    let n = earlier.len().saturating_sub(ASKED);
+    earlier.split_off(n)
+}
+
+/// The prompts a session's summary shows: this window's and the ones before
+/// them, which state keeps under the session's id and entry point (a pid
+/// comes back; its entry point's name with it, seldom).
+fn carried(rec: &Value, now: Vec<Value>) -> Vec<Value> {
+    let key = format!(
+        "asked:{}:{}",
+        s(rec, "/session/id").unwrap_or("?"),
+        s(rec, "/session/entry").unwrap_or("?")
+    );
+    let earlier = match state::get(&key) {
+        Ok(Some(Scalar::Str(v))) => serde_json::from_str(&v).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let fresh = !now.is_empty();
+    let all = latest(earlier, now);
+    if fresh {
+        if let Ok(v) = serde_json::to_string(&all) {
+            let _ = state::set(&key, &Scalar::Str(v), Some(ASKED_TTL_MS));
+        }
+    }
+    all
+}
+
 /// One session's records, in the order they came, into its summary.
 fn summary(id: &str, records: &[Value]) -> Value {
     let first = &records[0];
     let entry = s(first, "/session/entry").unwrap_or("?").to_string();
     let mut programs: Vec<((String, Vec<String>), Program)> = Vec::new();
+    // what the person asked an agent: the session's, not a program's
+    let mut asked: Vec<Value> = Vec::new();
     for r in records {
+        if r["event"] == "prompt" {
+            let mut m = Map::new();
+            m.insert("at".into(), r.get("ts").cloned().unwrap_or(Value::Null));
+            if let Some(a) = s(r, "/prompt/agent") {
+                m.insert("agent".into(), json!(a));
+            }
+            let text = s(r, "/prompt/text").unwrap_or("");
+            m.insert("prompt".into(), json!(cut(text, PROMPT_BYTES)));
+            asked.push(Value::Object(m));
+            continue;
+        }
         let who = key_of(r);
         let i = match programs.iter().position(|(w, _)| *w == who) {
             Some(i) => i,
@@ -453,10 +505,13 @@ fn summary(id: &str, records: &[Value]) -> Value {
             "entry": tilde(&entry),
             "from": first.get("ts").cloned().unwrap_or(Value::Null),
             "to": last.get("ts").cloned().unwrap_or(Value::Null),
-            "events": records.len(),
+            "events": records.len() - asked.len(),
         },
         "programs": shown,
     });
+    if !asked.is_empty() {
+        rec["asked"] = Value::Array(asked);
+    }
     if total > PROGRAMS {
         rec["more_programs"] = json!(total - PROGRAMS);
     }
@@ -500,7 +555,25 @@ impl Guest for Component {
             let mut rs = by.remove(&key).unwrap_or_default();
             rs.sort_by(|a, b| s(a, "/ts").cmp(&s(b, "/ts")));
             let id = key.split('\t').next().unwrap_or("?");
-            serde_json::to_writer(&mut out, &summary(id, &rs)).map_err(|e| e.to_string())?;
+            let mut rec = summary(id, &rs);
+            let now = match rec.get_mut("asked").map(Value::take) {
+                Some(Value::Array(a)) => a,
+                _ => Vec::new(),
+            };
+            let asked = carried(&rec, now);
+            if asked.is_empty() {
+                if let Some(m) = rec.as_object_mut() {
+                    m.remove("asked");
+                }
+            } else {
+                rec["asked"] = Value::Array(asked);
+            }
+            // a window that holds only a prompt is kept for the next and
+            // not judged alone
+            if rec["programs"].as_array().is_some_and(Vec::is_empty) {
+                continue;
+            }
+            serde_json::to_writer(&mut out, &rec).map_err(|e| e.to_string())?;
             out.push(b'\n');
         }
         Ok(out)
@@ -577,7 +650,8 @@ mod tests {
             "{}",
             node["files"]
         );
-        assert_eq!(s["session"]["events"], tab.len());
+        // every record but the prompt, which is the session's `asked`
+        assert_eq!(s["session"]["events"], tab.len() - 1);
     }
 
     /// A program's chain says where it ends, and whom it works for: the
@@ -631,6 +705,47 @@ mod tests {
             .find(|p| p["program"] == "Google Chrome")
             .unwrap();
         assert_eq!(stranger["parents"], json!(["(unknown)"]));
+    }
+
+    /// What the person asked the agent is the session's `asked`, and no
+    /// program of its own.
+    #[test]
+    fn a_prompt_is_what_the_session_was_asked() {
+        let recs: Vec<Value> =
+            serde_json::from_str(include_str!("../../tests/expected.json")).unwrap();
+        let tab: Vec<Value> = recs
+            .iter()
+            .filter(|r| r["session"]["id"] == "200")
+            .cloned()
+            .collect();
+        let s = summary("200", &tab);
+        assert_eq!(
+            s["asked"],
+            json!([{"at": "2026-11-03T20:00:06.000006000Z", "agent": "claude-code",
+                    "prompt": "install the dependencies and run the tests"}])
+        );
+        assert_eq!(s["session"]["events"], tab.len() - 1);
+        let agent = "/Users/dev/.local/share/agent/versions/2.0.0/agent";
+        let of_agent: Vec<&Value> = s["programs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                p["path"]
+                    .as_str()
+                    .is_some_and(|x| agent.ends_with(x.trim_start_matches('~')))
+            })
+            .collect();
+        assert_eq!(of_agent.len(), 1, "{of_agent:?}");
+    }
+
+    /// A later window shows the session's latest prompts, oldest first.
+    #[test]
+    fn the_latest_prompts_are_kept() {
+        let p = |n: u32| json!({"at": n, "prompt": format!("p{n}")});
+        let all = latest(vec![p(1), p(2)], vec![p(3), p(4)]);
+        assert_eq!(all, vec![p(2), p(3), p(4)]);
+        assert_eq!(latest(vec![p(1)], Vec::new()), vec![p(1)]);
     }
 
     /// The fixture's TCC grant: Full Disk Access for a binary in /tmp.
