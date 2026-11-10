@@ -40,8 +40,9 @@ sees it:
 | `fork`, `exit` | never: they build the process tree |
 | anything else (`btm_launch_item_add`, `tcc_modify`) | always, as it came, less its `stat` blocks |
 
-The groups are the catalog's, plus credentials and what runs on its own
-(`src/paths.rs` has the paths):
+The agent groups are the catalog's; credentials and what runs on its own are
+what any attack on a developer goes for: a supply-chain worm's token sweep, a
+Mac stealer's browser stores and wallets (`src/paths.rs` has the paths):
 
 | `_facts` key | files |
 |---|---|
@@ -50,8 +51,8 @@ The groups are the catalog's, plus credentials and what runs on its own
 | `agent_mcp` | `~/.claude.json` (and its `.tmp.*`), `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`, VS Code's and Claude Desktop's configs, Windsurf's `mcp_config.json`, `.kiro/settings/mcp.json`, `.amazonq/mcp.json`, `opencode.json` |
 | `agent_state` | `~/.claude/projects/` (the store itself too: a listing opens it), `~/.claude/history.jsonl`, `~/.codex/sessions/`, `~/.codex/history.jsonl`, `~/.gemini/tmp/`, `~/.cursor/chats/` |
 | `agent_extensions` | `~/.claude/plugins/`, `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/extensions/`, `~/.cursor/extensions/`, `~/.vscode/extensions/` |
-| `credentials` | `~/.aws/`, `~/.ssh/`, `~/.gnupg/`, `~/.npmrc`, `~/.netrc`, `~/.docker/config.json`, `~/.kube/config`, `~/.config/gh/`, `~/.codex/auth.json`, the keychains, `.env` and `.env.*` |
-| `persistence` | `~/.zshrc` and the other rc files, `~/Library/LaunchAgents/`, `/Library/LaunchAgents/`, `/Library/LaunchDaemons/`, `.git/hooks/`, `.git/config`, `.github/workflows/` |
+| `credentials` | `~/.aws/`, `~/.ssh/`, `~/.gnupg/`, `~/.npmrc`, `~/.netrc`, `~/.docker/config.json`, `~/.kube/config`, `~/.config/gh/`, `~/.codex/auth.json`, gcloud, Azure, `.pypirc`, gem, cargo and git credentials, Terraform and Vault tokens, the 1Password CLI's, the keychains, `.env` and `.env.*`; every browser's saved passwords, cookies, cards and `Local State`, Firefox's and Safari's; wallet apps and wallet extensions' storage; 1Password's and Bitwarden's vaults, `.kdbx` files; Telegram's and Discord's sessions |
+| `persistence` | `~/.zshrc` and the other rc files, `~/Library/LaunchAgents/`, `/Library/LaunchAgents/`, `/Library/LaunchDaemons/`, `/Library/StartupItems/`, `.git/hooks/`, `.git/config`, `~/.gitconfig`, `.github/workflows/`, Python's `.pth` files and `sitecustomize.py`, cron, `/etc/periodic/`, `/etc/sudoers`, `/etc/hosts` |
 
 Each record carries the program that acted (`process`: path, signing
 identity, Developer ID team, platform, uid, tty, the responsible app, and for

@@ -43,7 +43,7 @@ impl Group {
             Group::Mcp => "an AI agent's MCP configuration: which servers it connects to and runs",
             Group::State => "an AI agent's transcripts or session state: every prompt, reply and command it ran",
             Group::Extensions => "an AI agent's plugins, skills or editor extensions: code it loads",
-            Group::Credentials => "a credential file: cloud, registry, SSH, signing or API keys",
+            Group::Credentials => "a credential file: cloud, registry, SSH, signing or API keys, a browser's passwords or cookies, a wallet, a password manager's vault",
             Group::Persistence => "runs at login, in every shell, on every git command, or in CI on every push",
         }
     }
@@ -113,6 +113,132 @@ const RULES: &[Rule] = &[
     rule(Group::Credentials, "~/Library/Keychains/", "", ""),
     rule(Group::Credentials, "", "", "/.env"),
     rule(Group::Credentials, "", "/.env.", ""),
+    // more tokens a worm sweeps for (Shai-Hulud: npm, GitHub, cloud)
+    rule(Group::Credentials, "~/.config/gcloud/", "", ""),
+    rule(Group::Credentials, "~/.azure/", "", ""),
+    rule(Group::Credentials, "~/.pypirc", "", ""),
+    rule(Group::Credentials, "~/.gem/credentials", "", ""),
+    rule(Group::Credentials, "~/.cargo/credentials", "", ""),
+    rule(Group::Credentials, "~/.git-credentials", "", ""),
+    rule(Group::Credentials, "~/.config/git/credentials", "", ""),
+    rule(
+        Group::Credentials,
+        "~/.terraform.d/credentials.tfrc.json",
+        "",
+        "",
+    ),
+    rule(Group::Credentials, "~/.vault-token", "", ""),
+    rule(Group::Credentials, "~/.config/op/", "", ""),
+    // what a Mac stealer takes: a browser's saved passwords, cookies, cards
+    // and the key that opens them (every Chromium browser keeps them under
+    // its own Application Support directory), Firefox's, Safari's cookies
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/",
+        "",
+        "/Login Data",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/",
+        "",
+        "/Cookies",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/",
+        "",
+        "/Web Data",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/",
+        "",
+        "/Local State",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/Firefox/Profiles/",
+        "",
+        "/logins.json",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/Firefox/Profiles/",
+        "",
+        "/key4.db",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/Firefox/Profiles/",
+        "",
+        "/cookies.sqlite",
+    ),
+    rule(Group::Credentials, "~/Library/Cookies/", "", ""),
+    rule(
+        Group::Credentials,
+        "~/Library/Containers/com.apple.Safari/Data/Library/Cookies/",
+        "",
+        "",
+    ),
+    // crypto wallets: desktop apps, and the browser extensions' storage
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/",
+        "/Local Extension Settings/",
+        "",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/Exodus/",
+        "",
+        "",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/Electrum/",
+        "",
+        "",
+    ),
+    rule(Group::Credentials, "~/.electrum/", "", ""),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/atomic/",
+        "",
+        "",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/Ledger Live/",
+        "",
+        "",
+    ),
+    // password managers' vaults, and chat apps' sessions
+    rule(
+        Group::Credentials,
+        "~/Library/Group Containers/2BUA8C4S2C.com.1password/",
+        "",
+        "",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/Bitwarden/",
+        "",
+        "",
+    ),
+    rule(Group::Credentials, "", "", ".kdbx"),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/Telegram Desktop/",
+        "",
+        "",
+    ),
+    rule(
+        Group::Credentials,
+        "~/Library/Application Support/discord/Local Storage/",
+        "",
+        "",
+    ),
     // settings and hooks (H)
     rule(Group::Settings, "", "", "/.claude/settings.json"),
     rule(Group::Settings, "", "", "/.claude/settings.local.json"),
@@ -188,6 +314,24 @@ const RULES: &[Rule] = &[
     rule(Group::Persistence, "", "/.git/hooks/", ""),
     rule(Group::Persistence, "", "", "/.git/config"),
     rule(Group::Persistence, "", "/.github/workflows/", ""),
+    // every git command reads them: hooksPath, fsmonitor, an ssh command
+    rule(Group::Persistence, "~/.gitconfig", "", ""),
+    rule(Group::Persistence, "~/.config/git/config", "", ""),
+    // what Python runs at every start
+    rule(Group::Persistence, "", "/site-packages/", ".pth"),
+    rule(
+        Group::Persistence,
+        "",
+        "/site-packages/",
+        "/sitecustomize.py",
+    ),
+    // cron, and the system's: who may be root, where names resolve
+    rule(Group::Persistence, "/private/var/at/tabs/", "", ""),
+    rule(Group::Persistence, "/usr/lib/cron/tabs/", "", ""),
+    rule(Group::Persistence, "/private/etc/periodic/", "", ""),
+    rule(Group::Persistence, "/private/etc/sudoers", "", ""),
+    rule(Group::Persistence, "/private/etc/hosts", "", ""),
+    rule(Group::Persistence, "/Library/StartupItems/", "", ""),
     // the rest of a Codex home, after its state, memory and skills have their own
     rule(Group::Settings, "", "/.codex/", ""),
 ];
@@ -330,6 +474,38 @@ mod tests {
         assert_eq!(g("/Users/a/code/x/src/main.rs"), None);
         assert_eq!(g("/Users/Shared/x/.env"), Some("credentials"));
         assert_eq!(g("/dev/ttys003"), None);
+    }
+
+    #[test]
+    fn what_a_stealer_or_a_worm_reads_is_kept() {
+        let g = |p: &str| group(p).map(Group::key);
+        for p in [
+            "/Users/a/Library/Application Support/Google/Chrome/Default/Login Data",
+            "/Users/a/Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies",
+            "/Users/a/Library/Application Support/Google/Chrome/Local State",
+            "/Users/a/Library/Application Support/Firefox/Profiles/x.default/key4.db",
+            "/Users/a/Library/Application Support/Google/Chrome/Default/Local Extension Settings/nkbihfbeogaeaoehlefnkodbefgpgknn/000003.log",
+            "/Users/a/Library/Application Support/Exodus/exodus.wallet/seed.seco",
+            "/Users/a/.config/gcloud/application_default_credentials.json",
+            "/Users/a/.pypirc",
+            "/Users/a/Documents/vault.kdbx",
+        ] {
+            assert_eq!(g(p), Some("credentials"), "{p}");
+        }
+        for p in [
+            "/Users/a/.gitconfig",
+            "/private/etc/hosts",
+            "/private/etc/sudoers.d/x",
+            "/Users/a/.venv/lib/python3.14/site-packages/evil.pth",
+            "/private/var/at/tabs/a",
+        ] {
+            assert_eq!(g(p), Some("persistence"), "{p}");
+        }
+        // a browser's other files are its own business
+        assert_eq!(
+            g("/Users/a/Library/Application Support/Google/Chrome/Default/History"),
+            None
+        );
     }
 
     #[test]
