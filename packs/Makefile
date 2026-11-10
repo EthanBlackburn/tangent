@@ -9,11 +9,15 @@ PACKS := $(filter $(PACKS),$(patsubst %/ingest.yaml,%,$(wildcard */ingest.yaml))
 # Each pack alone: its plugin compiled and its fixtures run from its own
 # ingest.yaml, against the tables in its tests/, so a pack that leans on
 # another file fails here.
-test: $(addprefix test-,$(PACKS)) test-macos-net test-baseline test-shared
+test: $(addprefix test-,$(PACKS)) test-macos-net test-macos-ps test-baseline test-shared
 
 # packs/macos's tcpdump joiner, which is Python, not a plugin.
 test-macos-net:
 	cd macos/net && python3 -m unittest net_test
+
+# packs/macos's snapshot of what was running when the capture began.
+test-macos-ps:
+	cd macos/ps && python3 -m unittest ps_test
 
 test-%:
 	cd $* && $(TANGENT) plugin compile --config ingest.yaml && $(TANGENT) plugin test --config ingest.yaml
