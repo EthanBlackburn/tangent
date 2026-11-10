@@ -11,6 +11,8 @@ writes what it flags to `alerts.ndjson`. One config, one process.
 tangent plugin compile --config tangent.yaml
 tangent run --config haiku.yaml &              # Claude Haiku on Bedrock, AWS_PROFILE set; or tangent.yaml, a local model
 sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify | nc -U es.sock
+sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
+  | python3 ../../packs/macos/net/net.py | nc -U net.sock    # optional: network connections
 tail -f alerts.ndjson
 ```
 

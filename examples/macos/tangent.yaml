@@ -8,12 +8,17 @@
 #   tangent run --config tangent.yaml &     # a local model: JUDGE_URL, JUDGE_MODEL (packs/judge/README.md); haiku.yaml for Claude Haiku
 #   sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify \
 #     | nc -U es.sock
+#   sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
+#     | python3 ../../packs/macos/net/net.py | nc -U net.sock
 #   tail -f alerts.ndjson
 #
 # eslogger needs root, and the terminal it runs in Full Disk Access (System
 # Settings, Privacy & Security), restarted after the grant. It writes to
 # stdout only, so nc joins it to the socket: root writes it, you own it, and
-# nothing listens on a port.
+# nothing listens on a port. Endpoint Security sees no network: tcpdump does,
+# each packet tagged with the process that sent it, and net.py, run as you,
+# makes the new connections of it (packs/macos/README.md). It is optional:
+# without it the net socket stays quiet.
 include:
   - ../../packs/judge/ingest.yaml             # the judge, and the enrich-ip and behavior-baseline packs it includes
   - ../../packs/macos/ingest.yaml             # plugin macos, on one worker
@@ -48,9 +53,14 @@ sources:
   es:
     type: socket
     socket_path: es.sock
+  net:                           # new connections, from tcpdump through packs/macos/net/net.py
+    type: socket
+    socket_path: net.sock
 
 dag:
   - from: es
+    to: [macos]
+  - from: net                    # joined to the same process tree
     to: [macos]
   - from: macos                  # every record kept; each session summarized
     to: [lake, macos_sessions]

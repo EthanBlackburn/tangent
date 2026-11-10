@@ -16,6 +16,8 @@ cd examples/macos
 tangent plugin compile --config tangent.yaml
 tangent run --config haiku.yaml &               # or tangent.yaml: a local model
 sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify | nc -U es.sock
+sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
+  | python3 ../../packs/macos/net/net.py | nc -U net.sock    # optional: network connections
 tail -f alerts.ndjson
 ```
 
@@ -89,6 +91,27 @@ or a project's node_modules, not a global install), `unsigned` and
 `rename_over`. Command lines are cut, 400 bytes an argument and 1,500 in
 all, with the rest counted. About 700 bytes a record.
 
+## Network
+
+Endpoint Security has no network event, so the pack reads connections from
+`tcpdump`, which on macOS tags each packet with the process that sent it
+(`-k NP` on the `pktap` interface): 148 of 153 new connections in a minute
+of this Mac's traffic carried the tag. `net/net.py`, standard library only
+and run as you (only tcpdump is root), takes what starts a connection (TCP
+SYNs, TLS ClientHellos, QUIC Initials, DNS answers: `net.py --filter`) and
+writes one JSON line each: the process and pid, the app a system daemon
+connected for (`eproc`), the address, port and protocol, and the host, from
+the hello's server name or a DNS answer it saw before. The `macos` plugin
+makes each a `connect` record, joined to the process tree and session like
+any event, and the summary lists each program's destinations in
+`connected`. A hello that a post-quantum key share makes longer than one
+segment may hold its server name in the second, which the filter does not
+take: on a 30-second capture, half of a browser's and an Electron app's
+connections; curl, node and Python name it in the first. QUIC's hello is
+encrypted, so a QUIC connection is named by DNS or not at all. Nothing past
+a hello is read: no URL, no payload, no bytes counted. `net/net_test.py`
+checks it (`python3 -m unittest net_test` in `net/`).
+
 ## The judge
 
 The judge reads sessions, not records. `macos_sessions` is grouped by
@@ -158,19 +181,23 @@ agent's children then read credentials under it. `git push`, `curl` to GitHub
 and `npm publish` are execs with the worm's node in their parents; a workflow
 file committed for persistence is a write to `.github/workflows/`; the wipe
 it runs when it finds no token is unlinks of transcripts, settings and
-credentials by bun. The exfiltration request itself and the package's
-contents are not in these records (below).
+credentials by bun. With net.py, the worm's calls to GitHub's API and to
+its own servers are `connected` on the program that made them; what they
+sent, and the package's contents, are not in these records.
 
 ## Tests
 
-`tests/input.json` is thirty-five synthetic eslogger records (version 10,
+`tests/input.json` is thirty-six synthetic eslogger records and two of
+net.py's lines (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
 started from it with `ANTHROPIC_BASE_URL` set, the agent saving its config and
 reading the keychain, a package install under it whose `node` reads
 credentials and a transcript, plants a settings file and `CLAUDE.md`, and runs
-an unsigned program from `/tmp` that installs a LaunchAgent; and around them
-the noise the plugin drops. `tests/expected.json` is the twenty records the
-plugin keeps. `make test` in `packs/` runs it; `cargo test` here runs the
+an unsigned program from `/tmp` that installs a LaunchAgent, which, once
+the package script and the agent above it have exited, reads an SSH key and
+calls evil.example; a browser's QUIC connection made by its helper; and
+around them the noise the plugin drops. `tests/expected.json` is the
+twenty-three records the plugin keeps. `make test` in `packs/` runs it; `cargo test` here runs the
 path groups' unit tests, and in `sessions/` the summary's, one of them over
 `tests/expected.json` as one session (the plugin test harness calls a plugin
 a record at a time, without its grouping). The plugin drops records, so `make fixtures-macos`
@@ -179,8 +206,9 @@ refuses to rewrite `expected.json`; after a change, run the test and copy
 
 ## Not here
 
-Endpoint Security has no network event: where a program connected is not in
-these records, only that it ran `curl`. The capture this was built against
+Network is read from tcpdump (above), so a connection's payload, and a
+browser's hosts that DNS did not name, are not in these records. The
+capture this was built against
 shows what an agent does to its own files; how Codex, Gemini and Cursor write
 theirs, and what an agent's own exec looks like when a script starts it, are
 written from the catalog, not seen. `btm_launch_item_add` and `tcc_modify`
