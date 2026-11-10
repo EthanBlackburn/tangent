@@ -38,6 +38,8 @@ const RAN: usize = 25;
 const PROGRAMS: usize = 25;
 /// A command line shown to this many bytes.
 const COMMAND_BYTES: usize = 200;
+/// Destinations shown per program, the most used first.
+const CONNECTED: usize = 10;
 /// Other events shown per program (a permission granted, a login item
 /// added): each is rare and its own story.
 const OTHER: usize = 10;
@@ -80,6 +82,8 @@ struct Program {
     facts: BTreeSet<String>,
     /// events that are neither a run nor a file, each as [`gist`] says
     other: Vec<Value>,
+    /// where it connected (`host:port`, else the address), with how often
+    connected: Vec<(String, usize)>,
 }
 
 impl Program {
@@ -90,6 +94,7 @@ impl Program {
             || !self.facts.is_empty()
             || !self.env.is_empty()
             || !self.other.is_empty()
+            || !self.connected.is_empty()
     }
 }
 
@@ -221,6 +226,25 @@ fn note(p: &mut Program, r: &Value) {
         }
         if let Some(Value::Object(env)) = r.pointer("/exec/env") {
             p.env.extend(env.clone());
+        }
+    }
+    if event == "connect" {
+        let to = s(r, "/connect/host")
+            .map(str::to_string)
+            .or_else(|| s(r, "/connect/dst").map(str::to_string))
+            .unwrap_or_else(|| "?".into());
+        let port = r
+            .pointer("/connect/port")
+            .map_or(String::new(), |p| format!(":{p}"));
+        let quic = if s(r, "/connect/proto") == Some("quic") {
+            " (quic)"
+        } else {
+            ""
+        };
+        let line = format!("{to}{port}{quic}");
+        match p.connected.iter_mut().find(|(c, _)| *c == line) {
+            Some((_, n)) => *n += 1,
+            None => p.connected.push((line, 1)),
         }
     }
     if let Some(detail) = r.get("detail") {
@@ -396,6 +420,20 @@ fn summary(id: &str, records: &[Value]) -> Value {
             }
             if !p.other.is_empty() {
                 m.insert("other".into(), Value::Array(p.other));
+            }
+            if !p.connected.is_empty() {
+                let mut to = p.connected;
+                to.sort_by_key(|c| std::cmp::Reverse(c.1));
+                let more = to.len().saturating_sub(CONNECTED);
+                let mut lines: Vec<Value> = to
+                    .into_iter()
+                    .take(CONNECTED)
+                    .map(|(c, n)| json!(if n > 1 { format!("{c} ×{n}") } else { c }))
+                    .collect();
+                if more > 0 {
+                    lines.push(json!(format!("… {more} more")));
+                }
+                m.insert("connected".into(), Value::Array(lines));
             }
             Value::Object(m)
         })
@@ -651,6 +689,42 @@ mod tests {
             s["programs"][0]["files"]["renamed into place"][0],
             "/tmp/c (from ~/.aws/credentials)"
         );
+    }
+
+    /// The fixture's agent, left running by a postinstall, calls home.
+    #[test]
+    fn a_connection_is_its_programs_destination() {
+        let recs: Vec<Value> =
+            serde_json::from_str(include_str!("../../tests/expected.json")).unwrap();
+        let tab: Vec<Value> = recs
+            .iter()
+            .filter(|r| r["session"]["id"] == "200")
+            .cloned()
+            .collect();
+        let s = summary("200", &tab);
+        let agentd = s["programs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["connected"].is_array())
+            .unwrap();
+        assert_eq!(agentd["connected"], json!(["evil.example:443"]));
+        assert_eq!(
+            agentd["parents"][0],
+            "node ~/code/x/node_modules/evil-pkg/postinstall.js"
+        );
+        let many: Vec<Value> = (0..14)
+            .map(|i| {
+                json!({"ts": format!("t{i:02}"), "event": "connect", "session": {"id": "9", "entry": "x"},
+                       "process": {"name": "Google Chrome"},
+                       "connect": {"dst": format!("198.51.100.{i}"), "port": 443, "proto": "quic"}})
+            })
+            .collect();
+        let s = summary("9", &many);
+        let to = s["programs"][0]["connected"].as_array().unwrap();
+        assert_eq!(to.len(), CONNECTED + 1);
+        assert_eq!(to[0], "198.51.100.0:443 (quic)");
+        assert_eq!(to[CONNECTED], "… 4 more");
     }
 
     #[test]
