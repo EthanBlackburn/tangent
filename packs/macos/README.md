@@ -112,6 +112,33 @@ know, and a process's first event replaces what the snapshot said (its
 signature, and its parent unless launchd has taken it since), so a late or
 repeated snapshot does no harm. `ps/ps_test.py` checks it.
 
+## What the agent was asked
+
+Endpoint Security shows what an AI coding agent ran and never why: the same
+`aws` calls are the person's request or an injected instruction, and only the
+prompt tells them apart. Claude Code runs a hook on every prompt the person
+submits; `agent/prompt.py`, standard library only, is that hook, and writes
+the prompt (to 4000 characters), the agent's session id and working directory,
+and three pids (itself, its parent, its grandparent: one of the last two is
+the agent) as one JSON line to the eslogger socket. In
+`~/.claude/settings.json`:
+
+```json
+{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command",
+  "command": "python3 /path/to/packs/macos/agent/prompt.py /path/to/es.sock"}]}]}}
+```
+
+The plugin makes it a `prompt` record in the session of the first of those
+pids it knows, and the summary shows the session's latest three prompts, each
+to 600 bytes with its time, as `asked`: this window's and, from state for two
+hours, the ones before, since what an agent runs for an hour was asked for
+once. A window that holds only a prompt is not judged alone. The hook prints
+nothing (a prompt hook's output goes into the agent's context), never fails
+the prompt, and gives up after a second when nothing listens. Anything running
+as the person can write a line to the socket, so a prompt is what the hook
+reported, not proof: the agent's transcript holds the same text.
+`agent/prompt_test.py` checks it.
+
 ## Network
 
 Endpoint Security has no network event, so the pack reads connections from
@@ -210,9 +237,9 @@ sent, and the package's contents, are not in these records.
 ## Tests
 
 `tests/input.json` is thirty-eight synthetic eslogger records, two of
-net.py's lines and two of ps.py's (version 10,
+net.py's lines, two of ps.py's and one of prompt.py's (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
-started from it with `ANTHROPIC_BASE_URL` set, the agent saving its config and
+started from it with `ANTHROPIC_BASE_URL` set, the person's prompt to it, the agent saving its config and
 reading the keychain, a package install under it whose `node` reads
 credentials and a transcript, plants a settings file and `CLAUDE.md`, and runs
 an unsigned program from `/tmp` that installs a LaunchAgent, which, once
@@ -220,7 +247,7 @@ the package script and the agent above it have exited, reads an SSH key and
 calls evil.example; a browser's QUIC connection made by its helper, and the
 helper saving cookies; the terminal and the login above the shell, known only
 from the snapshot; and around them the noise the plugin drops.
-`tests/expected.json` is the twenty-four records the plugin keeps. `make test` in `packs/` runs it; `cargo test` here runs the
+`tests/expected.json` is the twenty-five records the plugin keeps. `make test` in `packs/` runs it; `cargo test` here runs the
 path groups' unit tests, and in `sessions/` the summary's, one of them over
 `tests/expected.json` as one session (the plugin test harness calls a plugin
 a record at a time, without its grouping). The plugin drops records, so `make fixtures-macos`

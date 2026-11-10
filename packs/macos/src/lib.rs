@@ -696,6 +696,56 @@ fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     Some((out, n))
 }
 
+/// A prompt kept to this many bytes: enough to say what was asked; a pasted
+/// file is not the request.
+const PROMPT_BYTES: usize = 4000;
+
+/// A line of agent/prompt.py: what a person asked an AI coding agent, as the
+/// agent's own prompt hook reports it. Endpoint Security shows what the
+/// agent then ran and never why, so the prompt is a record in the session
+/// the agent is in: of `pids` (the hook, what ran it, and the process above
+/// that, one of which is the agent) the first the tree knows places it. A
+/// prompt from pids the tree knows nothing of belongs to no session and is
+/// dropped.
+fn prompt(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
+    let p = rec.get("prompt")?;
+    let text = str_at(p, "/text").filter(|t| !t.trim().is_empty())?;
+    let (pid, k) = p
+        .get("pids")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_i64)
+        .find_map(|pid| known(pid).map(|k| (pid, k)))?;
+    let mut proc = Map::new();
+    proc.insert("pid".into(), json!(pid));
+    proc.insert("ppid".into(), json!(k.ppid));
+    proc.insert("path".into(), json!(k.path));
+    put(&mut proc, "name", k.name.clone());
+    let mut out = Map::new();
+    out.insert("event".into(), json!("prompt"));
+    out.insert("process".into(), Value::Object(proc));
+    situate(&mut out, pid, k.ppid, rec);
+    let mut end = text.len().min(PROMPT_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut x = Map::new();
+    x.insert("text".into(), json!(&text[..end]));
+    for f in ["agent", "session", "cwd"] {
+        if let Some(v) = p.get(f).filter(|v| v.is_string()) {
+            x.insert(f.into(), v.clone());
+        }
+    }
+    out.insert("prompt".into(), Value::Object(x));
+    let n = Norm {
+        actor: Some(k.ident),
+        kind: Some("prompt".into()),
+        principal: Some("none"),
+        ..Norm::default()
+    };
+    Some((out, n))
+}
+
 /// The record as a model reads it, and its `_norm`; None for an event that
 /// is nobody's business.
 fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
@@ -955,6 +1005,11 @@ impl Guest for Component {
                 all: vec![Pred::Has("ps.pid".to_string())],
                 none: Vec::new(),
             },
+            Selector {
+                any: Vec::new(),
+                all: vec![Pred::Has("prompt.text".to_string())],
+                none: Vec::new(),
+            },
         ]
     }
 
@@ -968,6 +1023,8 @@ impl Guest for Component {
                 None
             } else if read.contains_key("net") {
                 connection(&read)
+            } else if read.contains_key("prompt") {
+                prompt(&read)
             } else {
                 finished(&read)
             };

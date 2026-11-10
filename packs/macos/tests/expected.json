@@ -148,6 +148,45 @@
   }
  },
  {
+  "ts": "2026-11-03T20:00:06.000006000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "com.example.agent"
+  },
+  "_facts": {
+   "notes": []
+  },
+  "event": "prompt",
+  "lineage": [
+   "/bin/zsh",
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "parents": [
+   "/bin/zsh",
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "process": {
+   "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
+   "pid": 300,
+   "ppid": 200
+  },
+  "prompt": {
+   "agent": "claude-code",
+   "cwd": "/Users/dev/code/x",
+   "session": "00000000-0000-4000-8000-000000000001",
+   "text": "install the dependencies and run the tests"
+  },
+  "session": {
+   "entry": "/bin/zsh",
+   "id": "200",
+   "window": "2026-11-03T20:00"
+  }
+ },
+ {
   "ts": "2026-11-03T20:00:07.000007000Z",
   "source": "macos",
   "_norm": {
