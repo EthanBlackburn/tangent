@@ -48,10 +48,10 @@
    "org": "dev"
   },
   "_facts": {
-   "agent_env": true,
    "notes": [
-    "the environment sets where an AI agent sends its API traffic, keeps its config or sends telemetry"
-   ]
+    "the environment sets code every process loads, where traffic goes, an AI agent's config or telemetry, or names the package script that is running"
+   ],
+   "steering_env": true
   },
   "event": "exec",
   "exec": {
@@ -431,7 +431,7 @@
   "_facts": {
    "credentials": true,
    "notes": [
-    "a credential file: cloud, registry, SSH, signing or API keys"
+    "a credential file: cloud, registry, SSH, signing or API keys, a browser's passwords or cookies, a wallet, a password manager's vault"
    ]
   },
   "access": "read",
@@ -897,7 +897,7 @@
   "_facts": {
    "credentials": true,
    "notes": [
-    "a credential file: cloud, registry, SSH, signing or API keys"
+    "a credential file: cloud, registry, SSH, signing or API keys, a browser's passwords or cookies, a wallet, a password manager's vault"
    ]
   },
   "access": "read",

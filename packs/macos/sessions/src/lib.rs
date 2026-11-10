@@ -43,7 +43,7 @@ const COMMAND_BYTES: usize = 200;
 const OTHER: usize = 10;
 
 /// `_facts` keys that are not a file's group.
-const NOT_GROUPS: &[&str] = &["rename_over", "scratch_program", "unsigned", "agent_env"];
+const NOT_GROUPS: &[&str] = &["rename_over", "scratch_program", "unsigned", "steering_env"];
 
 fn s<'a>(v: &'a Value, ptr: &str) -> Option<&'a str> {
     v.pointer(ptr).and_then(Value::as_str)

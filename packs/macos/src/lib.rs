@@ -30,10 +30,13 @@ struct Component;
 
 export!(Component);
 
-/// The environment names a record keeps. They steer an agent: where it
-/// sends its API traffic, where it keeps its config and where its telemetry
-/// goes. Every other variable is dropped, with its value: a program's
-/// environment is where its keys are.
+/// The environment names a record keeps. They steer a program: where an
+/// agent sends its API traffic and keeps its config; the code an interpreter
+/// or the loader puts in every process (`NODE_OPTIONS=--require`,
+/// `DYLD_INSERT_LIBRARIES`); the proxy and certificates traffic goes
+/// through; and npm's names for the package script that is running, which
+/// say a postinstall from a dependency. Every other variable is dropped,
+/// with its value: a program's environment is where its keys are.
 const ENV_KEEP: &[&str] = &[
     "ANTHROPIC_BASE_URL",
     "OPENAI_BASE_URL",
@@ -41,7 +44,44 @@ const ENV_KEEP: &[&str] = &[
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
     "GEMINI_CLI_HOME",
+    "NODE_OPTIONS",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PERL5OPT",
+    "RUBYOPT",
+    "BASH_ENV",
+    "GIT_SSH_COMMAND",
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "npm_lifecycle_event",
+    "npm_lifecycle_script",
+    "npm_package_name",
+    "npm_package_version",
 ];
+
+/// A proxy URL without the user and password it may carry
+/// (`http://user:pass@proxy:8080`).
+fn without_userinfo(v: &str) -> String {
+    let Some((scheme, rest)) = v.split_once("://") else {
+        return v.to_string();
+    };
+    let authority = rest.split('/').next().unwrap_or(rest);
+    match authority.rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://…@{host}{}", &rest[authority.len()..]),
+        None => v.to_string(),
+    }
+}
 
 /// The `OTEL_*` names that say where telemetry goes and what it carries
 /// (`OTEL_EXPORTER_OTLP_ENDPOINT`, `..._METRICS_ENDPOINT`, `..._HEADERS`,
@@ -519,6 +559,8 @@ fn environment(env: Option<&Value>) -> (Map<String, Value>, usize) {
         if ENV_KEEP.contains(&k) || otel_matters(k) {
             let v = if k.ends_with("_HEADERS") {
                 header_names(v)
+            } else if k.to_ascii_lowercase().ends_with("_proxy") {
+                without_userinfo(v)
             } else {
                 v.to_string()
             };
@@ -669,8 +711,8 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
             x.insert("env_count".into(), json!(count));
             if !env.is_empty() {
                 n.fact(
-                    "agent_env",
-                    "the environment sets where an AI agent sends its API traffic, keeps its config or sends telemetry",
+                    "steering_env",
+                    "the environment sets code every process loads, where traffic goes, an AI agent's config or telemetry, or names the package script that is running",
                 );
                 x.insert("env".into(), Value::Object(env));
             }
@@ -912,6 +954,25 @@ mod tests {
             "https://otel.example.com"
         );
         assert!(kept.get("AWS_SECRET_ACCESS_KEY").is_none());
+    }
+
+    #[test]
+    fn a_postinstall_and_an_injected_library_are_kept_a_proxy_password_is_not() {
+        let env = json!([
+            "npm_lifecycle_event=postinstall",
+            "npm_package_name=evil-pkg",
+            "NODE_OPTIONS=--require /tmp/x.js",
+            "DYLD_INSERT_LIBRARIES=/tmp/libx.dylib",
+            "HTTPS_PROXY=http://bob:hunter2@proxy.example.com:8080",
+            "npm_config__authToken=npm_secret",
+        ]);
+        let (kept, _) = environment(Some(&env));
+        assert_eq!(kept["npm_lifecycle_event"], "postinstall");
+        assert_eq!(kept["npm_package_name"], "evil-pkg");
+        assert_eq!(kept["NODE_OPTIONS"], "--require /tmp/x.js");
+        assert_eq!(kept["DYLD_INSERT_LIBRARIES"], "/tmp/libx.dylib");
+        assert_eq!(kept["HTTPS_PROXY"], "http://…@proxy.example.com:8080");
+        assert!(kept.get("npm_config__authToken").is_none());
     }
 
     #[test]
