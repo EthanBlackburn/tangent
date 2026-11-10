@@ -570,6 +570,82 @@ fn environment(env: Option<&Value>) -> (Map<String, Value>, usize) {
     (kept, entries.len())
 }
 
+/// A record's place in the tree: the programs above `pid` (`parents`, with
+/// their arguments, and `lineage`, without), and its `session`.
+fn situate(out: &mut Map<String, Value>, pid: i64, ppid: i64, rec: &Map<String, Value>) {
+    let above = parents(ppid);
+    if !above.is_empty() {
+        let shown: Vec<String> = above
+            .iter()
+            .map(|k| match &k.command {
+                Some(c) => format!("{} {c}", k.who()),
+                None => k.who().to_string(),
+            })
+            .collect();
+        out.insert("parents".into(), json!(shown));
+        // who each is without its arguments, for the summary to tell the same
+        // program run by the person from one run by a package's script
+        let lineage: Vec<&str> = above.iter().map(Known::who).collect();
+        out.insert("lineage".into(), json!(lineage));
+    }
+    let (sid, who) = entry(pid);
+    let mut session = json!({"id": sid.to_string(), "entry": who});
+    if let Some(w) = rec.get("time").and_then(Value::as_str).and_then(window) {
+        session["window"] = json!(w);
+    }
+    out.insert("session".into(), session);
+}
+
+/// A connection from net/net.py (tcpdump's process-tagged packets): the
+/// program that opened it as the tree knows it, else as tcpdump names it, in
+/// its session like any event. A connection a system daemon made for an app
+/// is the app's (`epid`), with the daemon as `via`.
+fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
+    let c = rec.get("net")?;
+    let tagged = |k: &str| c.get(k).and_then(Value::as_str).map(str::to_string);
+    let pid = int_at(c, "/epid").or_else(|| int_at(c, "/pid"))?;
+    let named = tagged("eproc").or_else(|| tagged("proc"));
+    let k = known(pid);
+    let mut p = Map::new();
+    p.insert("pid".into(), json!(pid));
+    let ppid = k.as_ref().map_or(0, |k| k.ppid);
+    match &k {
+        Some(k) => {
+            p.insert("ppid".into(), json!(k.ppid));
+            p.insert("path".into(), json!(k.path));
+            put(&mut p, "name", k.name.clone());
+        }
+        // a process older than the log: tcpdump's name for it
+        None => put(&mut p, "name", named.clone()),
+    }
+    let mut out = Map::new();
+    out.insert("event".into(), json!("connect"));
+    out.insert("process".into(), Value::Object(p));
+    situate(&mut out, pid, ppid, rec);
+    if out["session"]["entry"] == "" {
+        out["session"]["entry"] = json!(named.clone().unwrap_or_default());
+    }
+    let mut x = Map::new();
+    for f in ["proto", "dst", "port", "host", "named_by"] {
+        if let Some(v) = c.get(f) {
+            x.insert(f.into(), v.clone());
+        }
+    }
+    if c.get("epid").is_some() {
+        put(&mut x, "via", tagged("proc"));
+    }
+    out.insert("connect".into(), Value::Object(x));
+    let target = tagged("host").or_else(|| tagged("dst"));
+    let n = Norm {
+        actor: Some(k.map(|k| k.ident).or(named).unwrap_or_default()),
+        kind: Some("connect".into()),
+        principal: Some("none"),
+        target,
+        ..Norm::default()
+    };
+    Some((out, n))
+}
+
 /// The record as a model reads it, and its `_norm`; None for an event that
 /// is nobody's business.
 fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
@@ -664,28 +740,7 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     let mut out = Map::new();
     out.insert("event".into(), json!(kind));
     out.insert("process".into(), actor.json());
-    let above = parents(actor.ppid);
-    if !above.is_empty() {
-        let shown: Vec<String> = above
-            .iter()
-            .map(|k| match &k.command {
-                Some(c) => format!("{} {c}", k.who()),
-                None => k.who().to_string(),
-            })
-            .collect();
-        out.insert("parents".into(), json!(shown));
-        // who each is without its arguments, for the summary to tell the same
-        // program run by the person from one run by a package's script
-        let lineage: Vec<&str> = above.iter().map(Known::who).collect();
-        out.insert("lineage".into(), json!(lineage));
-    }
-
-    let (sid, who) = entry(actor.pid);
-    let mut session = json!({"id": sid.to_string(), "entry": who});
-    if let Some(w) = rec.get("time").and_then(Value::as_str).and_then(window) {
-        session["window"] = json!(w);
-    }
-    out.insert("session".into(), session);
+    situate(&mut out, actor.pid, actor.ppid, rec);
 
     let mut n = Norm {
         actor: Some(job(&actor)),
@@ -809,16 +864,24 @@ impl Guest for Component {
         }
     }
 
-    /// An eslogger line: an `event` from a `process`.
+    /// An eslogger line: an `event` from a `process`; or a connection from
+    /// net/net.py.
     fn probe() -> Vec<Selector> {
-        vec![Selector {
-            any: Vec::new(),
-            all: vec![
-                Pred::Has("event".to_string()),
-                Pred::Has("process.audit_token".to_string()),
-            ],
-            none: Vec::new(),
-        }]
+        vec![
+            Selector {
+                any: Vec::new(),
+                all: vec![
+                    Pred::Has("event".to_string()),
+                    Pred::Has("process.audit_token".to_string()),
+                ],
+                none: Vec::new(),
+            },
+            Selector {
+                any: Vec::new(),
+                all: vec![Pred::Has("net.dst".to_string())],
+                none: Vec::new(),
+            },
+        ]
     }
 
     fn process_logs(input: Vec<Logview>) -> Result<Vec<u8>, String> {
@@ -826,7 +889,12 @@ impl Guest for Component {
         let mut out = Vec::new();
         for lv in input {
             let read = normkit::record(&lv.log())?;
-            if let Some((rec, n)) = finished(&read) {
+            let made = if read.contains_key("net") {
+                connection(&read)
+            } else {
+                finished(&read)
+            };
+            if let Some((rec, n)) = made {
                 // eslogger's `time`, and no `source`: the stamp is built, not read
                 let mut stamp = Stamp::of(&read);
                 if let Some(t) = read.get("time").and_then(Value::as_str) {

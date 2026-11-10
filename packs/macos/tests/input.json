@@ -5724,5 +5724,31 @@
   },
   "time": "2026-11-03T20:00:36.000036000Z",
   "version": 10
+ },
+ {
+  "time": "2026-11-03T20:00:37.000037000Z",
+  "net": {
+   "proc": "agentd",
+   "pid": 304,
+   "proto": "tcp",
+   "dst": "203.0.113.5",
+   "port": 443,
+   "host": "evil.example",
+   "named_by": "tls"
+  }
+ },
+ {
+  "time": "2026-11-03T20:00:38.000038000Z",
+  "net": {
+   "proc": "Google Chrome Helper",
+   "pid": 700,
+   "eproc": "Google Chrome",
+   "epid": 690,
+   "proto": "quic",
+   "dst": "198.51.100.7",
+   "port": 443,
+   "host": "cdn.example",
+   "named_by": "dns"
+  }
  }
 ]

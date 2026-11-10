@@ -928,5 +928,73 @@
    "id": "200",
    "window": "2026-11-03T20:00"
   }
+ },
+ {
+  "ts": "2026-11-03T20:00:37.000037000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "/private/tmp/.x/agentd"
+  },
+  "_facts": {
+   "notes": []
+  },
+  "connect": {
+   "dst": "203.0.113.5",
+   "host": "evil.example",
+   "named_by": "tls",
+   "port": 443,
+   "proto": "tcp"
+  },
+  "event": "connect",
+  "lineage": [
+   "node ~/code/x/node_modules/evil-pkg/postinstall.js",
+   "/bin/sh",
+   "/Users/dev/.local/share/agent/versions/2.0.0/agent",
+   "/bin/zsh"
+  ],
+  "parents": [
+   "node ~/code/x/node_modules/evil-pkg/postinstall.js",
+   "/bin/sh -c npm install",
+   "/Users/dev/.local/share/agent/versions/2.0.0/agent",
+   "/bin/zsh"
+  ],
+  "process": {
+   "path": "/private/tmp/.x/agentd",
+   "pid": 304,
+   "ppid": 303
+  },
+  "session": {
+   "entry": "/bin/zsh",
+   "id": "200",
+   "window": "2026-11-03T20:00"
+  }
+ },
+ {
+  "ts": "2026-11-03T20:00:38.000038000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "Google Chrome"
+  },
+  "_facts": {
+   "notes": []
+  },
+  "connect": {
+   "dst": "198.51.100.7",
+   "host": "cdn.example",
+   "named_by": "dns",
+   "port": 443,
+   "proto": "quic",
+   "via": "Google Chrome Helper"
+  },
+  "event": "connect",
+  "process": {
+   "name": "Google Chrome",
+   "pid": 690
+  },
+  "session": {
+   "entry": "Google Chrome",
+   "id": "690",
+   "window": "2026-11-03T20:00"
+  }
  }
 ]
