@@ -8,6 +8,7 @@
 #   tangent run --config tangent.yaml &     # a local model: JUDGE_URL, JUDGE_MODEL (packs/judge/README.md); haiku.yaml for Claude Haiku
 #   sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify \
 #     | nc -U es.sock
+#   python3 ../../packs/macos/ps/ps.py | nc -U es.sock     # once: what was already running
 #   sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
 #     | python3 ../../packs/macos/net/net.py | nc -U net.sock
 #   tail -f alerts.ndjson
