@@ -20,6 +20,10 @@ plugins:
     tests:
       - input: tests/input.json
         expected: tests/expected.json
+        enrichment_tables:            # what the fixture was written against, in any config
+          geo: { type: document, path: tests/addresses.yaml }   # GeoLite2's answers for its addresses
+          asn: { type: document, path: tests/addresses.yaml }
+          networks: { type: cidr, path: tests/networks.csv }
   # A session's records a few minutes at a time, into one summary for the
   # judge: what each of its programs ran and touched. Your config routes plugin
   # macos to it, and it to the judge.

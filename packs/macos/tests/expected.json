@@ -1121,6 +1121,14 @@
    "actor": "/private/tmp/.x/agentd"
   },
   "_facts": {
+   "ips": {
+    "connect.dst": {
+     "asn": 64500,
+     "country": "NL",
+     "hosting": "datacenter",
+     "org": "Example Hosting B.V."
+    }
+   },
    "notes": []
   },
   "connect": {
@@ -1167,6 +1175,13 @@
    "actor": "Google Chrome"
   },
   "_facts": {
+   "ips": {
+    "connect.dst": {
+     "asn": 64501,
+     "country": "US",
+     "org": "Example CDN, Inc."
+    }
+   },
    "notes": []
   },
   "connect": {

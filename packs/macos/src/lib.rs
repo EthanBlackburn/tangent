@@ -686,13 +686,18 @@ fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     }
     out.insert("connect".into(), Value::Object(x));
     let target = tagged("host").or_else(|| tagged("dst"));
-    let n = Norm {
+    let mut n = Norm {
         actor: Some(k.map(|k| k.ident).or(named).unwrap_or_default()),
         kind: Some("connect".into()),
         principal: Some("none"),
         target,
         ..Norm::default()
     };
+    // whose network the address is in, from the enrichment tables
+    // (`_facts.ips`): a host name says what was asked for, not who answers
+    if let Some(dst) = tagged("dst") {
+        n.address("connect.dst", dst);
+    }
     Some((out, n))
 }
 

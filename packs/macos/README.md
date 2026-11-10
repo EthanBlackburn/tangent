@@ -152,7 +152,15 @@ connected for (`eproc`), the address, port and protocol, and the host, from
 the hello's server name or a DNS answer it saw before. The `macos` plugin
 makes each a `connect` record, joined to the process tree and session like
 any event, and the summary lists each program's destinations in
-`connected`. A hello that a post-quantum key share makes longer than one
+`connected`. The plugin has the enrichment tables describe each address
+(`_facts.ips`, from packs/enrich-ip: GeoLite2's network owner and country,
+and the hosting, Tor and VPN ranges), and the summary puts the owner and
+those labels in brackets after the destination,
+`evil.example:443 [Example Hosting B.V.; datacenter]`: a host name says what
+was asked for, and a bare address says nothing, so the owner is what a
+reader has to go on. The country stays in the record and out of the summary:
+a CDN's edge is wherever it is. Without the tables' files
+(`examples/enrich/setup.sh data`) there are no brackets. A hello that a post-quantum key share makes longer than one
 segment may hold its server name in the second, which the filter does not
 take: on a 30-second capture, half of a browser's and an Electron app's
 connections; curl, node and Python name it in the first. QUIC's hello is
@@ -247,7 +255,9 @@ the package script and the agent above it have exited, reads an SSH key and
 calls evil.example; a browser's QUIC connection made by its helper, and the
 helper saving cookies; the terminal and the login above the shell, known only
 from the snapshot; and around them the noise the plugin drops.
-`tests/expected.json` is the twenty-five records the plugin keeps. `make test` in `packs/` runs it; `cargo test` here runs the
+`tests/expected.json` is the twenty-five records the plugin keeps, written
+against `tests/addresses.yaml` and `tests/networks.csv`, the tables' answers
+for the fixture's two addresses. `make test` in `packs/` runs it; `cargo test` here runs the
 path groups' unit tests, and in `sessions/` the summary's, one of them over
 `tests/expected.json` as one session (the plugin test harness calls a plugin
 a record at a time, without its grouping). The plugin drops records, so `make fixtures-macos`
