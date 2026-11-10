@@ -12,6 +12,7 @@ tangent plugin compile --config tangent.yaml
 tangent run --config haiku.yaml &              # Claude Haiku on Bedrock, AWS_PROFILE set; or tangent.yaml, a local model
 sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify | nc -U es.sock
 python3 ../../packs/macos/ps/ps.py | nc -U es.sock           # once, after eslogger starts: what was already running
+python3 ../../packs/macos/agent/transcripts.py | nc -U es.sock   # optional: what you asked Claude Code
 sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
   | python3 ../../packs/macos/net/net.py | nc -U net.sock    # optional: network connections
 tail -f alerts.ndjson
@@ -20,17 +21,10 @@ tail -f alerts.ndjson
 `eslogger` needs root, and the terminal it runs in needs Full Disk Access
 (System Settings, Privacy & Security), restarted after the grant.
 
-To show the judge what you asked Claude Code, beside what it then ran, add
-its prompt hook to `~/.claude/settings.json`, with both paths absolute
-(packs/macos/README.md, "What the agent was asked"):
-
-```json
-{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command",
-  "command": "python3 /path/to/packs/macos/agent/prompt.py /path/to/examples/macos/es.sock"}]}]}}
-```
-
-Your prompts then reach the model that judges, and the lake, with the
-command lines that already do.
+`transcripts.py` shows the judge what you asked Claude Code, beside what it
+then ran (packs/macos/README.md, "What the agent was asked"). Your prompts
+then reach the model that judges, and the lake, with the command lines that
+already do.
 
 - `tangent.yaml`: the judge pack, the macos pack's two plugins, the socket
   `nc` writes, the lake, and packs/macos's brief and answer schema in place
@@ -54,4 +48,4 @@ a restart loses the open ones.
 What is kept stays here: `lake/` every record as Parquet (delete old hours to
 trim it), `state.sqlite` the process tree the plugin keeps, `verdicts.ndjson`
 every session's verdict. The records hold command lines, and with the prompt
-hook, your prompts.
+transcript reader, your prompts.
