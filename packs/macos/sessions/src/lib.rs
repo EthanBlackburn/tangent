@@ -6,8 +6,10 @@
 //! at a time. One endpoint event is a fragment; a marketplace refresh is two
 //! thousand of them in a second. The summary says, for each program in the
 //! session, what it is, what started it, the commands it ran with how often,
-//! and what it did to the files that matter, by group: every file named, or
-//! for many under one directory, the directory with a count and a few names.
+//! and what it did to the files that matter, by what was done: every file
+//! named, or for many under one directory, the directory with a count and a
+//! few names. The groups that chose the files, and the plugin's facts, stay
+//! out: a model reads `persistence` or `credentials` on a file as a verdict.
 //! Every record still reaches the lake as it was.
 
 wit_bindgen::generate!({
@@ -376,32 +378,21 @@ fn summary(id: &str, records: &[Value]) -> Value {
                 }
                 m.insert("ran".into(), Value::Array(lines));
             }
+            // by what was done to them, not by the group that chose them: a
+            // file's group is a judgment, and a model reads it as one
             if !p.files.is_empty() {
-                let mut by: BTreeMap<String, BTreeMap<&str, BTreeSet<String>>> = BTreeMap::new();
-                for ((g, path), seq) in &p.files {
-                    by.entry(g.clone())
-                        .or_default()
-                        .entry(change(seq))
-                        .or_default()
-                        .insert(path.clone());
+                let mut by: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+                for ((_, path), seq) in &p.files {
+                    by.entry(change(seq)).or_default().insert(path.clone());
                 }
                 let files: Map<String, Value> = by
                     .into_iter()
-                    .map(|(g, chs)| {
-                        let chs: Map<String, Value> = chs
-                            .into_iter()
-                            .map(|(c, ps)| (c.to_string(), json!(collapse(&ps))))
-                            .collect();
-                        (g, Value::Object(chs))
-                    })
+                    .map(|(c, ps)| (c.to_string(), json!(collapse(&ps))))
                     .collect();
                 m.insert("files".into(), Value::Object(files));
             }
             if !p.env.is_empty() {
                 m.insert("env".into(), Value::Object(p.env));
-            }
-            if !p.facts.is_empty() {
-                m.insert("facts".into(), json!(p.facts));
             }
             if !p.other.is_empty() {
                 m.insert("other".into(), Value::Array(p.other));
@@ -537,10 +528,10 @@ mod tests {
             .iter()
             .find(|p| p["program"] == "node ~/code/x/node_modules/evil-pkg/postinstall.js")
             .unwrap();
-        assert_eq!(node["facts"], json!(["scratch_program"]));
+        assert!(node.get("facts").is_none(), "{node}");
+        assert!(node["files"]["read"][0].is_string(), "{}", node["files"]);
         assert!(
-            node["files"].get("agent_settings").is_some()
-                || node["files"].get("credentials").is_some(),
+            node["files"].get("credentials").is_none(),
             "{}",
             node["files"]
         );
@@ -657,7 +648,7 @@ mod tests {
         ];
         let s = summary("9", &recs);
         assert_eq!(
-            s["programs"][0]["files"]["credentials"]["renamed into place"][0],
+            s["programs"][0]["files"]["renamed into place"][0],
             "/tmp/c (from ~/.aws/credentials)"
         );
     }
@@ -688,7 +679,7 @@ mod tests {
             "/usr/bin/git push origin main"
         );
         assert_eq!(
-            prog("/usr/bin/ssh")["files"]["credentials"]["read"][0],
+            prog("/usr/bin/ssh")["files"]["read"][0],
             "~/.ssh/id_ed25519"
         );
         assert_eq!(s["session"]["events"], 2);

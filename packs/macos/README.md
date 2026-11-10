@@ -101,8 +101,10 @@ identity, team, platform, tty), what started it (`parents`), the commands it
 ran with how often, what it did to the files in the groups above (created,
 written, read, deleted, replaced, renamed into place; each file named, or for
 many under one directory the directory with a count and a few names), the
-agent-steering variables it set, and whether it ran from scratch or
-unsigned. Claude Code's marketplace refresh, two thousand events in a
+agent-steering variables it set, and its rarer events. The files are listed
+by what was done to them, not by group, and the facts stay out: a model
+reads `persistence` or `credentials` on a file as a verdict, and flagged
+sessions that only read `CLAUDE.md` as agents do at every start. Claude Code's marketplace refresh, two thousand events in a
 second, is one line of it; a session is a few kilobytes.
 
 The judge pack's judge reads them as JSON lines, with `judge.md` as its
