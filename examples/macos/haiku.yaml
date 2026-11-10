@@ -12,9 +12,12 @@ inference:
     model: ${JUDGE_MODEL:-us.anthropic.claude-haiku-5-5}   # the cross-region profile: Converse refuses the bare model id on demand
     aws:
       region: ${AWS_REGION:-us-west-2}
-    max_tokens: 500
+    max_tokens: 1500                # a session's verdict, and the thinking before it
     timeout_ms: 90000
     retries: 6
     concurrency: 16                 # a hosted model takes many at once; one worker sends one (packs/macos/ingest.yaml)
     extra:
-      thinking: { type: disabled }  # Haiku thinks by default and spends the verdict's budget on it
+      # It thinks before each verdict, briefly: without, it flagged 13 of the
+      # suite's 45 look-alikes, calling them ordinary in the same breath.
+      thinking: { type: adaptive }
+      output_config: { effort: low }

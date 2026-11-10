@@ -26,7 +26,8 @@ tail -f alerts.ndjson
   never run.
 - `haiku.yaml`: the same on Claude Haiku 5.5 through Bedrock,
   `us.anthropic.claude-haiku-5-5` (the cross-region profile; Converse refuses
-  the bare model id on demand), thinking off. It includes the judge pack's
+  the bare model id on demand), thinking briefly before each verdict (adaptive,
+  low effort). It includes the judge pack's
   `hosted.yaml` after `tangent.yaml`, which takes out the local model's
   sampling settings: Haiku 5.5 refuses them.
 
