@@ -1,0 +1,42 @@
+# supabase: one Supabase project's Auth log, each record kept in the lake and
+# each user's records judged a group at a time. One config, one process.
+#
+#   export SUPABASE_PROJECT_REF=abcdefghijklmnopqrst   # Project Settings → General
+#   export SUPABASE_ACCESS_TOKEN=sbp_...               # Account → Access Tokens
+#   make run
+#
+# Without the two variables the source says so once and stays idle.
+include:
+  - ../../packs/judge/ingest.yaml      # the judge, and the enrich-ip and behavior-baseline packs it includes
+  - ../../packs/supabase/ingest.yaml   # plugin supabase: supabase
+
+enrichment_tables:
+  profile: { type: document, path: profile/profile.yaml, required: true }   # a typo here stops it
+
+sinks:
+  lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    type: rolling_file
+    path: lake/logs/%Y/%m/%d/%H
+    wal_path: lake/wal
+    max_file_age_seconds: 3600
+    compression: { type: zstd, level: 3 }
+    encoding:
+      type: parquet
+      record_column: record      # each record whole, for the fields the schema leaves out
+      schema:
+        ts: timestamp
+        source: string
+        _norm: { org: string, actor: string, kind: string, ip: string }
+
+sources:
+  supabase_auth:
+    type: supabase
+    project_ref: ${SUPABASE_PROJECT_REF}
+    token: ${SUPABASE_ACCESS_TOKEN}
+    since: ${SUPABASE_SINCE:-1h}   # how far back the first run reads
+
+dag:
+  - from: supabase_auth
+    to: [supabase]
+  - from: supabase   # kept, judged
+    to: [lake, baseline_builder, baseline_renderer]

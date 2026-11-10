@@ -79,6 +79,10 @@ inference:
           principal: [_norm.actor, actor.email]
           time: [id.time, ts]
           keep: [events]
+        supabase:                  # supabase
+          principal: [_norm.actor, auth_event.actor_username]
+          time: [ts]
+          keep: [log, auth_event.action, auth_event.traits.provider, auth_audit_event.action, path, status, error]
 
 sinks:
   alerts:

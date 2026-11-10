@@ -41,6 +41,7 @@ pub const FILES: &[(&str, &str)] = files![
     "github/ingest.yaml",
     "okta/ingest.yaml",
     "google_workspace/ingest.yaml",
+    "supabase/ingest.yaml",
 ];
 
 /// A file's name after `pack:`: `judge/hosted.yaml` is `judge/hosted`, and a
@@ -365,6 +366,7 @@ mod tests {
             "pack:judge",
             "pack:judge/hosted",
             "pack:okta",
+            "pack:supabase",
         ];
         assert_eq!(names(), all);
         // an unknown name writes nothing: it fails first

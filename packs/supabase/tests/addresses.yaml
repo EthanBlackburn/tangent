@@ -1,0 +1,9 @@
+# The fixtures' addresses, as GeoLite2 Country and ASN would answer them: the
+# supabase plugin's test reads this file as its `geo` and `asn` tables
+# (ingest.yaml), whatever the config's. The addresses are documentation
+# ranges, and the networks made up. An address not here is in no network
+# these tables know.
+
+"203.0.113.9": {"country": {"iso_code": "US"}, "autonomous_system_number": 64496, "autonomous_system_organization": "Example Broadband"}
+"198.51.100.24": {"country": {"iso_code": "NL"}, "autonomous_system_number": 64500, "autonomous_system_organization": "Example Hosting"}
+"192.0.2.77": {"country": {"iso_code": "BR"}, "autonomous_system_number": 64511, "autonomous_system_organization": "Example Telecom"}

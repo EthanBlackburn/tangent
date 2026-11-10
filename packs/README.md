@@ -15,6 +15,7 @@ says about it in `_facts`. How to use them is in the main
 | [github](github) | `github_audit`, `gha_ci`, `runner_egress` |
 | [okta](okta) | `okta` |
 | [google_workspace](google_workspace) | `google_workspace` |
+| [supabase](supabase) | `supabase` |
 | [macos](macos) | planned, not built |
 | [shared](shared) | not a pack: `normkit`, `enrichkit`, `identitykit` and `factskit`, the Rust libraries every pack's plugin links |
 
@@ -34,6 +35,7 @@ until it does.
 | `pack:github` | github/ingest.yaml |
 | `pack:okta` | okta/ingest.yaml |
 | `pack:google_workspace` | google_workspace/ingest.yaml |
+| `pack:supabase` | supabase/ingest.yaml |
 
 A `source` value belongs to one pack: two packs taking it would store each
 record twice.
@@ -77,7 +79,7 @@ speak for the pipeline.
 
 | key | when |
 |---|---|
-| `principal` | `member`, `service`, `key` or `unknown` from the profile; `aws` when AWS acted on its own; none for a repository |
+| `principal` | `member`, `service`, `key` or `unknown` from the profile; `aws` when AWS acted on its own; `user` for one of your product's users (supabase); none for a repository |
 | `about` | the profile's line on the actor |
 | `watch` | the kind is one you watch |
 | `ip` | the address: `country`, `asn`, `org`, `hosting`, and `tor`, `vpn`, `ours`, `private` when true |
