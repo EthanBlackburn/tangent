@@ -4,6 +4,11 @@
 //! that has read the records): the statement can read the tables and views
 //! named on the command line and nothing else. It cannot create, change or
 //! copy anything, set an option, or name a file.
+//!
+//! DataFusion's core reads no JSON, and a lake keeps each record whole as
+//! JSON text beside its typed columns, so the functions and operators of
+//! `datafusion-functions-json` are registered: `record->>'source'`,
+//! `json_get_str(record, 'actor', 'id')`. They parse text and read no file.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -63,7 +68,8 @@ async fn context(tables: &[String], views: &[String]) -> Result<SessionContext> 
         "datafusion.execution.listing_table_ignore_subdirectory",
         false,
     );
-    let ctx = SessionContext::new_with_config(config);
+    let mut ctx = SessionContext::new_with_config(config);
+    datafusion_functions_json::register_all(&mut ctx)?;
     let mut paths: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for t in tables {
         let (name, path) = named(t, "PATH")?;
@@ -178,6 +184,7 @@ mod tests {
                 DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
                 true,
             ),
+            Field::new("record", DataType::Utf8, true),
         ]));
         for (hour, programs, pids) in [
             (
@@ -195,9 +202,17 @@ mod tests {
             let batch = RecordBatch::try_new(
                 Arc::clone(&schema),
                 vec![
-                    Arc::new(StringArray::from(programs)),
-                    Arc::new(Int64Array::from(pids)),
+                    Arc::new(StringArray::from(programs.clone())),
+                    Arc::new(Int64Array::from(pids.clone())),
                     Arc::new(args),
+                    // each record whole, as a lake's record column keeps it
+                    Arc::new(StringArray::from_iter_values(programs.iter().zip(&pids).map(
+                        |(program, pid)| {
+                            format!(
+                                r#"{{"event":"exec","process":{{"path":"{program}","pid":{pid}}},"exec":{{"args":["{program}","-v"],"env":{{"HTTPS_PROXY":"http://127.0.0.1:8080"}}}}}}"#
+                            )
+                        },
+                    ))),
                 ],
             )
             .unwrap();
@@ -260,6 +275,33 @@ mod tests {
             out,
             "| program | first |\n|---|---|\n| /usr/bin/ssh | 700 |\n| /usr/bin/git | 701 |\n(2 rows)\n"
         );
+    }
+
+    #[tokio::test]
+    async fn a_json_column_is_read_by_key() {
+        let dir = lake();
+        let out = run(&query(
+            &dir,
+            "SELECT record->>'event' AS event, json_get_str(record, 'process', 'path') AS path, \
+             json_get_int(record, 'process', 'pid') AS pid, record->'exec'->'args'->>1 AS flag, \
+             json_get_json(record, 'exec', 'env') AS env \
+             FROM lake WHERE (record->'process'->>'path') LIKE '%curl'", // -> binds more loosely than LIKE or =
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            out,
+            "| event | path | pid | flag | env |\n|---|---|---|---|---|\n\
+             | exec | /usr/bin/curl | 702 | -v | {\"HTTPS_PROXY\":\"http://127.0.0.1:8080\"} |\n(1 rows)\n"
+        );
+        // a key that is not there is null, and text that is not JSON is no error
+        let out = run(&query(
+            &dir,
+            "SELECT count(record->>'nope') AS a, count(program->>'x') AS b FROM lake",
+        ))
+        .await
+        .unwrap();
+        assert!(out.contains("| 0 | 0 |"), "{out}");
     }
 
     #[tokio::test]

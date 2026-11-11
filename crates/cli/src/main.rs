@@ -95,7 +95,8 @@ enum Commands {
     /// sink's lake) and print the result as a table. The statement can read
     /// the tables and views named here and nothing else: it cannot create,
     /// change or copy anything, set an option, or name a file, so it may
-    /// come from somewhere you do not trust
+    /// come from somewhere you do not trust. JSON text is read with
+    /// `col->>'key'` and `json_get_str(col, 'key', …)`
     Query {
         /// NAME=PATH: a Parquet file, or a directory and every .parquet file
         /// under it. Repeat a name for one table over several paths
