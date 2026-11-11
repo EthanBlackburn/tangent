@@ -226,6 +226,19 @@ reads `persistence` or `credentials` on a file as a verdict, and flagged
 sessions that only read `CLAUDE.md` as agents do at every start. Claude Code's marketplace refresh, two thousand events in a
 second, is one line of it; a session is a few kilobytes.
 
+A session reaches the judge a piece at a time, and a piece alone says
+little: the read that makes an upload a theft was a piece back. With each
+verdict the judge writes `so_far`, its own summary of the session up to that
+piece. `macos_verdicts`, a third plugin, which your config routes the judge
+to, keeps it in state, and `macos_sessions` puts it on the session's next
+summary. The summary also lists `earlier_in_turn`: the files and
+destinations the turn's earlier pieces touched that no profile calls
+routine, the latest twenty, which is the pack's own account and no model's.
+The judge is not shown what it flagged before: shown that, it took its own
+flag for evidence and flagged again. `macos_verdicts` is where the repeat
+stops, since it passes on a verdict only when a person has not been told of
+it in that turn.
+
 The judge pack's judge reads them as JSON lines, with `judge.md` as its
 brief and `judge.schema.json` as its answer, which your config names in
 place of the judge's (examples/macos/tangent.yaml does). The brief is the

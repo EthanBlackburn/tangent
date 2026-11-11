@@ -68,3 +68,5 @@ dag:
     to: [lake, macos_sessions]
   - from: macos_sessions         # and judged (packs/judge)
     to: [judge]
+  - from: judge                  # what it said of a session, kept for the session's next summary
+    to: [macos_verdicts]

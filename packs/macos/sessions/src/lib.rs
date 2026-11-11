@@ -540,6 +540,70 @@ fn usual_files(p: &mut Value, profile: &Profile) {
     }
 }
 
+/// Files and destinations kept of a turn's earlier pieces, the latest.
+const SEEN: usize = 20;
+
+/// What a turn's earlier pieces touched that no profile calls routine, for
+/// this piece's summary, and the same with this piece's added, to keep: the
+/// files by what was done to them and the destinations, each once, the
+/// latest [`SEEN`]. A read in one piece and the upload in another are one
+/// act, and this is the part of that the plugin can vouch for itself.
+fn seen(before: &Value, rec: &Value) -> (Option<Value>, (Vec<Value>, Vec<Value>)) {
+    let list = |k: &str| -> Vec<Value> { before[k].as_array().cloned().unwrap_or_default() };
+    let (mut files, mut connected) = (list("files"), list("connected"));
+    let earlier = if files.is_empty() && connected.is_empty() {
+        None
+    } else {
+        let mut m = Map::new();
+        if !files.is_empty() {
+            m.insert("files".into(), json!(files));
+        }
+        if !connected.is_empty() {
+            m.insert("connected".into(), json!(connected));
+        }
+        Some(Value::Object(m))
+    };
+    let add = |to: &mut Vec<Value>, what: String| {
+        let v = json!(what);
+        if !to.contains(&v) {
+            to.push(v);
+        }
+    };
+    for p in rec["programs"].as_array().into_iter().flatten() {
+        let who = p["program"].as_str().unwrap_or("?");
+        let who = who.rsplit('/').next().unwrap_or(who);
+        for (change, paths) in p["files"].as_object().into_iter().flatten() {
+            for path in paths
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if !path.ends_with("(usual)") {
+                    add(&mut files, format!("{who} {change} {path}"));
+                }
+            }
+        }
+        for to in p["connected"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            if !to.ends_with("(usual)") && !to.starts_with('…') {
+                // without the count: the same place again is not news
+                let to = to.split(" ×").next().unwrap_or(to);
+                add(&mut connected, format!("{who} {to}"));
+            }
+        }
+    }
+    let last = |mut v: Vec<Value>| {
+        let n = v.len().saturating_sub(SEEN);
+        v.split_off(n)
+    };
+    (earlier, (last(files), last(connected)))
+}
+
 /// A session's prompts with this window's added: the latest [`ASKED`].
 fn latest(mut earlier: Vec<Value>, now: Vec<Value>) -> Vec<Value> {
     earlier.extend(now);
@@ -783,6 +847,43 @@ impl Guest for Component {
                 }
             } else {
                 rec["asked"] = Value::Array(asked);
+            }
+            // the session's story up to this piece: the judge's own running
+            // summary and what it has flagged (macos_verdicts keeps both),
+            // and what the turn's earlier pieces touched, which is the
+            // plugin's own account and no model's
+            let who = format!(
+                "{}:{}",
+                s(&rec, "/session/id").unwrap_or("?"),
+                s(&rec, "/session/entry").unwrap_or("?")
+            );
+            if let Ok(Some(Scalar::Str(v))) = state::get(&format!("story:{who}")) {
+                let story: Value = serde_json::from_str(&v).unwrap_or(Value::Null);
+                // not what it flagged: shown that, the judge took its own
+                // earlier flag for evidence and flagged again
+                if story["so_far"].as_str().is_some_and(|t| !t.is_empty()) {
+                    rec["so_far"] = story["so_far"].clone();
+                }
+            }
+            if let Some(turn) = s(&rec, "/session/turn").map(str::to_string) {
+                let key = format!("seen:{who}");
+                let before = match state::get(&key) {
+                    Ok(Some(Scalar::Str(v))) => serde_json::from_str(&v).unwrap_or(Value::Null),
+                    _ => Value::Null,
+                };
+                let before = if before["turn"] == turn.as_str() {
+                    before
+                } else {
+                    Value::Null
+                };
+                let (earlier, all) = seen(&before, &rec);
+                if let Some(e) = earlier {
+                    rec["earlier_in_turn"] = e;
+                }
+                let kept = json!({"turn": turn, "files": all.0, "connected": all.1});
+                if let Ok(v) = serde_json::to_string(&kept) {
+                    let _ = state::set(&key, &Scalar::Str(v), Some(ASKED_TTL_MS));
+                }
             }
             // a window that holds only a prompt is kept for the next and
             // not judged alone
@@ -1035,6 +1136,33 @@ mod tests {
             p[4]["connected"][0],
             "api.example.com:443 [Example, Inc.] ×3"
         );
+    }
+
+    /// A turn's later piece is told what its earlier pieces touched, less
+    /// what a profile calls routine, and each thing once.
+    #[test]
+    fn a_later_piece_is_told_what_the_turn_touched() {
+        let first = json!({"programs": [
+            {"program": "/usr/bin/cat", "files": {"read": ["~/.ssh/id_ed25519", "~/.claude/settings.json (usual)"]}},
+            {"program": "~/bin/agent", "connected": ["api.example.com:443 [Example] (usual)", "… 2 more"]},
+        ]});
+        let (earlier, all) = seen(&Value::Null, &first);
+        assert!(earlier.is_none());
+        assert_eq!(all.0, vec![json!("cat read ~/.ssh/id_ed25519")]);
+        assert!(all.1.is_empty());
+
+        let before = json!({"turn": "t", "files": all.0, "connected": all.1});
+        let second = json!({"programs": [
+            {"program": "/usr/bin/curl", "connected": ["203.0.113.5:443 [Example Hosting] ×3"]},
+            {"program": "/usr/bin/cat", "files": {"read": ["~/.ssh/id_ed25519"]}},
+        ]});
+        let (earlier, all) = seen(&before, &second);
+        assert_eq!(
+            earlier.unwrap(),
+            json!({"files": ["cat read ~/.ssh/id_ed25519"]})
+        );
+        assert_eq!(all.0.len(), 1);
+        assert_eq!(all.1, vec![json!("curl 203.0.113.5:443 [Example Hosting]")]);
     }
 
     /// A later window shows the session's latest prompts, oldest first.

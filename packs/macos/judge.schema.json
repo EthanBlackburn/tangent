@@ -16,12 +16,17 @@
     "why": {
       "type": "string",
       "maxLength": 400
+    },
+    "so_far": {
+      "type": "string",
+      "maxLength": 900
     }
   },
   "required": [
     "assessment",
     "suspicion",
-    "flag"
+    "flag",
+    "so_far"
   ],
   "additionalProperties": false
 }
