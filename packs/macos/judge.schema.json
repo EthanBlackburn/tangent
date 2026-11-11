@@ -1,17 +1,19 @@
 {
   "title": "Verdict",
-  "description": "What the session did and who did it, how likely it is someone acting against the owner, and whether a person should look.",
+  "description": "What the session did and who did it, and whether it may be someone acting against the owner: pass, look or flag.",
   "type": "object",
   "properties": {
     "assessment": {
       "type": "string",
       "maxLength": 400
     },
-    "suspicion": {
-      "type": "integer"
-    },
-    "flag": {
-      "type": "boolean"
+    "warrants_investigation": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "look",
+        "flag"
+      ]
     },
     "why": {
       "type": "string",
@@ -24,8 +26,7 @@
   },
   "required": [
     "assessment",
-    "suspicion",
-    "flag",
+    "warrants_investigation",
     "so_far"
   ],
   "additionalProperties": false

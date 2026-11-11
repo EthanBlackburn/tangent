@@ -7,12 +7,12 @@
 //! judge and keeps it in state, and `macos_sessions` puts it on the
 //! session's next summary.
 //!
-//! It passes on only the verdicts a person has not been told of: a flag, the
-//! first in its turn or one more suspicious than the turn's last. The judge
-//! is not shown what it flagged before (shown that, it took its own flag for
-//! evidence and flagged again), so the same thing in the next piece is
-//! flagged again, and here is where the repeat stops. Every verdict is still
-//! in the judge's own output.
+//! It passes on only the verdicts a person has not been told of: a `look` or
+//! a `flag`, the first in its turn, or a `flag` after the turn's `look`. The
+//! judge is not shown what it marked before (shown that, it took its own
+//! flag for evidence and flagged again), so the same thing in the next piece
+//! is marked again, and here is where the repeat stops. Every verdict is
+//! still in the judge's own output. Route this plugin to where alerts go.
 
 wit_bindgen::generate!({
     path: ".tangent/wit",
@@ -40,9 +40,19 @@ pub fn key(rec: &Value) -> String {
     format!("story:{}:{}", at("/session/id"), at("/session/entry"))
 }
 
+/// How loud a verdict is: `pass` says nothing, `look` asks for a look, and
+/// `flag` says someone may be acting against the owner.
+fn level(judge: &Value) -> u8 {
+    match judge.get("warrants_investigation").and_then(Value::as_str) {
+        Some("flag") => 2,
+        Some("look") => 1,
+        _ => 0,
+    }
+}
+
 /// The session's story with this verdict taken in, and whether a person is
 /// to be told of it: the judge's newest summary (the last one stands when a
-/// verdict has none), and the turn and suspicion of the last flag told. None
+/// verdict has none), and the turn and level of the last verdict told. None
 /// when the record holds no verdict.
 fn told(story: Value, rec: &Value) -> Option<(Value, bool)> {
     let j = rec.get("judge")?;
@@ -55,17 +65,17 @@ fn told(story: Value, rec: &Value) -> Option<(Value, bool)> {
         .unwrap_or_else(|| story["so_far"].clone());
     let mut alerted = story["alerted"].clone();
     let mut tell = false;
-    if j.get("flag").and_then(Value::as_bool) == Some(true) {
+    let level = level(j);
+    if level > 0 {
         // a session with no turns is one long one
         let turn = rec.pointer("/session/turn").cloned().unwrap_or(json!(""));
-        let suspicion = j.get("suspicion").and_then(Value::as_i64).unwrap_or(0);
         let repeat = alerted["turn"] == turn
-            && alerted["suspicion"]
-                .as_i64()
-                .is_some_and(|s| suspicion <= s);
+            && alerted["level"]
+                .as_u64()
+                .is_some_and(|told| u64::from(level) <= told);
         if !repeat {
             tell = true;
-            alerted = json!({"turn": turn, "suspicion": suspicion});
+            alerted = json!({"turn": turn, "level": level});
         }
     }
     Some((json!({"so_far": so_far, "alerted": alerted}), tell))
@@ -129,9 +139,9 @@ mod tests {
     }
 
     #[test]
-    fn the_newest_summary_stands_and_a_flag_is_told_once_a_turn() {
-        let piece = |turn: &str, suspicion: i64, flag: bool, so_far: Option<&str>| {
-            let mut r = rec(json!({"assessment": "a", "suspicion": suspicion, "flag": flag}));
+    fn the_newest_summary_stands_and_a_turn_is_told_once_a_level() {
+        let piece = |turn: &str, answer: &str, so_far: Option<&str>| {
+            let mut r = rec(json!({"assessment": "a", "warrants_investigation": answer}));
             r["session"]["turn"] = json!(turn);
             if let Some(t) = so_far {
                 r["judge"]["so_far"] = json!(t);
@@ -140,8 +150,7 @@ mod tests {
         };
         let first = piece(
             "t1",
-            1,
-            false,
+            "pass",
             Some("The agent scaled a service down, as asked."),
         );
         assert_eq!(key(&first), "story:200:/bin/zsh");
@@ -152,21 +161,26 @@ mod tests {
             "The agent scaled a service down, as asked."
         );
 
-        // the turn's first flag is told; the same again is not; a worse one is
+        // the turn's first look is told; the same again is not; a flag is
         let (story, tell) =
-            told(story, &piece("t1", 3, true, Some("Then read the SSH key."))).unwrap();
+            told(story, &piece("t1", "look", Some("Then read the SSH key."))).unwrap();
         assert!(tell);
         assert_eq!(story["so_far"], "Then read the SSH key.");
-        let (story, tell) = told(story, &piece("t1", 3, true, None)).unwrap();
+        let (story, tell) = told(story, &piece("t1", "look", None)).unwrap();
         assert!(!tell);
         assert_eq!(
             story["so_far"], "Then read the SSH key.",
             "no summary: the last stands"
         );
-        let (story, tell) = told(story, &piece("t1", 6, true, None)).unwrap();
+        let (story, tell) = told(story, &piece("t1", "flag", None)).unwrap();
         assert!(tell);
-        // the next turn's first flag is told, however mild
-        let (story, tell) = told(story, &piece("t2", 3, true, None)).unwrap();
+        // and after a flag nothing more of that turn: a look is quieter
+        let (story, tell) = told(story, &piece("t1", "flag", None)).unwrap();
+        assert!(!tell);
+        let (story, tell) = told(story, &piece("t1", "look", None)).unwrap();
+        assert!(!tell);
+        // the next turn's first look is told
+        let (story, tell) = told(story, &piece("t2", "look", None)).unwrap();
         assert!(tell);
         // a record the judge could not answer says nothing
         assert!(told(story, &rec(json!({"error": "timeout"}))).is_none());

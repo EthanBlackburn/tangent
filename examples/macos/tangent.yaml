@@ -27,7 +27,7 @@ include:
 
 # The judge reads sessions: each a summary of what one terminal tab, app or
 # agent ran and touched in five minutes, as JSON lines, with the macos pack's
-# brief and an answer that weighs the session before it flags.
+# brief and its answer: what the session did, then pass, look or flag.
 inference:
   judge:
     prompt_file: ../../packs/macos/judge.md
@@ -70,3 +70,5 @@ dag:
     to: [judge]
   - from: judge                  # what it said of a session, kept for the session's next summary
     to: [macos_verdicts]
+  - from: macos_verdicts         # and a `look` or a `flag` a person has not been told of in this turn
+    to: [alerts]

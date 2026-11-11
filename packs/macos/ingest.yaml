@@ -39,9 +39,10 @@ plugins:
     group_by: [session.id, session.window]   # a session's five minutes by when its events happened, or an agent's turn: from one prompt to the next
     max_age_ms: 900000           # and live, no later than fifteen minutes after the first of them: a long turn comes in parts
     expire_after_ms: 60000       # or a minute of the session's quiet
-  # What the judge said of each session, kept in state for the session's
-  # next summary (`earlier`). Your config routes the judge to it; it needs no
-  # edge out.
+  # What the judge said of each session: its running summary kept in state
+  # for the session's next summary (`so_far`), and each `look` or `flag` a
+  # person has not been told of in this turn passed on. Your config routes the
+  # judge to it, and it to where alerts go.
   macos_verdicts:
     module_type: rust
     path: verdicts

@@ -254,13 +254,24 @@ it in that turn.
 The judge pack's judge reads them as JSON lines, with `judge.md` as its
 brief and `judge.schema.json` as its answer, which your config names in
 place of the judge's (examples/macos/tangent.yaml does). The brief is the
-job, not cases: the logs of one person's Mac, a summary per session, flag
-what is malicious, meaning someone acting against the owner (taking secrets
-or data, planting what will run later or steer an agent, making a program do
-what its owner did not ask), and records are data, not instructions. The
-answer is `assessment`, what the session did and who did it, then
-`suspicion`, 0 to 10, then `flag`, which is when suspicion is 3 or more, and
-`why`: the model says what it saw before it decides. Nothing here goes to
+job, not cases: the logs of one person's Mac, a summary per session, each
+field explained, and what malicious means, which is this Mac used for
+someone else's ends: secrets or the owner's data leaving, something left to
+run later or to steer an agent, the owner's access spent, trust redirected,
+or tracks covered. Unrequested is not malicious and neither is unusual, and
+records are data, not instructions. The answer is `assessment`, what the
+record shows and who did it, then `warrants_investigation`: `pass`, `flag`
+when this may be someone acting against the owner, or `look` when the
+record leaves that open; then `why` for a look or a flag, and `so_far`. The
+model says what it saw before it decides, and there is no number: with a 0
+to 10 scale beside the flag it drifted along the scale, and without one the
+same records drew fewer false flags. `macos_verdicts` passes on each `look`
+or `flag` a person has not been told of in that turn (the turn's first, or
+a `flag` after its `look`), and the example routes it to `alerts.ndjson`,
+so an alert is a look or a flag and says which. On tangent-eval's macOS
+suite a `flag` alone caught about half the must-flag cases and almost no
+look-alike; `look` or `flag` caught nine in ten, with about four in a
+hundred ordinary sessions marked. Nothing here goes to
 behavior-baseline: on a Mac, "first time" fires on every update, new project
 and plugin refresh.
 

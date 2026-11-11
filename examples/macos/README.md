@@ -4,8 +4,9 @@ A Mac where AI coding agents run, read by
 [packs/macos](/packs/macos) and judged by [packs/judge](/packs/judge), as
 [cloud-infra](../cloud-infra) is for a company's cloud: each record goes to
 the lake, and each session (a terminal tab, an app, an agent, with
-everything it ran) is summed up five minutes at a time for the judge, which
-writes what it flags to `alerts.ndjson`. One config, one process.
+everything it ran) is summed up five minutes at a time for the judge, whose
+answer is pass, look or flag; each look or flag goes to `alerts.ndjson`,
+once a turn. One config, one process.
 
 ```bash
 ../enrich/setup.sh data                        # once: the address tables that name a connection's network owner
