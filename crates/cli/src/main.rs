@@ -112,6 +112,10 @@ enum Commands {
         /// Characters of a value printed; the rest are counted
         #[arg(long, default_value_t = 500)]
         max_cell: usize,
+        /// Print each row as a JSON object on a line, its values whole, for
+        /// a program to read
+        #[arg(long)]
+        json: bool,
         /// The statement
         sql: String,
     },
@@ -239,6 +243,7 @@ async fn main() -> Result<()> {
             views,
             max_rows,
             max_cell,
+            json,
             sql,
         } => {
             let q = query::Query {
@@ -247,6 +252,7 @@ async fn main() -> Result<()> {
                 sql,
                 max_rows,
                 max_cell,
+                json,
             };
             print!("{}", query::run(&q).await?);
         }

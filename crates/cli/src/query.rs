@@ -28,6 +28,9 @@ pub struct Query {
     pub sql: String,
     pub max_rows: usize,
     pub max_cell: usize,
+    /// Rows as JSON lines, for a program: whole values, no table and no
+    /// count.
+    pub json: bool,
 }
 
 /// The statement's result as a table, cut to `max_rows` rows.
@@ -44,7 +47,28 @@ pub async fn run(q: &Query) -> Result<String> {
         .await?
         .collect()
         .await?;
-    render(&batches, q.max_rows, q.max_cell)
+    if q.json {
+        json_lines(&batches, q.max_rows)
+    } else {
+        render(&batches, q.max_rows, q.max_cell)
+    }
+}
+
+/// A JSON object a row, a line each, the first `max_rows` of them: a null
+/// column is left out of its row, as arrow-json writes them.
+fn json_lines(batches: &[RecordBatch], max_rows: usize) -> Result<String> {
+    let mut writer = datafusion::arrow::json::LineDelimitedWriter::new(Vec::new());
+    let mut left = max_rows;
+    for batch in batches {
+        if left == 0 {
+            break;
+        }
+        let batch = batch.slice(0, batch.num_rows().min(left));
+        left -= batch.num_rows();
+        writer.write(&batch)?;
+    }
+    writer.finish()?;
+    Ok(String::from_utf8(writer.into_inner())?)
 }
 
 fn named<'a>(arg: &'a str, what: &str) -> Result<(&'a str, &'a str)> {
@@ -237,6 +261,7 @@ mod tests {
             sql: sql.into(),
             max_rows: 1000,
             max_cell: 500,
+            json: false,
         }
     }
 
@@ -354,6 +379,29 @@ mod tests {
             out,
             "| pid |\n|---|\n| 700 |\n| 701 |\n(3 rows; the first 2 shown: filter, group or LIMIT)\n"
         );
+    }
+
+    #[tokio::test]
+    async fn rows_as_json_lines_keep_lists_and_whole_values() {
+        let dir = lake();
+        let mut q = query(
+            &dir,
+            "SELECT program, args, repeat('x', 600) AS long, CAST(NULL AS INT) AS none FROM lake ORDER BY pid",
+        );
+        q.json = true;
+        q.max_rows = 2;
+        let out = run(&q).await.unwrap();
+        let rows: Vec<serde_json::Value> = out
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["program"], "/usr/bin/ssh");
+        assert_eq!(rows[0]["args"], serde_json::json!([700, 1]));
+        assert_eq!(rows[0]["long"].as_str().unwrap().len(), 600);
+        assert!(rows[0].get("none").is_none());
+        q.sql = "SELECT pid FROM lake WHERE pid > 900".into();
+        assert_eq!(run(&q).await.unwrap(), "");
     }
 
     #[tokio::test]
