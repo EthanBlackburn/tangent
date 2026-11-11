@@ -557,12 +557,18 @@ fn summary(id: &str, records: &[Value]) -> Value {
             "id": id,
             "window": first.pointer("/session/window").cloned().unwrap_or(Value::Null),
             "entry": tilde(&entry),
+            "turn": first.pointer("/session/turn").cloned().unwrap_or(Value::Null),
             "from": first.get("ts").cloned().unwrap_or(Value::Null),
             "to": last.get("ts").cloned().unwrap_or(Value::Null),
             "events": records.len() - asked.len(),
         },
         "programs": shown,
     });
+    if rec["session"]["turn"].is_null() {
+        if let Some(m) = rec["session"].as_object_mut() {
+            m.remove("turn");
+        }
+    }
     if !asked.is_empty() {
         rec["asked"] = Value::Array(asked);
     }

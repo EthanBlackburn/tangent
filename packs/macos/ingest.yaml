@@ -31,6 +31,6 @@ plugins:
     module_type: rust
     path: sessions
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
-    group_by: [session.id, session.window]   # a session's five minutes, by when its events happened
-    max_age_ms: 300000           # and live, no later than five minutes after the first of them
+    group_by: [session.id, session.window]   # a session's five minutes by when its events happened, or an agent's turn: from one prompt to the next
+    max_age_ms: 900000           # and live, no later than fifteen minutes after the first of them: a long turn comes in parts
     expire_after_ms: 60000       # or a minute of the session's quiet

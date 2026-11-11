@@ -180,8 +180,16 @@ checks it (`python3 -m unittest net_test` in `net/`).
 
 The judge reads sessions, not records. `macos_sessions` is grouped by
 `session.id` and `session.window`: a session's events within five minutes of
-each other, closed live five minutes after the first or after a minute of
-quiet. It writes one record a group: the session's entry and time span, and
+each other, closed live fifteen minutes after the first or after a minute of
+quiet. An agent's session is cut at the person's prompts instead: a prompt
+that sets the agent to work opens a turn (`session.turn`, the prompt's
+time), a message typed while it works joins the turn under way, and the
+turn's events are summed up five minutes of their own time at a time
+(`session.window` is the turn and the piece's number). So a prompt and the
+commands it caused are one summary, or several in a row when the turn runs
+long, never a prompt in one window and its deletes in the next. Thirty-second
+pieces were tried: a nine-minute turn was twenty-three verdicts, each a
+chance to flag what the last had passed. It writes one record a group: the session's entry and time span, and
 for each of its programs (25: those that touched a file, set an agent's
 environment or did something rarer, then the busiest; one program under two
 different parents is two), what it is (path, signing

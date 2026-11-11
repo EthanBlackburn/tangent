@@ -640,10 +640,68 @@ fn situate(out: &mut Map<String, Value>, pid: i64, ppid: i64, rec: &Map<String, 
     }
     let (sid, who) = entry(pid);
     let mut session = json!({"id": sid.to_string(), "entry": who});
-    if let Some(w) = rec.get("time").and_then(Value::as_str).and_then(window) {
-        session["window"] = json!(w);
+    // an agent's session is cut at the person's prompts and then into
+    // pieces of its turn, any other by the clock
+    let time = rec.get("time").and_then(Value::as_str);
+    match turn(sid) {
+        Some(t) => {
+            session["window"] = json!(piece(&t, time));
+            session["turn"] = json!(t);
+        }
+        None => {
+            if let Some(w) = time.and_then(window) {
+                session["window"] = json!(w);
+            }
+        }
     }
     out.insert("session".into(), session);
+}
+
+/// A turn is summarized and judged this many seconds of its events at a
+/// time: a long turn whole was fifty kilobytes with half its programs left
+/// out, and its verdict came when it ended. Not finer: at thirty seconds a
+/// nine-minute turn was twenty-three verdicts, each a chance to flag what
+/// the last had passed.
+const PIECE_SECS: i64 = 300;
+
+/// Seconds since 1970 of an RFC 3339 time in UTC, to the second.
+fn secs(t: &str) -> Option<i64> {
+    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
+    let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    // days from the civil date (Howard Hinnant's algorithm)
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)?)
+}
+
+/// The piece of the turn begun at `turn` that an event at `time` is in:
+/// `<turn>+<n>`, by the event's own time, so a replay cuts as a live run does.
+fn piece(turn: &str, time: Option<&str>) -> String {
+    let n = time
+        .and_then(secs)
+        .zip(secs(turn))
+        .map_or(0, |(at, began)| (at - began).max(0) / PIECE_SECS);
+    format!("{turn}+{n:03}")
+}
+
+/// A session's turn lasts this long after its prompt, unless another comes:
+/// what an agent runs for an hour was asked for once; what its program does
+/// the next day was not.
+const TURN_TTL_MS: u64 = 7_200_000;
+
+/// The window of a session a person has prompted an agent in: the time of
+/// their latest prompt, to the second. Records are summarized a window at a
+/// time, so a prompt and everything the agent did until the next are one
+/// summary (or several in a row, when it runs long), never a prompt in one
+/// and the commands it caused in the next.
+fn turn(sid: i64) -> Option<String> {
+    match state::get(&format!("turn:{sid}")) {
+        Ok(Some(Scalar::Str(t))) => Some(t),
+        _ => None,
+    }
 }
 
 /// A connection from net/net.py (tcpdump's process-tagged packets): the
@@ -729,6 +787,25 @@ fn prompt(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     out.insert("event".into(), json!("prompt"));
     out.insert("process".into(), Value::Object(proc));
     situate(&mut out, pid, k.ppid, rec);
+    // a prompt opens its session's next turn, and is the first record of it;
+    // one typed while the agent worked adds to the turn under way
+    let during = p["during"] == true;
+    if during {
+        // nothing to open
+    } else if let (Some(at), Some(sid)) = (
+        rec.get("time")
+            .and_then(Value::as_str)
+            .and_then(|t| t.get(..19)),
+        out["session"]["id"].as_str().map(str::to_string),
+    ) {
+        let _ = state::set(
+            &format!("turn:{sid}"),
+            &Scalar::Str(at.to_string()),
+            Some(TURN_TTL_MS),
+        );
+        out["session"]["window"] = json!(piece(at, Some(at)));
+        out["session"]["turn"] = json!(at);
+    }
     let mut end = text.len().min(PROMPT_BYTES);
     while !text.is_char_boundary(end) {
         end -= 1;
@@ -741,8 +818,7 @@ fn prompt(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
             x.insert(f.into(), v.clone());
         }
     }
-    // typed while the agent was working
-    if p["during"] == true {
+    if during {
         x.insert("during".into(), json!(true));
     }
     out.insert("prompt".into(), Value::Object(x));
@@ -1057,6 +1133,23 @@ mod tests {
 
     fn name(path: &str, args: &[&str], cwd: &str) -> Option<String> {
         script_name(path, args, Some(cwd)).map(|(n, _)| n)
+    }
+
+    #[test]
+    fn a_turn_is_cut_into_pieces_by_its_events_times() {
+        let turn = "2026-11-10T19:01:36";
+        let at = |t: &str| piece(turn, Some(t));
+        assert_eq!(at("2026-11-10T19:01:36.421Z"), "2026-11-10T19:01:36+000");
+        assert_eq!(at("2026-11-10T19:06:35.999Z"), "2026-11-10T19:01:36+000");
+        assert_eq!(at("2026-11-10T19:06:36.000Z"), "2026-11-10T19:01:36+001");
+        assert_eq!(at("2026-11-10T19:10:46.000Z"), "2026-11-10T19:01:36+001");
+        // across midnight, and an event the reader sent a moment early
+        assert_eq!(
+            piece("2026-11-10T23:59:50", Some("2026-11-11T00:04:55Z")),
+            "2026-11-10T23:59:50+001"
+        );
+        assert_eq!(at("2026-11-10T19:01:35.000Z"), "2026-11-10T19:01:36+000");
+        assert_eq!(secs("1970-01-02T00:00:01Z"), Some(86_401));
     }
 
     #[test]
