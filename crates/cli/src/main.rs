@@ -9,6 +9,7 @@ use tangent_bench::BenchOptions;
 use tangent_runtime::RuntimeOptions;
 
 mod fetch;
+mod query;
 mod scaffold;
 mod state;
 mod test;
@@ -88,6 +89,30 @@ enum Commands {
         /// Path to YAML config
         #[arg(long, value_name = "FILE")]
         config: PathBuf,
+    },
+
+    /// Run one read-only SQL statement over Parquet files (a `rolling_file`
+    /// sink's lake) and print the result as a table. The statement can read
+    /// the tables and views named here and nothing else: it cannot create,
+    /// change or copy anything, set an option, or name a file, so it may
+    /// come from somewhere you do not trust
+    Query {
+        /// NAME=PATH: a Parquet file, or a directory and every .parquet file
+        /// under it. Repeat a name for one table over several paths
+        #[arg(long = "table", value_name = "NAME=PATH", required = true)]
+        tables: Vec<String>,
+        /// NAME=SELECT: a view the statement can read, over the tables and
+        /// the views before it
+        #[arg(long = "view", value_name = "NAME=SELECT")]
+        views: Vec<String>,
+        /// Rows printed; the rest are counted
+        #[arg(long, default_value_t = 1000)]
+        max_rows: usize,
+        /// Characters of a value printed; the rest are counted
+        #[arg(long, default_value_t = 500)]
+        max_cell: usize,
+        /// The statement
+        sql: String,
     },
 
     /// Inspect a pipeline's state store (read-only, works while it runs)
@@ -207,6 +232,23 @@ async fn main() -> Result<()> {
         }
 
         Commands::Config { config } => print!("{}", show_config(&config)?),
+
+        Commands::Query {
+            tables,
+            views,
+            max_rows,
+            max_cell,
+            sql,
+        } => {
+            let q = query::Query {
+                tables,
+                views,
+                sql,
+                max_rows,
+                max_cell,
+            };
+            print!("{}", query::run(&q).await?);
+        }
 
         Commands::State { config, command } => {
             let cfg = config.canonicalize().unwrap_or(config);

@@ -36,6 +36,7 @@ Tangent ships with everything you need to develop, test, and benchmark your own 
 * `tangent bench` – measure throughput and latency before deploying
 * `tangent run` – start the Tangent runtime
 * `tangent config` – print a config as the runtime reads it, its includes merged
+* `tangent query` – one read-only SQL statement over a lake's Parquet files
 
 ## Why use Tangent?
 1. **Use real languages, not DSLs** – Real code > DSL. Reviewable, testable, LLM‑friendly.
@@ -180,6 +181,16 @@ sinks:
         _norm: { org: string, actor: string }
         args: [string]
 ```
+
+`tangent query` reads such a lake back: one SQL statement, by [DataFusion](https://datafusion.apache.org), over the tables named on the command line, each a Parquet file or a directory and every `.parquet` file under it, and the result as a table. `--table` again with the same name adds a path to that table, and `--view NAME=SELECT` gives the statement a view over the tables:
+
+```bash
+tangent query --table lake=lake/logs "SELECT source, count(*) FROM lake GROUP BY 1"
+tangent query --table lake=lake/logs/2026/11/06 --view "errors=SELECT ts, record FROM lake WHERE record LIKE '%AccessDenied%'" \
+  "SELECT count(*) FROM errors"
+```
+
+The statement can only read, and only those tables and views. `CREATE`, `DROP`, `INSERT`, `COPY` and `SET` are refused, a file is not a table by its path, and no function reads a file, so the statement may come from somewhere you do not trust, such as a model that has read the records. The tables and views are yours and are not held to that. `--max-rows` (1000) and `--max-cell` (500 characters) cut what is printed, and say so.
 
 An `s3` sink goes through the same WAL and puts each sealed file in `bucket_name` as one object, named as a `rolling_file` sink's files are. Its `key_prefix` is what each object's key starts with, before a `/` and the name: a strftime template rendered in UTC for each record's own time, read from `timestamp_field` as a `rolling_file` sink's `path` is, so `logs/cloudtrail/%Y/%m/%d` puts each day's records under a prefix of their own, whenever they arrive, a replay's too (`%%` is a `%`). It is a path in the bucket, and strftime is all that is rendered: `tangent run` and `tangent config` refuse one that is not a strftime template, holds a `{{ field }}`, starts with `/`, or has an empty (`//`), `.` or `..` segment. Without it, objects go to the bucket's root. As in a `rolling_file` sink, a record without a time goes under the time it reaches the sink and is counted, a record arriving after its prefix's objects went out adds another object under it, and records far out of time order make small objects:
 
