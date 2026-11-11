@@ -123,18 +123,25 @@ the agent's prompt to a subagent are entries too), and keeps
 `~/.claude/sessions/<pid>.json` for each running agent. `agent/transcripts.py`,
 standard library only and run as you, follows the transcripts and writes each
 typed prompt (to 4000 characters) with the agent's session id, working
-directory and pid as one JSON line:
+directory and pid as one JSON line. A message typed while the agent is
+working never becomes a `user` entry: Claude Code queues it as an attachment
+(`queued_command`, its `origin.kind` `human` too), and the script takes
+those as well, marked `during`. Each line carries `after`, what the agent
+had last said before the prompt, its first 400 characters and its last 800:
+"yes, the second one" says nothing alone.
 
     python3 agent/transcripts.py | nc -U es.sock
 
-It starts with the latest prompt of each session touched in the last two
+It starts with the latest three prompts of each session touched in the last two
 hours, since what an agent is doing was asked for before the capture began,
 and then reads what is appended. Nothing in Claude Code's settings changes,
 and sessions already open are covered. The plugin makes each line a `prompt`
 record in the session of the agent's process, and the summary shows the
-session's latest three prompts, each to 600 bytes with its time, as `asked`:
-this window's and, from state for two hours, the ones before, since what an
-agent runs for an hour was asked for once. A window that holds only a prompt
+session's latest five prompts in the order they were typed, each to 600
+bytes with its time, as `asked`: this window's and, from state for two hours,
+the ones before, since what an agent runs for an hour was asked for once. A
+prompt has `replying_to` (what the agent had last said) on the summary it
+first appears in, and `while_working` when it was typed mid-turn. A window that holds only a prompt
 is not judged alone. The transcript's format is Claude Code's own and may
 change with a release; a line the script cannot read is skipped. Anything
 running as the person can write a transcript or a line to the socket, so a

@@ -735,10 +735,15 @@ fn prompt(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     }
     let mut x = Map::new();
     x.insert("text".into(), json!(&text[..end]));
-    for f in ["agent", "session", "cwd"] {
+    // `after`: what the agent last said before the prompt, its start and end
+    for f in ["agent", "session", "cwd", "after"] {
         if let Some(v) = p.get(f).filter(|v| v.is_string()) {
             x.insert(f.into(), v.clone());
         }
+    }
+    // typed while the agent was working
+    if p["during"] == true {
+        x.insert("during".into(), json!(true));
     }
     out.insert("prompt".into(), Value::Object(x));
     let n = Norm {

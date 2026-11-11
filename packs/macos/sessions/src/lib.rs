@@ -46,9 +46,13 @@ const CONNECTED: usize = 10;
 const OTHER: usize = 10;
 
 /// Prompts shown per session, the latest: a long task still has its request.
-const ASKED: usize = 3;
+const ASKED: usize = 5;
 /// A prompt shown to this many bytes.
 const PROMPT_BYTES: usize = 600;
+/// What the agent had said that a prompt replies to, shown to this many
+/// bytes (transcripts.py sends its start and its end): "yes, the second one"
+/// answers something.
+const AFTER_BYTES: usize = 1300;
 /// A session's prompts are kept this long for its later windows: what an
 /// agent runs for an hour was asked for once, at the start.
 const ASKED_TTL_MS: u64 = 7_200_000;
@@ -398,6 +402,9 @@ fn key_of(r: &Value) -> (String, Vec<String>) {
 /// A session's prompts with this window's added: the latest [`ASKED`].
 fn latest(mut earlier: Vec<Value>, now: Vec<Value>) -> Vec<Value> {
     earlier.extend(now);
+    // by when they were typed: a reader that starts late sends old ones late
+    earlier.sort_by(|a, b| a["at"].as_str().cmp(&b["at"].as_str()));
+    earlier.dedup();
     let n = earlier.len().saturating_sub(ASKED);
     earlier.split_off(n)
 }
@@ -418,7 +425,19 @@ fn carried(rec: &Value, now: Vec<Value>) -> Vec<Value> {
     let fresh = !now.is_empty();
     let all = latest(earlier, now);
     if fresh {
-        if let Ok(v) = serde_json::to_string(&all) {
+        // kept without what each replied to: a prompt's first record shows
+        // that, and repeating it was half of every later one
+        let bare: Vec<Value> = all
+            .iter()
+            .map(|a| {
+                let mut a = a.clone();
+                if let Some(m) = a.as_object_mut() {
+                    m.remove("replying_to");
+                }
+                a
+            })
+            .collect();
+        if let Ok(v) = serde_json::to_string(&bare) {
             let _ = state::set(&key, &Scalar::Str(v), Some(ASKED_TTL_MS));
         }
     }
@@ -439,8 +458,14 @@ fn summary(id: &str, records: &[Value]) -> Value {
             if let Some(a) = s(r, "/prompt/agent") {
                 m.insert("agent".into(), json!(a));
             }
+            if let Some(a) = s(r, "/prompt/after") {
+                m.insert("replying_to".into(), json!(cut(a.trim(), AFTER_BYTES)));
+            }
             let text = s(r, "/prompt/text").unwrap_or("");
             m.insert("prompt".into(), json!(cut(text, PROMPT_BYTES)));
+            if r["prompt"]["during"] == true {
+                m.insert("while_working".into(), json!(true));
+            }
             asked.push(Value::Object(m));
             continue;
         }
@@ -679,8 +704,8 @@ mod tests {
             "{}",
             node["files"]
         );
-        // every record but the prompt, which is the session's `asked`
-        assert_eq!(s["session"]["events"], tab.len() - 1);
+        // every record but the two prompts, which are the session's `asked`
+        assert_eq!(s["session"]["events"], tab.len() - 2);
     }
 
     /// A program's chain says where it ends, and whom it works for: the
@@ -751,9 +776,13 @@ mod tests {
         assert_eq!(
             s["asked"],
             json!([{"at": "2026-11-03T20:00:06.000006000Z", "agent": "claude-code",
-                    "prompt": "install the dependencies and run the tests"}])
+                    "replying_to": "The lockfile is out of date, so the tests will not run yet.",
+                    "prompt": "install the dependencies and run the tests"},
+                   // typed while the agent worked: the same turn's
+                   {"at": "2026-11-03T20:00:09.000009000Z", "agent": "claude-code",
+                    "prompt": "and update the lockfile first", "while_working": true}])
         );
-        assert_eq!(s["session"]["events"], tab.len() - 1);
+        assert_eq!(s["session"]["events"], tab.len() - 2);
         let agent = "/Users/dev/.local/share/agent/versions/2.0.0/agent";
         let of_agent: Vec<&Value> = s["programs"]
             .as_array()
@@ -771,10 +800,15 @@ mod tests {
     /// A later window shows the session's latest prompts, oldest first.
     #[test]
     fn the_latest_prompts_are_kept() {
-        let p = |n: u32| json!({"at": n, "prompt": format!("p{n}")});
-        let all = latest(vec![p(1), p(2)], vec![p(3), p(4)]);
-        assert_eq!(all, vec![p(2), p(3), p(4)]);
+        let p = |n: u32| json!({"at": format!("t{n}"), "prompt": format!("p{n}")});
+        let all = latest((1..=4).map(p).collect(), vec![p(5), p(6)]);
+        assert_eq!(all, (2..=6).map(p).collect::<Vec<_>>());
         assert_eq!(latest(vec![p(1)], Vec::new()), vec![p(1)]);
+        // one that arrives late is put where it was typed, and a repeat once
+        assert_eq!(
+            latest(vec![p(2), p(3)], vec![p(1), p(3)]),
+            vec![p(1), p(2), p(3)]
+        );
     }
 
     /// The fixture's TCC grant: Full Disk Access for a binary in /tmp.
