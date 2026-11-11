@@ -5,6 +5,11 @@
 # what runs at login; the rest dropped. Include it in your config with
 # packs/judge/ingest.yaml, route a socket source to plugin macos, and plugin
 # macos to where its records go: examples/macos has the lines.
+# What some programs do as a matter of course, which the summary marks
+# `(usual)` (profiles.yaml).
+enrichment_tables:
+  programs: { type: document, path: profiles.yaml }
+
 runtime:
   # The plugin builds the process tree from fork, exec and exit, in order.
   # The workers take a source's batches in turn, so with more than one a

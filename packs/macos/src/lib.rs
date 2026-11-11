@@ -246,7 +246,7 @@ impl Proc {
 }
 
 // The process tree, in state: `p:<pid>` holds
-// "<ppid>\t<program>\t<name>\t<command>\t<ident>\t<entry pid>\t<entry ident>".
+// "<ppid>\t<program>\t<name>\t<command>\t<ident>\t<entry pid>\t<entry ident>\t<signer>\t<team>\t<platform>".
 // fork adds the child with its parent's program, name and command and its
 // session's entry point, exec replaces the program and keeps the rest, exit
 // leaves the entry for [`EXITED_TTL_MS`]; a process seen before any of those
@@ -266,6 +266,11 @@ struct Known {
     /// whether an event showed it; else it is known from a snapshot of what
     /// was running (`ps`), by path alone
     seen: bool,
+    /// its code identity, as its last event gave it: what a connection, which
+    /// tcpdump reports by pid alone, is matched to a program's profile by
+    signer: Option<String>,
+    team: Option<String>,
+    platform: bool,
 }
 
 impl Known {
@@ -278,7 +283,7 @@ impl Known {
 fn known(pid: i64) -> Option<Known> {
     match state::get(&format!("p:{pid}")) {
         Ok(Some(Scalar::Str(s))) => {
-            let mut f = s.splitn(7, '\t');
+            let mut f = s.splitn(10, '\t');
             let ppid = f.next()?.parse().ok()?;
             let path = f.next()?.to_string();
             let mut field = || f.next().filter(|n| !n.is_empty()).map(str::to_string);
@@ -293,6 +298,9 @@ fn known(pid: i64) -> Option<Known> {
                 (Some(pid), who) => Some((pid, who.unwrap_or_default())),
                 _ => None,
             };
+            let signer = field();
+            let team = field();
+            let platform = field().is_some();
             Some(Known {
                 ppid,
                 path,
@@ -301,6 +309,9 @@ fn known(pid: i64) -> Option<Known> {
                 ident,
                 entry,
                 seen,
+                signer,
+                team,
+                platform,
             })
         }
         _ => None,
@@ -324,12 +335,15 @@ fn store(p: &Proc, entry: Option<&(i64, String)>, ttl: u64) {
     let _ = state::set(
         &format!("p:{}", p.pid),
         &Scalar::Str(format!(
-            "{}\t{}\t{}\t{}\t{}\t{epid}\t{ewho}",
+            "{}\t{}\t{}\t{}\t{}\t{epid}\t{ewho}\t{}\t{}\t{}",
             p.ppid,
             p.path,
             p.name.as_deref().unwrap_or(""),
             p.command.as_deref().unwrap_or(""),
-            p.ident()
+            p.ident(),
+            p.signer.as_deref().unwrap_or(""),
+            p.team.as_deref().unwrap_or(""),
+            if p.platform { "1" } else { "" }
         )),
         Some(ttl),
     );
@@ -722,6 +736,11 @@ fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
             p.insert("ppid".into(), json!(k.ppid));
             p.insert("path".into(), json!(k.path));
             put(&mut p, "name", k.name.clone());
+            put(&mut p, "signer", k.signer.clone());
+            put(&mut p, "team", k.team.clone());
+            if k.seen {
+                p.insert("platform".into(), json!(k.platform));
+            }
         }
         // a process older than the log: tcpdump's name for it
         None => put(&mut p, "name", named.clone()),

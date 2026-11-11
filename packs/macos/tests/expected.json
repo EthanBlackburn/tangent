@@ -1220,6 +1220,7 @@
   "process": {
    "path": "/private/tmp/.x/agentd",
    "pid": 304,
+   "platform": false,
    "ppid": 303
   },
   "session": {

@@ -21,6 +21,7 @@ wit_bindgen::generate!({
 use exports::tangent::logs::mapper::{Guest, Meta, Pred, Selector};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use tangent::logs::enrichment::lookup;
 use tangent::logs::log::{Logview, Scalar};
 use tangent::logs::state;
 
@@ -399,6 +400,146 @@ fn key_of(r: &Value) -> (String, Vec<String>) {
     (program_of(r), above)
 }
 
+/// What a program does as a matter of course, from the `programs` table
+/// (profiles.yaml): matched by code identity, never by name or path.
+struct Profile {
+    name: String,
+    team: Option<String>,
+    platform: bool,
+    signer: String,
+    connects: Vec<String>,
+    files: Vec<String>,
+    reads: Vec<String>,
+    starts: Vec<String>,
+}
+
+fn profiles(doc: &Value) -> Vec<Profile> {
+    let list = |p: &Value, k: &str| -> Vec<String> {
+        p[k].as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    };
+    doc["programs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            Some(Profile {
+                name: p["name"].as_str()?.to_string(),
+                team: p["team"].as_str().map(str::to_string),
+                platform: p["platform"] == true,
+                signer: p["signer"].as_str()?.to_string(),
+                connects: list(p, "connects"),
+                files: list(p, "files"),
+                reads: list(p, "reads"),
+                starts: list(p, "starts"),
+            })
+        })
+        .collect()
+}
+
+impl Profile {
+    /// Whether a summary's program is this one: the same team (or both part
+    /// of macOS) and this signing identifier or one under it.
+    fn is(&self, program: &Value) -> bool {
+        let Some(signer) = program["signer"].as_str() else {
+            return false;
+        };
+        let under = signer
+            .strip_prefix(self.signer.as_str())
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'));
+        under
+            && match &self.team {
+                Some(t) => program["team"] == t.as_str(),
+                None => self.platform && program["platform"] == true,
+            }
+    }
+}
+
+/// Whether a profile's `connects` entry names a host: `*` is anywhere, a
+/// leading dot every host under a domain (`.example.com`: a vendor's
+/// regional and numbered endpoints), anything else the host itself.
+fn reaches(entry: &str, host: &str) -> bool {
+    entry == "*" || entry == host || (entry.starts_with('.') && host.ends_with(entry))
+}
+
+fn covers(list: &[String], what: &str) -> bool {
+    list.iter()
+        .any(|p| p == "*" || what.starts_with(p.as_str()))
+}
+
+/// Marks, in a summary, what its programs' profiles say is routine: ` (usual)`
+/// after a destination or a file the profile lists, `profile` naming the
+/// program, and `started` on a helper it runs for itself. Nothing is taken
+/// out: the judge reads the fact and the note beside it.
+fn mark(rec: &mut Value, known: &[Profile]) {
+    let Some(programs) = rec["programs"].as_array_mut() else {
+        return;
+    };
+    // (path, profile) of each profiled program here, for its helpers
+    let mut parents: Vec<(String, &Profile)> = Vec::new();
+    for p in programs.iter_mut() {
+        let Some(profile) = known.iter().find(|k| k.is(p)) else {
+            continue;
+        };
+        if let Some(path) = p["path"].as_str() {
+            parents.push((path.to_string(), profile));
+        }
+        if let Some(to) = p.get_mut("connected").and_then(Value::as_array_mut) {
+            for line in to.iter_mut() {
+                let Some(text) = line.as_str().filter(|t| !t.starts_with('…')) else {
+                    continue;
+                };
+                // `host:port`, then what the summary adds after a space
+                let first = text.split(' ').next().unwrap_or("");
+                let host = first.rsplit_once(':').map_or(first, |(h, _)| h);
+                if profile.connects.iter().any(|c| reaches(c, host)) {
+                    *line = json!(format!("{text} (usual)"));
+                }
+            }
+        }
+        usual_files(p, profile);
+        p["profile"] = json!(profile.name);
+    }
+    for p in programs.iter_mut() {
+        let above = p
+            .get("parents")
+            .and_then(|a| a.get(0))
+            .and_then(Value::as_str);
+        let (Some(above), Some(path)) = (above.map(tilde), p.get("path").and_then(Value::as_str))
+        else {
+            continue;
+        };
+        let Some((_, profile)) = parents.iter().find(|(parent, profile)| {
+            above.starts_with(parent.as_str()) && covers(&profile.starts, path)
+        }) else {
+            continue;
+        };
+        // a helper works on its program's files: the keychain `security`
+        // reads is the credential its program keeps there
+        usual_files(p, profile);
+        p["started"] = json!(format!("by {}, as it usually does", profile.name));
+    }
+}
+
+/// ` (usual)` after each of a program's files its profile lists.
+fn usual_files(p: &mut Value, profile: &Profile) {
+    let Some(files) = p.get_mut("files").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (change, paths) in files.iter_mut() {
+        for path in paths.as_array_mut().into_iter().flatten() {
+            let Some(text) = path.as_str() else { continue };
+            if covers(&profile.files, text) || (change == "read" && covers(&profile.reads, text)) {
+                *path = json!(format!("{text} (usual)"));
+            }
+        }
+    }
+}
+
 /// A session's prompts with this window's added: the latest [`ASKED`].
 fn latest(mut earlier: Vec<Value>, now: Vec<Value>) -> Vec<Value> {
     earlier.extend(now);
@@ -483,6 +624,15 @@ fn summary(id: &str, records: &[Value]) -> Value {
                 programs.len() - 1
             }
         };
+        // who it is, from whichever of its records says: a connection knows
+        // a process only as the tree did when it came
+        for k in ["signer", "team", "platform"] {
+            if !programs[i].1.about.contains_key(k) {
+                if let Some(v) = r.pointer(&format!("/process/{k}")).filter(|v| !v.is_null()) {
+                    programs[i].1.about.insert(k.into(), v.clone());
+                }
+            }
+        }
         note(&mut programs[i].1, r);
     }
     let total = programs.len();
@@ -610,12 +760,18 @@ impl Guest for Component {
             }
             by.entry(key).or_default().push(r);
         }
+        let known = profiles(
+            &lookup("programs", "")
+                .and_then(|d| serde_json::from_str(&d).ok())
+                .unwrap_or(Value::Null),
+        );
         let mut out = Vec::new();
         for key in order {
             let mut rs = by.remove(&key).unwrap_or_default();
             rs.sort_by(|a, b| s(a, "/ts").cmp(&s(b, "/ts")));
             let id = key.split('\t').next().unwrap_or("?");
             let mut rec = summary(id, &rs);
+            mark(&mut rec, &known);
             let now = match rec.get_mut("asked").map(Value::take) {
                 Some(Value::Array(a)) => a,
                 _ => Vec::new(),
@@ -801,6 +957,84 @@ mod tests {
             })
             .collect();
         assert_eq!(of_agent.len(), 1, "{of_agent:?}");
+    }
+
+    #[test]
+    fn a_leading_dot_is_every_host_under_a_domain() {
+        assert!(reaches(".example.com", "eu2-api.example.com"));
+        assert!(!reaches(".example.com", "example.com.evil.example"));
+        assert!(!reaches(".example.com", "notexample.com"));
+        assert!(!reaches("api.example.com", "eu2-api.example.com"));
+        assert!(reaches("*", "anything.example"));
+    }
+
+    /// A profile marks its program's routine, and only for that code
+    /// identity: the same name under another team is unmarked.
+    #[test]
+    fn a_profile_marks_what_is_routine_for_its_program() {
+        let known = profiles(&json!({"programs": [
+            {"name": "Example Agent", "team": "EXAMPLE123", "signer": "com.example.agent",
+             "connects": ["api.example.com"], "files": ["~/.agent/"],
+             "reads": ["~/Library/Keychains/login.keychain-db"],
+             "starts": ["/usr/bin/security"]},
+            {"name": "Indexer", "platform": true, "signer": "com.apple.mdworker_shared", "reads": ["*"]},
+        ]}));
+        let agent = |team: &str| {
+            json!({"program": "~/bin/agent", "path": "~/bin/agent",
+            "signer": "com.example.agent", "team": team, "platform": false,
+            "connected": ["api.example.com:443 [Example, Inc.] ×3", "evil.example:443", "… 2 more"],
+            "files": {"read": ["~/.agent/settings.json", "~/.ssh/id_ed25519"], "written": ["~/.agent/log"]}})
+        };
+        let mut rec = json!({"programs": [
+            agent("EXAMPLE123"),
+            {"program": "/usr/bin/security", "path": "/usr/bin/security", "platform": true,
+             "signer": "com.apple.security", "parents": ["/Users/dev/bin/agent run", "/bin/zsh"],
+             "files": {"read": ["~/Library/Keychains/login.keychain-db"]}},
+            {"program": "/usr/bin/curl", "path": "/usr/bin/curl", "platform": true,
+             "signer": "com.apple.curl", "parents": ["/Users/dev/bin/agent run", "/bin/zsh"]},
+            {"program": "mdworker", "path": "/System/mdworker_shared", "platform": true,
+             "signer": "com.apple.mdworker_shared", "files": {"read": ["~/x/Local State"], "written": ["~/x/y"]}},
+            agent("OTHERTEAM1"),
+        ]});
+        mark(&mut rec, &known);
+        let p = &rec["programs"];
+        assert_eq!(p[0]["profile"], "Example Agent");
+        assert_eq!(
+            p[0]["connected"],
+            json!([
+                "api.example.com:443 [Example, Inc.] ×3 (usual)",
+                "evil.example:443",
+                "… 2 more"
+            ])
+        );
+        assert_eq!(
+            p[0]["files"],
+            json!({"read": ["~/.agent/settings.json (usual)", "~/.ssh/id_ed25519"],
+                   "written": ["~/.agent/log (usual)"]})
+        );
+        assert_eq!(p[1]["started"], "by Example Agent, as it usually does");
+        assert_eq!(
+            p[1]["files"]["read"][0],
+            "~/Library/Keychains/login.keychain-db (usual)"
+        );
+        // a program with no files or destinations gains neither
+        assert!(
+            p[2].get("files").is_none() && p[2].get("connected").is_none(),
+            "{}",
+            p[2]
+        );
+        assert!(p[3].get("connected").is_none(), "{}", p[3]);
+        assert!(p[2].get("started").is_none(), "{}", p[2]);
+        assert_eq!(
+            p[3]["files"],
+            json!({"read": ["~/x/Local State (usual)"], "written": ["~/x/y"]})
+        );
+        // the same identifier under another team is somebody else's program
+        assert!(p[4].get("profile").is_none());
+        assert_eq!(
+            p[4]["connected"][0],
+            "api.example.com:443 [Example, Inc.] ×3"
+        );
     }
 
     /// A later window shows the session's latest prompts, oldest first.

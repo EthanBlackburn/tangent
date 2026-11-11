@@ -176,6 +176,28 @@ encrypted, so a QUIC connection is named by DNS or not at all. Nothing past
 a hello is read: no URL, no payload, no bytes counted. `net/net_test.py`
 checks it (`python3 -m unittest net_test` in `net/`).
 
+## What a program usually does
+
+Claude Code reads its own credential from the keychain at every start,
+Chrome connects everywhere, and Spotlight opens every file. That is true of
+every Mac, and each drew a flag. `profiles.yaml` says what some programs do
+as a matter of course: the hosts a program connects to (`*` is anywhere, a
+leading dot every host under a domain), the paths it reads and writes, and
+the programs it runs for itself. A program is matched by its code identity,
+never its name or path: its Developer ID team and signing identifier, or for
+a part of macOS `platform` and the identifier, so a binary called Chrome
+that someone else signed gets nothing. The summary names the profile on the
+program (`profile`), puts ` (usual)` after each destination and file the
+profile lists, and marks a helper the program runs for itself (`started`).
+Nothing is taken out: the judge reads the fact with the note beside it, and
+what a profiled program does beyond its profile is unmarked. The `macos`
+plugin keeps each process's signing identity in its tree, so a connection,
+which tcpdump reports by pid alone, is matched as well. The pack's
+ingest.yaml loads the file as the `programs` table. It has Claude Code,
+Google Chrome, Spotify, Cursor, Spotlight and macOS password AutoFill,
+written from captures of one Mac: a release that adds an endpoint is
+unmarked until the file says so.
+
 ## The judge
 
 The judge reads sessions, not records. `macos_sessions` is grouped by
