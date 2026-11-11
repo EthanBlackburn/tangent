@@ -112,6 +112,18 @@ know, and a process's first event replaces what the snapshot said (its
 signature, and its parent unless launchd has taken it since), so a late or
 repeated snapshot does no harm. `ps/ps_test.py` checks it.
 
+## The capture's own processes
+
+The script that runs the capture (examples/macos/run.sh) writes one line to
+the eslogger socket, `{"monitor": {"pid": N}}`, with its own pid. From then
+on the plugin drops the records of that process and everything under it
+(tcpdump, net.py, the snapshot and the transcript reader), though the tree
+still knows them. A name or a command line could not exempt them, since a
+look-alike is worth a flag. The declaration is itself a record, in the
+session of the process that made it: anything running as the person can
+write the line, and a program that calls itself the monitor is seen doing
+so.
+
 ## What the agent was asked
 
 Endpoint Security shows what an AI coding agent ran and never why: the same

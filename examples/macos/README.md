@@ -9,6 +9,19 @@ writes what it flags to `alerts.ndjson`. One config, one process.
 
 ```bash
 ../enrich/setup.sh data                        # once: the address tables that name a connection's network owner
+tangent plugin compile --config tangent.yaml   # once
+./run.sh                                       # everything below, in one command; Ctrl-C stops it all
+```
+
+`run.sh` starts tangent and what feeds it in the order that matters (the
+snapshot, eslogger, the snapshot again, the network capture, the transcript
+reader), with one sudo prompt. It names its own pid as the capture's, and
+the plugin leaves out what it and the programs under it do: a packet capture
+piped to a socket is what a sniffer looks like, and the judge said so of
+this one in every run. `SAVE=1 ./run.sh` also keeps eslogger's and net.py's
+lines beside the config, to replay. By hand, the same is:
+
+```bash
 tangent plugin compile --config tangent.yaml
 tangent run --config haiku.yaml &              # Claude Haiku on Bedrock, AWS_PROFILE set; or tangent.yaml, a local model
 sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify | nc -U es.sock

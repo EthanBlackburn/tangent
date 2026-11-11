@@ -726,6 +726,9 @@ fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     let c = rec.get("net")?;
     let tagged = |k: &str| c.get(k).and_then(Value::as_str).map(str::to_string);
     let pid = int_at(c, "/epid").or_else(|| int_at(c, "/pid"))?;
+    if monitored(pid) {
+        return None;
+    }
     let named = tagged("eproc").or_else(|| tagged("proc"));
     let k = known(pid);
     let mut p = Map::new();
@@ -776,6 +779,64 @@ fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
         n.address("connect.dst", dst);
     }
     Some((out, n))
+}
+
+/// The state key the capture's own pid is kept under.
+const MONITOR: &str = "monitor";
+
+/// A line from the capture's start script, `{"monitor": {"pid": N}}`: the
+/// script that runs tangent, eslogger and tcpdump names its own pid, and what
+/// it and everything under it does is left out from here on. A packet capture
+/// piped to a socket is what a sniffer looks like, so the judge flagged the
+/// capture itself in every run; a name or a command line could not exempt
+/// it, since a look-alike is worth a flag. The declaration is itself a
+/// record, in the session of the process that made it: anything running as
+/// the person can write this line, and a program that calls itself the
+/// monitor is seen doing so. The latest declaration stands.
+fn monitor(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
+    let pid = int_at(rec.get("monitor")?, "/pid").filter(|p| *p > 1)?;
+    let _ = state::set(MONITOR, &Scalar::Str(pid.to_string()), Some(PROC_TTL_MS));
+    let k = known(pid)?;
+    let mut proc = Map::new();
+    proc.insert("pid".into(), json!(pid));
+    proc.insert("ppid".into(), json!(k.ppid));
+    proc.insert("path".into(), json!(k.path));
+    put(&mut proc, "name", k.name.clone());
+    let mut out = Map::new();
+    out.insert("event".into(), json!("monitor"));
+    out.insert("process".into(), Value::Object(proc));
+    situate(&mut out, pid, k.ppid, rec);
+    out.insert(
+        "detail".into(),
+        json!({"declared": "this process says it is the capture: what it and the programs under it do is left out of the records from here on"}),
+    );
+    let n = Norm {
+        actor: Some(k.ident),
+        kind: Some("monitor".into()),
+        principal: Some("none"),
+        ..Norm::default()
+    };
+    Some((out, n))
+}
+
+/// Whether `pid` is the capture's own process or one under it.
+fn monitored(mut pid: i64) -> bool {
+    let Ok(Some(Scalar::Str(m))) = state::get(MONITOR) else {
+        return false;
+    };
+    let Ok(m) = m.parse::<i64>() else {
+        return false;
+    };
+    for _ in 0..PARENTS {
+        if pid == m {
+            return true;
+        }
+        match known(pid) {
+            Some(k) if k.ppid > 1 => pid = k.ppid,
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// A prompt kept to this many bytes: enough to say what was asked; a pasted
@@ -951,6 +1012,11 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
         }
     };
 
+    // the capture's own programs: the tree knows them, the record does not
+    if monitored(actor.pid) {
+        return None;
+    }
+
     let mut out = Map::new();
     out.insert("event".into(), json!(kind));
     out.insert("process".into(), actor.json());
@@ -1114,6 +1180,11 @@ impl Guest for Component {
                 all: vec![Pred::Has("prompt.text".to_string())],
                 none: Vec::new(),
             },
+            Selector {
+                any: Vec::new(),
+                all: vec![Pred::Has("monitor.pid".to_string())],
+                none: Vec::new(),
+            },
         ]
     }
 
@@ -1129,6 +1200,8 @@ impl Guest for Component {
                 connection(&read)
             } else if read.contains_key("prompt") {
                 prompt(&read)
+            } else if read.contains_key("monitor") {
+                monitor(&read)
             } else {
                 finished(&read)
             };
