@@ -6,7 +6,8 @@
 #   ./run.sh tangent.yaml    # a local model
 #   ./run.sh /path/to/a/config.yaml    # sockets, lake and verdicts beside it
 #   SAVE=1 ./run.sh          # also keep eslogger's and net.py's lines, to replay
-#   REVIEW=1 ./run.sh        # review.yaml: each alert also reviewed by a stronger model, the lake to query: reviews.ndjson
+#   REVIEW=1 ./run.sh        # review.yaml: each alert also reviewed by a stronger model, the lake to query: reviews.ndjson;
+#                            # and you are asked about each one that stands, in a dialog: feedback.ndjson (ASK=0: don't)
 #
 # The order: a snapshot of what is running goes first, so the first events
 # have someone above them; eslogger starts; the snapshot goes again, for what
@@ -69,6 +70,14 @@ feeds+=($!)
 python3 "$pack/agent/transcripts.py" > >(nc -U es.sock) &
 feeds+=($!)
 
+# The second reviewer is a stage of the pipeline (review.yaml: plugin
+# macos_review). Each review that stands is put to you in a dialog, and your
+# answer is kept.
+if [ -n "${REVIEW:-}" ] && [ "${ASK:-1}" != 0 ]; then
+  python3 -I "$pack/review/ask.py" --follow reviews.ndjson >> feedback.ndjson 2>> review.log &
+  feeds+=($!)
+fi
+
 stop() {
   trap - INT TERM
   echo
@@ -80,5 +89,5 @@ stop() {
 }
 trap stop INT TERM
 
-echo "capturing into $(pwd): alerts.ndjson and verdicts.ndjson${REVIEW:+ and reviews.ndjson}. Ctrl-C to stop."
+echo "capturing into $(pwd): alerts.ndjson and verdicts.ndjson${REVIEW:+, reviews.ndjson and feedback.ndjson}. Ctrl-C to stop."
 wait "$tangent_pid"

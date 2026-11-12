@@ -339,6 +339,19 @@ brief, where it is cached, which brings the cost back; it also gives text an
 attacker wrote the standing of the brief, which is why it is not the
 default.
 
+`review/ask.py` puts each review that stands to the Mac's owner: one not
+called `benign`, or of something the judge flagged, since no look-alike
+drew a `flag`. It is a dialog (`osascript`'s `display dialog`) with the
+session, the verdict, the finding and what to check, a field for a note,
+and three buttons: "Not me", "Not sure", "That was me". The answer is a
+line of `feedback.ndjson`: the session, both verdicts, `answer` and `note`.
+The dialog waits, the next review behind it, so nothing is told to an empty
+room; `--give-up` closes it after a while, and `--all` asks about the
+`benign` ones too. Its text is the reviewer's, written about records an
+attacker can write into, so it reaches the script as an argument and is
+never part of the AppleScript that runs. Nothing reads the answers yet:
+they are the record of what you said each alert was.
+
 A review that fails is an `error` in the alert's `review` and the alert
 stands: the model's content filter stopped it, which what a worm leaves in
 a log can set off, or it gave no report within its twenty queries. On
@@ -422,7 +435,9 @@ refuses to rewrite `expected.json`; after a change, run the test and copy
 `test_out.ndjson` into it once you have read the diff.
 In `review/`, `cargo test` checks the reviewer's loop against a made-up
 model, the view's bounds, and what a long result is cut to. tangent's own tests
-cover what a statement can read and cannot do (`lake.query`).
+cover what a statement can read and cannot do (`lake.query`). `review/ask_test.py`
+checks which reviews are asked about, the dialog's wording, and that the
+script holds none of a review's text; it shows no dialog.
 
 ## Not here
 

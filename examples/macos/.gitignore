@@ -9,3 +9,5 @@ tangent.log
 es.raw.zst
 net.raw.ndjson
 reviews.ndjson
+feedback.ndjson
+review.log
