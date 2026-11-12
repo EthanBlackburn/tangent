@@ -13,6 +13,16 @@
 //!   would. The SQL is written by a model that has just read whatever an
 //!   attacker put in a command line, and `lake.query` lets a statement read
 //!   the view and nothing else.
+//! - `read_file` reads a file on this Mac as it is now, when the log gives a
+//!   reason to: it was run as a script, or the pack keeps it as an agent's
+//!   settings, instructions, MCP servers or extensions or as something that
+//!   runs later. What steers an agent or runs later does its work through
+//!   what it says, which the log does not hold. A file the pack keeps as
+//!   credentials or as an agent's transcripts is refused, and so is a link
+//!   to a file the log gives no reason to read. The tool is offered when the
+//!   plugin's config sets `files: true`, and its `data` is the directory the
+//!   log's paths are under (`/`), which the plugin reads at `/data`; what is
+//!   read goes to the model.
 //! - `report` gives the answer.
 //!
 //! Each alert goes on with `review` (`verdict`: malicious, benign or
@@ -48,6 +58,20 @@ const RESULT_LIMIT: usize = 12_000;
 const ROWS: u32 = 500;
 const CELL: u32 = 500;
 const QUERY_MS: u32 = 30_000;
+/// Bytes of a file the model is shown.
+const READ_LIMIT: usize = 20_000;
+/// The pack's marks on a file (`_facts`): the ones that give a reason to
+/// read it, and the ones that forbid it.
+const STEERS: &[&str] = &[
+    "agent_settings",
+    "agent_instructions",
+    "agent_mcp",
+    "agent_extensions",
+    "persistence",
+];
+const HELD_BACK: &[&str] = &["credentials", "agent_state"];
+/// What the model is told of `read_file`, when it has it.
+const FILES_BRIEF: &str = include_str!("../../review-files.md");
 
 /// The table: a column's name, the SQL that makes it from the lake's columns
 /// (../lake.yaml), and what the model is told it holds.
@@ -101,8 +125,18 @@ const COLUMNS: &[(&str, &str, &str)] = &[
       `json_get_str(record, 'a', 'b')`"),
 ];
 
-/// The tools the model is given.
-fn tools() -> Value {
+/// The tools the model is given: `read_file` only when `files`.
+fn tools(files: bool) -> Value {
+    let mut tools = all_tools();
+    if !files {
+        if let Some(t) = tools.as_array_mut() {
+            t.retain(|t| t["name"] != "read_file");
+        }
+    }
+    tools
+}
+
+fn all_tools() -> Value {
     json!([
         {
             "name": "query",
@@ -113,6 +147,15 @@ fn tools() -> Value {
                             each GROUP BY column. `->` and `->>` read JSON text and bind loosely: put them in \
                             brackets to compare, `(env->>'HTTPS_PROXY') IS NOT NULL`.",
             "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]},
+        },
+        {
+            "name": "read_file",
+            "description": "Read a file on this Mac as it is now, which may not be as it was at the event: its size, when it \
+                            last changed, and its text. Only a file the log gives a reason to read: one run as a script, or \
+                            one the pack keeps as an agent's settings, instructions, MCP servers or extensions, or as \
+                            something that runs later (a login item, a hook, a shell's rc file, a git config). Credentials \
+                            and an agent's transcripts are refused.",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
         },
         {
             "name": "report",
@@ -223,6 +266,8 @@ fn shown(mut text: String) -> String {
 struct Took {
     calls: u64,
     failed_queries: u64,
+    /// the files the model asked to read
+    files: Vec<String>,
     input_tokens: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
@@ -239,7 +284,7 @@ impl Took {
     }
 
     fn json(&self) -> Value {
-        json!({"calls": self.calls, "failed_queries": self.failed_queries,
+        json!({"calls": self.calls, "failed_queries": self.failed_queries, "files": self.files,
                "input_tokens": self.input_tokens, "cache_read_tokens": self.cache_read_tokens,
                "cache_write_tokens": self.cache_write_tokens, "output_tokens": self.output_tokens})
     }
@@ -248,17 +293,23 @@ impl Took {
 /// The model's review of one alert: its report or `{"error"}`, the SQL it
 /// ran, and what it took. `converse` is one turn with the model (the request
 /// and the reply as `model.chat` has them); `run_query` the model's SQL on
-/// the view, the text to show and whether it ran.
+/// the view, the text to show and whether it ran. `read`, a path's text and
+/// whether it was read, is the `read_file` tool, left out when None; a read
+/// counts against `max_queries` as a query does.
 fn review(
     alert: &Value,
     held: &Value,
     max_queries: usize,
     alert_with_prompt: bool,
     mut run_query: impl FnMut(&str) -> (String, bool),
+    mut read: Option<&mut dyn FnMut(&str) -> (String, bool)>,
     mut converse: impl FnMut(&Value) -> Result<Value, String>,
 ) -> (Value, Vec<String>, Took) {
-    let first = first_message(alert, held);
-    let tools = tools();
+    let mut first = first_message(alert, held);
+    if read.is_some() {
+        first = format!("{}\n\n{first}", FILES_BRIEF.trim_end());
+    }
+    let tools = tools(read.is_some());
     let mut messages = if alert_with_prompt {
         vec![
             json!({"role": "system", "text": first}),
@@ -290,17 +341,27 @@ fn review(
                     None => return (given.clone(), ran, took),
                     Some(wrong) => (wrong.to_string(), false),
                 }
-            } else if ran.len() >= max_queries {
+            } else if ran.len() + took.files.len() >= max_queries {
                 (
                     "No queries are left. Call `report` with what you have.".to_string(),
                     false,
                 )
             } else {
-                let sql = given.get("sql").and_then(Value::as_str).unwrap_or("");
-                ran.push(sql.to_string());
-                let (mut text, ok) = run_query(sql);
-                took.failed_queries += u64::from(!ok);
-                if ran.len() == max_queries {
+                let (mut text, ok) = match (&mut read, call["name"] == "read_file") {
+                    (Some(read), true) => {
+                        let path = given.get("path").and_then(Value::as_str).unwrap_or("");
+                        took.files.push(path.to_string());
+                        read(path)
+                    }
+                    _ => {
+                        let sql = given.get("sql").and_then(Value::as_str).unwrap_or("");
+                        ran.push(sql.to_string());
+                        let (text, ok) = run_query(sql);
+                        took.failed_queries += u64::from(!ok);
+                        (text, ok)
+                    }
+                };
+                if ran.len() + took.files.len() == max_queries {
                     text.push_str("\n\nThat was the last query. Call `report` with what you have.");
                 }
                 (text, ok)
@@ -319,6 +380,226 @@ fn review(
         }
     }
     (json!({"error": "the model gave no report"}), ran, took)
+}
+
+/// A string as SQL writes one.
+fn literal(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
+/// A path without its `.` and `..`, as far as the text says.
+fn normal(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            p => parts.push(p),
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
+/// Where `path` leads once every link in it is followed, read under `root`
+/// (the directory the log's paths are under, as this plugin sees it); None
+/// when the links do not end.
+fn real(root: &std::path::Path, path: &str) -> Option<String> {
+    let mut todo: Vec<String> = normal(path)
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .rev()
+        .map(String::from)
+        .collect();
+    let mut done = String::new();
+    let mut links = 0;
+    while let Some(part) = todo.pop() {
+        let next = format!("{done}/{part}");
+        let seen = root.join(next.trim_start_matches('/'));
+        match std::fs::symlink_metadata(&seen) {
+            Ok(m) if m.file_type().is_symlink() => {
+                links += 1;
+                if links > 40 {
+                    return None;
+                }
+                let target = std::fs::read_link(&seen).ok()?;
+                let target = target.to_string_lossy();
+                if target.starts_with('/') {
+                    done.clear();
+                }
+                // what the link says, then the rest of the path
+                todo.extend(
+                    target
+                        .split('/')
+                        .filter(|p| !p.is_empty())
+                        .rev()
+                        .map(String::from),
+                );
+                let whole = normal(&format!(
+                    "{done}/{}",
+                    todo.iter().rev().cloned().collect::<Vec<_>>().join("/")
+                ));
+                todo = whole
+                    .split('/')
+                    .filter(|p| !p.is_empty())
+                    .rev()
+                    .map(String::from)
+                    .collect();
+                done.clear();
+            }
+            _ => done = next,
+        }
+    }
+    Some(if done.is_empty() { "/".into() } else { done })
+}
+
+/// A path as the pack writes one under a home directory: from `~`.
+fn from_home(path: &str) -> String {
+    match path.strip_prefix("/Users/").and_then(|r| r.split_once('/')) {
+        Some((name, rest)) if !name.is_empty() => format!("~/{rest}"),
+        _ => path.to_string(),
+    }
+}
+
+/// Whether the log gives a reason to read `path`, and when it does not, why
+/// not. `rows` is this plugin's own SQL on the view, each row a JSON object.
+fn permitted(
+    path: &str,
+    rows: &mut dyn FnMut(&str) -> Result<Vec<Value>, String>,
+) -> (bool, String) {
+    let marks = |names: &[&str]| {
+        names
+            .iter()
+            .map(|n| format!("facts['{n}']"))
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    };
+    let counted = rows(&format!(
+        "SELECT count(*) FILTER (WHERE {}) AS held, count(*) FILTER (WHERE {}) AS steers FROM records WHERE file = {}",
+        marks(HELD_BACK),
+        marks(STEERS),
+        literal(path)
+    ));
+    let row = match counted {
+        Ok(rows) => rows.into_iter().next().unwrap_or(Value::Null),
+        Err(e) => return (false, format!("the log could not be asked about it: {e}")),
+    };
+    let n = |k: &str| row.get(k).and_then(Value::as_u64).unwrap_or(0);
+    if n("held") > 0 {
+        return (
+            false,
+            "the pack keeps it as credentials or an agent's transcripts, which are not read".into(),
+        );
+    }
+    if n("steers") > 0 {
+        return (true, String::new());
+    }
+    let base = path.rsplit('/').next().unwrap_or(path);
+    let ran = rows(&format!(
+        "SELECT DISTINCT script FROM records WHERE event = 'exec' AND strpos(script, {}) > 0",
+        literal(base)
+    ))
+    .unwrap_or_default();
+    for row in ran {
+        // `python ~/tools/sync.py`: the interpreter, then the file
+        let script = row.get("script").and_then(Value::as_str).unwrap_or("");
+        let file = script.split_once(' ').map_or("", |(_, f)| f);
+        if file == path || file == from_home(path) {
+            return (true, String::new());
+        }
+    }
+    (false, "the log does not show it run as a script, and the pack does not keep it as an agent's settings, \
+             instructions, MCP servers or extensions or as something that runs later".into())
+}
+
+/// A file's text for the model, if `permit` (a path's leave to be read, and
+/// why not) lets it be read: the text shown, and whether it was read. `root`
+/// is the directory the log's paths are under, as this plugin sees it, and
+/// `home` what `~` stands for.
+fn read_file(
+    root: &std::path::Path,
+    home: Option<&str>,
+    path: &str,
+    permit: &mut dyn FnMut(&str) -> (bool, String),
+) -> (String, bool) {
+    let mut path = path.trim().to_string();
+    if let (Some(rest), Some(home)) = (path.strip_prefix("~/"), home) {
+        path = format!("{}/{rest}", home.trim_end_matches('/'));
+    }
+    if !path.starts_with('/') {
+        return ("error: an absolute path, as the log has it".into(), false);
+    }
+    let path = normal(&path);
+    let Some(real) = real(root, &path) else {
+        return ("not read: its links do not end".into(), false);
+    };
+    let (mut ok, mut why) = permit(&path);
+    if ok && real != path {
+        // A link is read only when where it leads may be read too: a
+        // settings file that is a link to a key is not.
+        let (leads, reason) = permit(&real);
+        ok = leads;
+        why = format!("it is a link to {real}, and {reason}");
+    }
+    if !ok {
+        return (format!("not read: {why}"), false);
+    }
+    let seen = root.join(real.trim_start_matches('/'));
+    let meta = match std::fs::symlink_metadata(&seen) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                format!(
+                    "not read: {} (the file as it is now; the log is of then)",
+                    e.kind()
+                ),
+                false,
+            )
+        }
+    };
+    if !meta.is_file() {
+        return ("not read: not a regular file".into(), false);
+    }
+    let mut data = Vec::new();
+    let read = std::fs::File::open(&seen).and_then(|f| {
+        use std::io::Read;
+        f.take(READ_LIMIT as u64 + 1).read_to_end(&mut data)
+    });
+    if let Err(e) = read {
+        return (
+            format!(
+                "not read: {} (the file as it is now; the log is of then)",
+                e.kind()
+            ),
+            false,
+        );
+    }
+    let changed = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or_else(
+            || "at a time not known".to_string(),
+            |d| rfc3339(d.as_secs()),
+        );
+    let mut head = format!("{real}: {} bytes, last changed {changed}", meta.len());
+    if real != path {
+        head.push_str(&format!(" (reached through the link {path})"));
+    }
+    if data.contains(&0) {
+        return (format!("{head}\n(not text: a binary file)"), true);
+    }
+    let long = data.len() > READ_LIMIT;
+    data.truncate(READ_LIMIT);
+    let mut text = String::from_utf8_lossy(&data).into_owned();
+    if long {
+        text.push_str(&format!(
+            "\n[cut: the first {READ_LIMIT} bytes of {}]",
+            meta.len()
+        ));
+    }
+    (format!("{head}\n\n{text}"), true)
 }
 
 /// A setting of the plugin's `config`, or its default.
@@ -393,6 +674,27 @@ fn reviewed(alert: &Value) -> Value {
         serde_json::from_str::<Value>(rows.lines().next().unwrap_or("{}"))
             .map_err(|e| e.to_string())
     });
+    // `read_file`: the tool is the config's to give, with the directory the
+    // log's paths are under as the plugin's `data`
+    let files = config::get("files").is_some_and(|v| v.trim() == "true");
+    // what `~` stands for: the config's `home`, else the HOME tangent runs with
+    let home = config::get("home").or_else(|| std::env::var("HOME").ok());
+    let mut rows = |sql: &str| -> Result<Vec<Value>, String> {
+        Ok(ask(sql, true, 5000)?
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect())
+    };
+    let mut read = |path: &str| {
+        read_file(
+            std::path::Path::new("/data"),
+            home.as_deref(),
+            path,
+            &mut |p| permitted(p, &mut rows),
+        )
+    };
+    let read: Option<&mut dyn FnMut(&str) -> (String, bool)> =
+        if files { Some(&mut read) } else { None };
     let (answer, ran, took) = match held {
         Err(e) => (
             json!({"error": format!("reading the lake: {e}")}),
@@ -413,6 +715,7 @@ fn reviewed(alert: &Value) -> Value {
                     Err(e) => (shown(format!("error: {e}")), false),
                 }
             },
+            read,
             |request| {
                 let reply = model::chat(&node, &request.to_string())?;
                 serde_json::from_str(&reply).map_err(|e| format!("the model's reply: {e}"))
@@ -530,6 +833,7 @@ mod tests {
                 asked.push(sql.to_string());
                 ("| n |\n| 3 |".into(), true)
             },
+            None,
             model(vec![
                 vec![("query", json!({"sql": "SELECT count(*) FROM records"}))],
                 vec![("query", json!({"sql": "SELECT nope"}))],
@@ -560,6 +864,7 @@ mod tests {
             20,
             false,
             |_| ("(no rows)".into(), false),
+            None,
             |request| {
                 seen.push(request.clone());
                 answers(request)
@@ -570,7 +875,9 @@ mod tests {
         assert!(first.contains("- `parents`: a list"));
         assert!(first.contains("a key was read by a package script"));
         assert_eq!(seen[0]["cache"], true);
+        // without the tool the model is not offered it, or told of it
         assert_eq!(seen[0]["tools"][1]["name"], "report");
+        assert!(!first.contains("read_file"));
         // the second request: the model's turn as it came, then the result under the call's id
         let messages = seen[1]["messages"].as_array().unwrap();
         assert_eq!(messages[1]["role"], "assistant");
@@ -590,6 +897,7 @@ mod tests {
             20,
             false,
             |_| unreachable!(),
+            None,
             model(vec![vec![report("suspicious")], vec![report("unresolved")]]),
         );
         assert_eq!(answer["verdict"], "unresolved");
@@ -609,6 +917,7 @@ mod tests {
                 run += 1;
                 ("ok".into(), true)
             },
+            None,
             model(vec![
                 vec![query(), query(), query()],
                 vec![report("benign")],
@@ -626,6 +935,7 @@ mod tests {
             20,
             false,
             |_| unreachable!(),
+            None,
             model(vec![vec![], vec![report("benign")]]),
         );
         assert_eq!(answer["verdict"], "benign");
@@ -635,6 +945,7 @@ mod tests {
             20,
             false,
             |_| unreachable!(),
+            None,
             model(vec![]),
         );
         assert_eq!(answer["error"], "the model gave no report");
@@ -649,6 +960,7 @@ mod tests {
             20,
             false,
             |_| unreachable!(),
+            None,
             |_| Err("the model failed the turn: content filtered".to_string()),
         );
         assert_eq!(
@@ -682,6 +994,234 @@ mod tests {
         assert!(cut.ends_with("[cut: 40 more characters; select fewer columns or rows]"));
         assert_eq!(shown("  \n".into()), "(no rows)");
         assert_eq!(shown("| n |".into()), "| n |");
+    }
+
+    /// A directory that stands for `/`, with these files under it; removed
+    /// when dropped.
+    struct Root(std::path::PathBuf);
+
+    impl Root {
+        fn new(tag: &str, files: &[(&str, &[u8])]) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("macos-review-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            for (path, text) in files {
+                let at = dir.join(path.trim_start_matches('/'));
+                std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+                std::fs::write(at, text).unwrap();
+            }
+            Root(dir)
+        }
+
+        fn link(&self, from: &str, to: &str) {
+            let at = self.0.join(from.trim_start_matches('/'));
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(to, at).unwrap();
+        }
+
+        /// `read_file` with a log that gives a reason for these paths.
+        fn read(&self, path: &str, reasons: &[&str]) -> (String, bool) {
+            read_file(&self.0, Some("/Users/dev"), path, &mut |p| {
+                (reasons.contains(&p), "the log gives no reason".to_string())
+            })
+        }
+    }
+
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const SETTINGS: &str = "/Users/dev/.claude/settings.json";
+
+    #[test]
+    fn a_permitted_file_is_its_size_its_time_and_its_text() {
+        let root = Root::new("read", &[(SETTINGS, b"{\"hooks\": {}}")]);
+        let (text, ok) = root.read(SETTINGS, &[SETTINGS]);
+        assert!(ok);
+        assert!(
+            text.starts_with("/Users/dev/.claude/settings.json: 13 bytes, last changed 20"),
+            "{text}"
+        );
+        assert!(text.ends_with("Z\n\n{\"hooks\": {}}"), "{text}");
+        // from `~`, and with a `..` in it: the path is made whole before it is judged
+        assert!(root.read("~/.claude/settings.json", &[SETTINGS]).1);
+        assert!(
+            root.read("/Users/dev/code/../.claude/./settings.json", &[SETTINGS])
+                .1
+        );
+        assert_eq!(
+            root.read("settings.json", &[SETTINGS]).0,
+            "error: an absolute path, as the log has it"
+        );
+    }
+
+    #[test]
+    fn a_file_the_log_gives_no_reason_for_is_not_read() {
+        let root = Root::new("refused", &[("/Users/dev/.ssh/id_ed25519", b"key")]);
+        let (text, ok) = root.read("/Users/dev/.ssh/id_ed25519", &[SETTINGS]);
+        assert!(!ok);
+        assert_eq!(text, "not read: the log gives no reason");
+        // and a file that is gone says so
+        let (text, ok) = root.read(SETTINGS, &[SETTINGS]);
+        assert!(!ok);
+        assert!(
+            text.starts_with("not read: ") && text.contains("the file as it is now"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_link_is_read_only_when_where_it_leads_may_be() {
+        let root = Root::new(
+            "link",
+            &[
+                ("/Users/dev/.ssh/id_ed25519", b"key"),
+                ("/Users/dev/dotfiles/settings.json", b"{}"),
+            ],
+        );
+        // a settings file that is a link to a key is not read
+        root.link(SETTINGS, "/Users/dev/.ssh/id_ed25519");
+        let (text, ok) = root.read(SETTINGS, &[SETTINGS]);
+        assert!(!ok);
+        assert_eq!(
+            text,
+            "not read: it is a link to /Users/dev/.ssh/id_ed25519, and the log gives no reason"
+        );
+        // a link in a directory above it counts too, and one written from where it is
+        root.link("/Users/dev/proj/conf", "../dotfiles");
+        let through = "/Users/dev/proj/conf/settings.json";
+        assert!(!root.read(through, &[through]).1);
+        let (text, ok) = root.read(through, &[through, "/Users/dev/dotfiles/settings.json"]);
+        assert!(ok);
+        assert!(
+            text.starts_with("/Users/dev/dotfiles/settings.json: 2 bytes"),
+            "{text}"
+        );
+        assert!(
+            text.contains("(reached through the link /Users/dev/proj/conf/settings.json)"),
+            "{text}"
+        );
+        // links that never end are not followed for ever
+        root.link("/Users/dev/a", "/Users/dev/b");
+        root.link("/Users/dev/b", "/Users/dev/a");
+        assert_eq!(
+            root.read("/Users/dev/a", &["/Users/dev/a"]).0,
+            "not read: its links do not end"
+        );
+    }
+
+    #[test]
+    fn a_long_file_is_cut_and_what_is_not_text_or_not_a_file_is_not_shown() {
+        let long = vec![b'a'; READ_LIMIT + 10];
+        let root = Root::new(
+            "shapes",
+            &[
+                ("/tmp/long.sh", &long),
+                ("/tmp/tool", b"\x7fELF\0\0"),
+                ("/tmp/dir/x", b""),
+            ],
+        );
+        let (text, ok) = root.read("/tmp/long.sh", &["/tmp/long.sh"]);
+        assert!(ok);
+        assert!(
+            text.ends_with(&format!(
+                "\n[cut: the first {READ_LIMIT} bytes of {}]",
+                READ_LIMIT + 10
+            )),
+            "{}",
+            &text[text.len() - 80..]
+        );
+        let (text, ok) = root.read("/tmp/tool", &["/tmp/tool"]);
+        assert!(ok && text.ends_with("(not text: a binary file)"), "{text}");
+        assert_eq!(
+            root.read("/tmp/dir", &["/tmp/dir"]),
+            ("not read: not a regular file".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn the_log_says_which_files_may_be_read() {
+        // the log's answer to each of this plugin's two questions about a path
+        let log = |held: u64, steers: u64, scripts: &'static [&'static str]| {
+            move |sql: &str| -> Result<Vec<Value>, String> {
+                if sql.contains("AS held") {
+                    assert!(
+                        sql.contains("facts['credentials'] OR facts['agent_state']"),
+                        "{sql}"
+                    );
+                    assert!(sql.ends_with("WHERE file = '/Users/dev/it''s.sh'"), "{sql}");
+                    Ok(vec![json!({"held": held, "steers": steers})])
+                } else {
+                    Ok(scripts.iter().map(|s| json!({"script": s})).collect())
+                }
+            }
+        };
+        let path = "/Users/dev/it's.sh";
+        // kept as credentials or an agent's transcripts: never, whatever else it is
+        let (ok, why) = permitted(path, &mut log(1, 1, &["zsh ~/it's.sh"]));
+        assert!(!ok && why.contains("credentials"), "{why}");
+        // kept as what steers an agent or runs later
+        assert!(permitted(path, &mut log(0, 2, &[])).0);
+        // run as a script, as the pack writes it from `~`, or whole
+        assert!(permitted(path, &mut log(0, 0, &["zsh ~/it's.sh"])).0);
+        assert!(permitted(path, &mut log(0, 0, &["python /Users/dev/it's.sh"])).0);
+        // another script of the same name, or no record at all
+        assert!(!permitted(path, &mut log(0, 0, &["zsh ~/other/it's.sh"])).0);
+        let (ok, why) = permitted(path, &mut log(0, 0, &[]));
+        assert!(
+            !ok && why.starts_with("the log does not show it run as a script"),
+            "{why}"
+        );
+        // a lake that cannot be asked gives no leave
+        assert!(!permitted(path, &mut |_| Err("no table".into())).0);
+    }
+
+    #[test]
+    fn a_file_is_read_when_the_tool_is_given_and_counts_as_a_query() {
+        let mut seen = Vec::new();
+        let mut answers = model(vec![
+            vec![("read_file", json!({"path": SETTINGS}))],
+            vec![("query", json!({"sql": "SELECT 1"}))],
+            vec![("read_file", json!({"path": "/etc/hosts"}))],
+            vec![report("unresolved")],
+        ]);
+        let mut read = |path: &str| (format!("{path}: 2 bytes\n\n{{}}"), true);
+        let (answer, ran, took) = review(
+            &alert(),
+            &held(),
+            2,
+            false,
+            |_| ("ok".into(), true),
+            Some(&mut read),
+            |request| {
+                seen.push(request.clone());
+                answers(request)
+            },
+        );
+        assert_eq!(answer["verdict"], "unresolved");
+        assert_eq!(
+            (ran.len(), took.files.len()),
+            (1, 1),
+            "the third look is past the limit"
+        );
+        assert_eq!(took.files, [SETTINGS]);
+        // the model is offered the tool and told of it, and gets the file's text
+        assert_eq!(seen[0]["tools"][1]["name"], "read_file");
+        assert!(seen[0]["messages"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("You can also read what a file says"));
+        assert!(seen[1]["messages"][2]["results"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with(SETTINGS));
+        let last = &seen[3]["messages"][6]["results"][0];
+        assert_eq!(
+            last["text"],
+            "No queries are left. Call `report` with what you have."
+        );
     }
 
     #[test]

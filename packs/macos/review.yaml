@@ -28,6 +28,7 @@ plugins:
     models: [reviewer]
     tables:
       lake: lake                   # table `lake` is what sink `lake` (lake.yaml) has written
+    data: /                        # for read_file: the log's paths are absolute. The plugin reads only a file the log gives a reason to, never one kept as credentials or transcripts
     # An alert waits here until the lake has its records: the sink seals a
     # file five minutes after opening it, and up to a quarter more. Each alert
     # is a group of its own, and a grouped plugin has its own workers, so a
@@ -39,4 +40,5 @@ plugins:
       table: lake
       days: 7                      # how far back from the alert the table reaches
       settle_seconds: 400          # the table ends this long after the alert's last event
-      queries: 20                  # the most queries one review may make
+      queries: 20                  # the most queries and file reads one review may make
+      files: true                  # the model may read such a file as it is now; false: no file's text goes to it
