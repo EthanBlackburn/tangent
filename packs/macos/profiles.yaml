@@ -1,0 +1,86 @@
+# What some programs do as a matter of course on a developer's Mac, for the
+# summary to mark `(usual)`: a note beside a fact, which the judge still
+# reads. A program is matched by its code identity, never its name or path:
+# its Developer ID team and signing identifier (or, for a part of macOS,
+# `platform` and the identifier), the identifier itself or one signed under
+# it (`com.google.Chrome.helper.renderer` under `com.google.Chrome`).
+#
+#   connects  hosts it connects to; `*` is anywhere (a browser), and a
+#             leading dot every host under a domain (`.spotify.com`)
+#   files     paths it reads and writes, by prefix
+#   reads     paths it only reads, by prefix; `*` is anything (an indexer)
+#   starts    programs it runs for itself, by path prefix: not the shells it
+#             runs a person's or an agent's commands in
+#
+# Written from captures of one Mac in November 2026 (Claude Code 2.1.32x,
+# Chrome, Spotify, Cursor, macOS 26.3). A release that adds an endpoint is
+# not here until this file says so: what it does then is unmarked, not hidden.
+programs:
+  - name: Claude Code
+    team: Q6L2SF6YDW
+    signer: com.anthropic.claude-code
+    connects:
+      - api.anthropic.com
+      - mcp-proxy.anthropic.com
+      - downloads.claude.ai
+      - http-intake.logs.us5.datadoghq.com   # its telemetry
+      - api.github.com                        # its plugin marketplaces
+      - raw.githubusercontent.com
+    files:
+      - ~/.claude/
+      - ~/.claude.json
+    reads:
+      - ~/Library/Keychains/login.keychain-db   # its own credential, through `security`
+    starts:
+      - /usr/bin/security          # its own credential, from the keychain
+      - /usr/bin/git
+      - /Library/Developer/CommandLineTools/usr/bin/git
+      - /usr/bin/caffeinate
+      - /usr/bin/pbcopy
+      - /bin/ps
+
+  - name: Google Chrome
+    team: EQHXZ8M8AV
+    signer: com.google.Chrome
+    connects: ["*"]
+    files:
+      - ~/Library/Application Support/Google/Chrome/
+    reads:
+      - ~/Library/Keychains/login.keychain-db   # the key to its own saved passwords and cookies
+
+  - name: Spotify
+    team: 2FNC3A47ZF
+    signer: com.spotify.client
+    connects:
+      - .spotify.com   # its regional access points
+      - .scdn.co       # its CDN
+    reads:
+      - ~/Library/Keychains/login.keychain-db   # its own login
+
+  - name: Cursor
+    team: VDXQ22DGB9
+    signer: com.todesktop.230313mzl4w4u92
+    connects:
+      - .cursor.sh
+      - .cursorapi.com   # its extension marketplace
+    reads:
+      - ~/Library/Keychains/login.keychain-db   # its own login
+    starts:
+      - /usr/bin/git
+      - /Library/Developer/CommandLineTools/usr/bin/git
+
+  - name: Spotlight
+    platform: true
+    signer: com.apple.mdworker_shared
+    reads: ["*"]
+
+  - name: Spotlight
+    platform: true
+    signer: com.apple.mds
+    reads: ["*"]
+
+  - name: macOS password AutoFill
+    platform: true
+    signer: com.apple.SafariPlatformSupport.Helper
+    reads:
+      - ~/Library/Keychains/login.keychain-db
