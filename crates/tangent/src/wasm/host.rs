@@ -14,6 +14,7 @@ use wasmtime::component::{bindgen, HasData, Resource, ResourceTable};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use crate::enrichment::Tables;
+use crate::inference::InferenceNode;
 use crate::state::{StateStore, StateValue, Txn};
 use crate::wasm::host::tangent::logs::log;
 use crate::wasm::host::tangent::logs::remote;
@@ -33,11 +34,16 @@ bindgen!({
         "tangent:logs/state.begin": async,
         "tangent:logs/state.commit": async,
         "tangent:logs/lake.query": async,
+        "tangent:logs/model.chat": async,
     },
     with: {
         "tangent:logs/log.logview": JsonLogView,
     }
 });
+
+/// Inference nodes by name, for the plugins that hold conversations with
+/// them: one copy for the process.
+pub type Models = Arc<HashMap<Arc<str>, Arc<InferenceNode>>>;
 
 pub struct HostEngine {
     pub ctx: WasiCtx,
@@ -58,6 +64,9 @@ pub struct HostEngine {
     /// The Parquet this plugin may query, as `NAME=PATH`; None when its
     /// config names none.
     lake: Option<Arc<[String]>>,
+    /// The inference nodes this plugin may hold a conversation with
+    /// (`plugins.<name>.models`).
+    models: Models,
     /// If true, short-circuit remote calls with successful empty responses.
     pub disable_remote_calls: bool,
 }
@@ -72,6 +81,7 @@ impl HostEngine {
         config: Arc<HashMap<String, JSONValue>>,
         tables: Arc<Tables>,
         lake: Option<Arc<[String]>>,
+        models: Models,
         disable_remote_calls: bool,
     ) -> Self {
         Self {
@@ -85,6 +95,7 @@ impl HostEngine {
             plugin_cfg: config,
             tables,
             lake,
+            models,
             disable_remote_calls,
         }
     }
@@ -260,6 +271,22 @@ impl tangent::logs::config::Host for HostEngine {
 impl tangent::logs::enrichment::Host for HostEngine {
     fn lookup(&mut self, table: String, key: String) -> Option<String> {
         self.tables.lookup(&table, &key)
+    }
+}
+
+/// A turn of a conversation with one of the plugin's `models`: the node's
+/// own request, under its concurrency, timeout and retries.
+impl tangent::logs::model::Host for HostEngine {
+    async fn chat(&mut self, node: String, request: String) -> Result<String, String> {
+        if self.txn.is_some() {
+            return Err("commit or roll back the state transaction first: it would hold every worker's state for the model's reply".into());
+        }
+        let Some(model) = self.models.get(node.as_str()) else {
+            return Err(format!(
+                "inference node `{node}` is not among this plugin's `models` in the config"
+            ));
+        };
+        model.chat(&request).await.map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -569,6 +596,7 @@ mod tests {
             Arc::new(HashMap::default()),
             Arc::new(Tables::default()),
             None,
+            Models::default(),
             true,
         )
     }
@@ -615,6 +643,19 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.contains("no `tables`"), "{e}");
+    }
+
+    /// `model.chat` reaches the nodes the plugin's `models` names, and no other.
+    #[tokio::test]
+    async fn a_plugin_talks_only_to_its_models() {
+        use tangent::logs::model::Host as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = sqlite(tmp.path());
+        let e = guest(&store)
+            .chat("judge".into(), r#"{"messages": []}"#.into())
+            .await
+            .unwrap_err();
+        assert!(e.contains("not among this plugin's `models`"), "{e}");
     }
 
     fn sqlite(dir: &std::path::Path) -> Arc<dyn StateStore> {

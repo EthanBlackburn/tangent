@@ -20,11 +20,13 @@ use wasmtime::component::Component;
 use crate::{
     enrichment::Tables,
     group::{self, Dispatch, GroupConfig, Grouper},
+    inference::InferenceNode,
     router::Router,
     sinks::manager::SinkManager,
     sources, state,
     state::StateStore,
     wasm::engine::WasmEngine,
+    wasm::host::Models,
     worker::WorkerPool,
 };
 
@@ -85,7 +87,13 @@ impl DagRuntime {
                 anyhow::bail!("plugin {name}: max_age_ms must be at least 1");
             }
         }
-        let (engines, components) = load(&cfg, &plugins, config_dir, &store, &tables, workers)?;
+        // One concurrency limit per inference node, whichever pool runs it,
+        // and whichever plugin holds a conversation with it.
+        let permits = crate::inference::permits(&cfg.inference);
+        let models = models(&cfg, &permits, config_dir)?;
+        let (engines, components) = load(
+            &cfg, &plugins, config_dir, &store, &tables, &models, workers,
+        )?;
         let mut outs: HashMap<NodeRef, Vec<NodeRef>> = HashMap::default();
         // `validate` has checked every name, so each resolves
         for e in &cfg.dag {
@@ -102,8 +110,6 @@ impl DagRuntime {
         let router =
             Arc::new(Router::new(outs, Arc::clone(&sink_manager)).with_sink_batch(batch_size));
 
-        // One concurrency limit per inference node, whichever pool runs it.
-        let permits = crate::inference::permits(&cfg.inference);
         // Every worker hosts every plugin and every inference node, and walks
         // the DAG for the records it is handed.
         let pool = Arc::new(
@@ -129,7 +135,9 @@ impl DagRuntime {
         let mut groups = Vec::new();
         let mut groupers = std::collections::HashMap::new();
         for (name, p) in cfg.plugins.iter().filter(|(_, p)| !p.group_by.is_empty()) {
-            let (engines, components) = load(&cfg, &plugins, config_dir, &store, &tables, workers)?;
+            let (engines, components) = load(
+                &cfg, &plugins, config_dir, &store, &tables, &models, workers,
+            )?;
             let pool = Arc::new(
                 WorkerPool::new(
                     workers,
@@ -322,12 +330,36 @@ fn compiled_plugins(
     Ok(paths)
 }
 
+/// The inference nodes some plugin's `models` names, one copy of each for
+/// every plugin instance, counted against the node's permits like the
+/// workers' copies.
+fn models(
+    cfg: &Config,
+    permits: &BTreeMap<Arc<str>, Arc<tokio::sync::Semaphore>>,
+    config_dir: &Path,
+) -> Result<Models> {
+    let mut nodes = ahash::HashMap::default();
+    for name in cfg.plugins.values().flat_map(|p| &p.models) {
+        if nodes.contains_key(name) {
+            continue;
+        }
+        let Some(node) = cfg.inference.get(name) else {
+            continue; // `validate` refuses it
+        };
+        let node = InferenceNode::new(Arc::clone(name), node.clone(), config_dir)?
+            .sharing(Arc::clone(&permits[name]));
+        nodes.insert(Arc::clone(name), Arc::new(node));
+    }
+    Ok(Arc::new(nodes))
+}
+
 fn load(
     cfg: &Config,
     plugins: &[PathBuf],
     config_dir: &Path,
     store: &Arc<dyn StateStore>,
     tables: &Arc<Tables>,
+    models: &Models,
     workers: usize,
 ) -> Result<Loaded> {
     let mut engines: Vec<WasmEngine> = (0..workers)
@@ -336,6 +368,7 @@ fn load(
                 Arc::clone(store),
                 cfg.runtime.state.max_ttl_ms,
                 Arc::clone(tables),
+                Arc::clone(models),
                 cfg.runtime.disable_remote_calls,
             )
         })
@@ -364,6 +397,7 @@ fn load(
                         plugin_cfg.state_namespace.as_deref(),
                         data_dir.as_deref(),
                         &plugin_cfg.tables,
+                        &plugin_cfg.models,
                         plugin_cfg.drop_on_error,
                     )
                     .with_context(|| format!("plugin {name}: loading {}", plugin_path.display()))?,
@@ -739,7 +773,16 @@ mod tests {
 
         let plugins = compiled_plugins(&cfg, &plugins_dir, Some(&cache)).unwrap();
         assert_eq!(plugins, [fetched.join("p.cwasm")]);
-        let (_, components) = load(&cfg, &plugins, root, &store, &tables, 2).unwrap();
+        let (_, components) = load(
+            &cfg,
+            &plugins,
+            root,
+            &store,
+            &tables,
+            &Default::default(),
+            2,
+        )
+        .unwrap();
         assert_eq!(components.len(), 2);
         assert!(components.iter().all(|c| c.len() == 1 && &*c[0].0 == "p"));
 
