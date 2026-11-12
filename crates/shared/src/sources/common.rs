@@ -13,6 +13,7 @@ use crate::sources::sqlite::SqliteConfig;
 use crate::sources::sqs::SQSConfig;
 use crate::sources::supabase::SupabaseConfig;
 use crate::sources::tcp::TcpConfig;
+use crate::sources::vercel_drain::VercelDrainConfig;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
@@ -29,6 +30,8 @@ pub enum SourceConfig {
     SQS(SQSConfig),
     #[serde(rename = "github_webhook")]
     GithubWebhook(GithubWebhookConfig),
+    #[serde(rename = "vercel_drain")]
+    VercelDrain(VercelDrainConfig),
     /// The audit logs a company reads about itself, polled from their APIs
     /// with nothing in between.
     #[serde(rename = "cloudtrail")]
@@ -61,6 +64,7 @@ impl SourceConfig {
             | SourceConfig::Tcp(_)
             | SourceConfig::SQS(_)
             | SourceConfig::GithubWebhook(_)
+            | SourceConfig::VercelDrain(_)
             | SourceConfig::Cloudtrail(_)
             | SourceConfig::Sqlite(_) => false,
         }

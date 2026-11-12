@@ -83,6 +83,7 @@ lru = "0.12.5"
 rig-core = { version = "0.45.0", default-features = false, features = ["reqwest", "rustls"] }
 rig-bedrock = "0.45.0"
 sha2 = "0.10.9"
+sha1 = "0.10.6"
 axum = "0.7.9"
 http-body-util = "0.1.2"
 hmac = "0.12.1"

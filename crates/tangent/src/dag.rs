@@ -465,6 +465,17 @@ fn spawn_consumers(
                     }
                 }));
             }
+            (name, SourceConfig::VercelDrain(vd)) => {
+                let router = router.clone();
+                handles.push(tokio::spawn(async move {
+                    if let Err(e) =
+                        sources::vercel_drain::run_consumer(name, vd, router, shutdown.clone())
+                            .await
+                    {
+                        tracing::error!("vercel drain consumer error: {e:#}");
+                    }
+                }));
+            }
             (name, SourceConfig::Cloudtrail(ct)) => {
                 let router = router.clone();
                 handles.push(tokio::spawn(async move {
