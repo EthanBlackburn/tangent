@@ -20,7 +20,20 @@ reader), with one sudo prompt. It names its own pid as the capture's, and
 the plugin leaves out what it and the programs under it do: a packet capture
 piped to a socket is what a sniffer looks like, and the judge said so of
 this one in every run. `SAVE=1 ./run.sh` also keeps eslogger's and net.py's
-lines beside the config, to replay. By hand, the same is:
+lines beside the config, to replay.
+
+`REVIEW=1 ./run.sh` runs review.yaml, which also gives each alert a second
+look (packs/macos/README.md, "The second reviewer"): a stage of the
+pipeline in which Claude Opus 5.5 on Bedrock (REVIEW_MODEL for another)
+reads the alert, queries the lake,
+and writes what happened and whether it was malicious to
+`reviews.ndjson`, about seven minutes after the alert, once the lake has
+its records. It uses the AWS credentials the Haiku judge does.
+
+`jq 'select(.review.verdict != "benign")' reviews.ndjson` is what is left
+to read.
+
+By hand, the same is:
 
 ```bash
 tangent plugin compile --config tangent.yaml
@@ -54,13 +67,16 @@ already do.
   low effort). It includes the judge pack's
   `hosted.yaml` after `tangent.yaml`, which takes out the local model's
   sampling settings: Haiku 5.5 refuses them.
+- `review.yaml`: haiku.yaml with the second reviewer as a stage: plugin
+  `macos_review` after `macos_verdicts`, and `reviews.ndjson`.
 
 The pack runs the pipeline on one worker, which keeps a process's events in
 order, so the model gets one request at a time: a few sessions' summaries,
 48 KB at most. A session is held in memory until its five minutes close, and
 a restart loses the open ones.
 
-What is kept stays here: `lake/` every record as Parquet (delete old hours to
-trim it), `state.sqlite` the process tree the plugin keeps, `verdicts.ndjson`
+What is kept stays here: `lake/` every record as Parquet (the pack's
+`lake.yaml`; `tangent query --table lake=lake/logs "SELECT …"` reads it;
+delete old hours to trim it), `state.sqlite` the process tree the plugin keeps, `verdicts.ndjson`
 every session's verdict. The records hold command lines, and with the prompt
 transcript reader, your prompts.

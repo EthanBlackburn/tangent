@@ -1,0 +1,24 @@
+# The example with the second reviewer: haiku.yaml, and each alert settled by
+# a stronger model with the lake to query (packs/macos/review.yaml: Claude
+# Opus 5.5 on Bedrock, REVIEW_MODEL for another). An alert waits until the
+# lake has its records, about seven minutes, and goes to reviews.ndjson with
+# its review: malicious, benign or unresolved. It costs money and sends
+# records to a second model, so it is its own config.
+#
+#   REVIEW=1 ./run.sh        # or: tangent run --config review.yaml
+include:
+  - haiku.yaml
+  - ../../packs/macos/review.yaml  # inference node reviewer, and plugin macos_review, which holds a conversation with it
+
+sinks:
+  reviews:
+    type: file
+    path: reviews.ndjson
+    compression:
+      type: none
+
+dag:
+  - from: macos_verdicts           # each alert, also to the reviewer
+    to: [macos_review]
+  - from: macos_review
+    to: [reviews]

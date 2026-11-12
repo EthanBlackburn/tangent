@@ -6,6 +6,7 @@
 #   ./run.sh tangent.yaml    # a local model
 #   ./run.sh /path/to/a/config.yaml    # sockets, lake and verdicts beside it
 #   SAVE=1 ./run.sh          # also keep eslogger's and net.py's lines, to replay
+#   REVIEW=1 ./run.sh        # review.yaml: each alert also reviewed by a stronger model, the lake to query: reviews.ndjson
 #
 # The order: a snapshot of what is running goes first, so the first events
 # have someone above them; eslogger starts; the snapshot goes again, for what
@@ -20,7 +21,8 @@
 # stops everything; tangent finishes the sessions it holds first.
 set -euo pipefail
 
-config=${1:-$(dirname "$0")/haiku.yaml}
+if [ -n "${REVIEW:-}" ]; then default=review.yaml; else default=haiku.yaml; fi
+config=${1:-$(dirname "$0")/$default}
 pack=$(cd "$(dirname "$0")/../../packs/macos" && pwd)
 tangent=${TANGENT:-tangent}
 cd "$(dirname "$config")"
@@ -78,5 +80,5 @@ stop() {
 }
 trap stop INT TERM
 
-echo "capturing into $(pwd): alerts.ndjson and verdicts.ndjson. Ctrl-C to stop."
+echo "capturing into $(pwd): alerts.ndjson and verdicts.ndjson${REVIEW:+ and reviews.ndjson}. Ctrl-C to stop."
 wait "$tangent_pid"
