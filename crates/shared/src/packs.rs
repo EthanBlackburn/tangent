@@ -42,6 +42,7 @@ pub const FILES: &[(&str, &str)] = files![
     "okta/ingest.yaml",
     "google_workspace/ingest.yaml",
     "supabase/ingest.yaml",
+    "macos/ingest.yaml",
 ];
 
 /// A file's name after `pack:`: `judge/hosted.yaml` is `judge/hosted`, and a
@@ -365,6 +366,7 @@ mod tests {
             "pack:google_workspace",
             "pack:judge",
             "pack:judge/hosted",
+            "pack:macos",
             "pack:okta",
             "pack:supabase",
         ];

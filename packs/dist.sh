@@ -25,6 +25,8 @@ PLUGINS=(
   "okta packs/okta"
   "google_workspace packs/google_workspace"
   "supabase packs/supabase"
+  "macos packs/macos"
+  "macos_sessions packs/macos/sessions"
   "baseline_builder packs/behavior-baseline/builder"
   "baseline_renderer packs/behavior-baseline/renderer"
   "fresh packs/judge/fresh"
