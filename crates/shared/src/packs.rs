@@ -46,6 +46,7 @@ pub const FILES: &[(&str, &str)] = files![
     "macos/judge.yaml",
     "macos/judge.md",
     "macos/judge.schema.json",
+    "macos/lake.yaml",
     "macos/profiles.yaml",
 ];
 
@@ -380,6 +381,7 @@ mod tests {
             "pack:judge/hosted",
             "pack:macos",
             "pack:macos/judge",
+            "pack:macos/lake",
             "pack:okta",
             "pack:supabase",
         ];
