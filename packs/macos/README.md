@@ -291,16 +291,18 @@ most of what it marks is ordinary work. Plugin `macos_review` (`review/`,
 stronger model with the lake to query. It holds a conversation with
 inference node `reviewer` (tangent's `model.chat`): Claude Opus 5.5 on
 Bedrock unless REVIEW_MODEL names another, `review.md` as its brief, the
-alert, and two tools. `query` runs the model's SQL (tangent's `lake.query`,
+alert, and three tools. `query` runs the model's SQL (tangent's `lake.query`,
 DataFusion) on one table, `records`: a view over the lake's Parquet files
 for the seven days before the alert, ending where the alert does, with a
 column for each field a question turns on (the event, the session, the
 program and its signer, parents, command line, file, destination, prompt)
-and the record whole beside them. `report` gives the answer:
+and the record whole beside them. `read_file` reads a file on the Mac
+(below). `report` gives the answer:
 `finding`, what happened and who caused it, naming the records; `verdict`,
 `malicious`, `benign` or `unresolved` (the log cannot settle it, and the
 finding says what is missing); and `check`, what to look at or undo first.
-The alert goes on with its review, with the SQL it ran and the tokens it took; examples/macos writes them to `reviews.ndjson`.
+The alert goes on with its review, with the SQL it ran, the files it read and the
+tokens it took; examples/macos writes them to `reviews.ndjson`.
 
 An alert's own records are in the lake once the sink seals their file, five
 minutes after opening it and up to a quarter more. So the plugin is grouped
@@ -324,6 +326,24 @@ a command line. `lake.query` lets a statement read the plugin's table and
 view and nothing else: it cannot create, change or copy anything, set an
 option, or name a file. Your records reach one more model: the alert, and
 each query's result.
+
+What steers an agent or runs later does its work through what it says, and
+the log never holds that: a cloned repository's `.claude/settings.json` is
+a team's permission list or a telemetry redirect, and the events are the
+same. So `read_file` gives the reviewer a file as it is now, with its size
+and when it last changed, when the log gives a reason to read it: an
+interpreter ran it as a script, or the pack keeps it as an agent's settings,
+instructions, MCP servers or extensions or as something that runs later (a
+login item, a hook, an rc file, a git config). A file the pack keeps as
+credentials or as an agent's transcripts is never read, whatever else the
+log says of it; a link is read only when the file it leads to may be, so a
+settings file that is a link to a key is refused; and only a regular file's
+first 20,000 bytes are read. What is read goes to the model with the
+records. The plugin reads through its `data` directory, which `review.yaml`
+sets to `/` since the log's paths are absolute; `files: false` in its
+`config` leaves the tool out, and `review-files.md`, the part of the brief
+that tells the model of it. The file is the one there now: an attacker who
+has put it back shows a clean file, and its change time is all that says so.
 
 The brief is the judge's definition of malicious with what the reviewer has
 that the judge lacks: what the log holds and what it leaves out (file events
@@ -366,7 +386,10 @@ macos/README.md has the run), it cleared all eleven look-alikes' alerts and
 cents and 23 seconds an alert. Of 40 attacks that had an alert, 34 still
 stood and six were cleared, each a `look` it read as the owner's own doing:
 a cloned repository's hook or rule, a script from Downloads. Nothing the
-judge had flagged was cleared. So a `benign` is a reason to read an alert last, not to drop it,
+judge had flagged was cleared. What tells those six from their look-alikes
+is what a file says, which is what `read_file` is for: with the cloned
+repository's settings file on disk, the reviewer named the collector its
+telemetry was sent to, and called the look-alike's permission list benign. So a `benign` is a reason to read an alert last, not to drop it,
 least of all one the judge flagged. The plugin has run on five saved alerts
 of that kind, with the script's verdicts on each; the suite has not been run
 through it.
@@ -434,7 +457,9 @@ a record at a time, without its grouping). The plugin drops records, so `make fi
 refuses to rewrite `expected.json`; after a change, run the test and copy
 `test_out.ndjson` into it once you have read the diff.
 In `review/`, `cargo test` checks the reviewer's loop against a made-up
-model, the view's bounds, and what a long result is cut to. tangent's own tests
+model, the view's bounds, and what a long result is cut to; what `read_file`
+shows and refuses (a link to a file it may not read, a directory, a
+binary), and which files the log lets it read. tangent's own tests
 cover what a statement can read and cannot do (`lake.query`). `review/ask_test.py`
 checks which reviews are asked about, the dialog's wording, and that the
 script holds none of a review's text; it shows no dialog.
