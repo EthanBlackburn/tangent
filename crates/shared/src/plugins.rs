@@ -51,6 +51,11 @@ pub struct PluginConfig {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tables: BTreeMap<String, PathBuf>,
 
+    /// The inference nodes the plugin may hold a conversation with
+    /// (`model.chat`), by name. A node named here needs no edge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<Arc<str>>,
+
     /// When a call fails (the guest traps or returns an error), its records
     /// are dropped; false passes them on unchanged, as if the plugin were
     /// not there.
@@ -104,6 +109,7 @@ impl Default for PluginConfig {
             state_namespace: None,
             data: None,
             tables: BTreeMap::new(),
+            models: Vec::new(),
             drop_on_error: true,
             group_by: Vec::new(),
             max_events: None,
