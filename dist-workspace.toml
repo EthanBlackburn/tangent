@@ -38,6 +38,7 @@ artifacts = [
   "target/packs/macos.component.wasm",
   "target/packs/macos_sessions.component.wasm",
   "target/packs/macos_verdicts.component.wasm",
+  "target/packs/macos_review.component.wasm",
   "target/packs/baseline_builder.component.wasm",
   "target/packs/baseline_renderer.component.wasm",
   "target/packs/fresh.component.wasm",
