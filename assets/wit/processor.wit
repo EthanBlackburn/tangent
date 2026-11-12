@@ -60,9 +60,11 @@ interface enrichment {
   lookup: func(table: string, key: string) -> option<string>;
 }
 
-/// Parquet files read with SQL: the `tables` the plugin's config names, each
-/// a file or a directory with every `.parquet` file under it, as a
-/// `rolling_file` sink keeps a lake. The plugin reads those and nothing else.
+/// The records the pipeline keeps, read with SQL: the `tables` the plugin's
+/// config names, each a sink's records. The runtime reads them as that sink
+/// keeps them, so nothing here says where they are or in what format, and
+/// the SQL is DataFusion's whatever the sink. The plugin reads those tables
+/// and nothing else.
 interface lake {
   record statement {
     /// Views over the tables and the views before them, each a name and its

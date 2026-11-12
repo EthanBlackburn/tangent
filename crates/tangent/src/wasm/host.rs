@@ -293,7 +293,7 @@ impl tangent::logs::model::Host for HostEngine {
 /// How long a plugin's query runs when it names no time.
 const QUERY_TIMEOUT_MS: u32 = 30_000;
 
-/// SQL over the Parquet the plugin's `tables` name. The statement may be a
+/// SQL over the sinks' records the plugin's `tables` name. The statement may be a
 /// model's, so it runs as `tangent query`'s does: it reads the tables and
 /// the plugin's views, and nothing else.
 impl tangent::logs::lake::Host for HostEngine {
