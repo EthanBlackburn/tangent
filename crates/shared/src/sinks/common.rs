@@ -68,22 +68,25 @@ pub enum Encoding {
 }
 
 /// A Parquet file's columns, in order: each a name and its type, a nested
-/// map a struct of columns of its own. Every column may be null.
+/// map a struct of columns of its own, a one-item list a list of that type.
+/// Every column may be null.
 ///
 /// ```yaml
 /// schema:
 ///   ts: timestamp
 ///   source: string
 ///   _norm: { org: string, actor: string }
+///   args: [string]
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Columns(pub Vec<(String, Column)>);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Column {
     Type(ColumnType),
     Struct(Columns),
+    /// Written `[type]`: a list whose items are of the one type.
+    List(Box<Column>),
 }
 
 /// `int` is 64 bits and `float` a double; a `timestamp` is milliseconds in
@@ -111,7 +114,7 @@ impl<'de> serde::de::Visitor<'de> for ColumnVisitor {
         f.write_str(if self.top {
             "a map of column names to their types"
         } else {
-            "a column type (string, int, float, bool, timestamp) or a map of columns"
+            "a column type (string, int, float, bool, timestamp), a map of columns, or a list of one of these"
         })
     }
     fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Column, E> {
@@ -124,6 +127,21 @@ impl<'de> serde::de::Visitor<'de> for ColumnVisitor {
             _ => return Err(E::unknown_variant(v, COLUMN_TYPES)),
         };
         Ok(Column::Type(ty))
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut s: A) -> Result<Column, A::Error> {
+        if self.top {
+            return Err(serde::de::Error::invalid_type(
+                serde::de::Unexpected::Seq,
+                &self,
+            ));
+        }
+        let item = s.next_element::<Column>()?;
+        match (item, s.next_element::<Column>()?) {
+            (Some(item), None) => Ok(Column::List(Box::new(item))),
+            _ => Err(serde::de::Error::custom(
+                "a list column names one type for its items: [string]",
+            )),
+        }
     }
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<Column, A::Error> {
         let mut cols = Vec::new();
@@ -147,7 +165,17 @@ impl<'de> Deserialize<'de> for Columns {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         match d.deserialize_map(ColumnVisitor { top: true })? {
             Column::Struct(cols) => Ok(cols),
-            Column::Type(_) => unreachable!("deserialize_map gives a map"),
+            Column::Type(_) | Column::List(_) => unreachable!("deserialize_map gives a map"),
+        }
+    }
+}
+
+impl Serialize for Column {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Type(ty) => ty.serialize(s),
+            Self::Struct(cols) => cols.serialize(s),
+            Self::List(item) => [item].serialize(s),
         }
     }
 }
@@ -277,6 +305,31 @@ mod tests {
         );
         let back: Columns = serde_yaml::from_str(&serde_yaml::to_string(&schema).unwrap()).unwrap();
         assert_eq!(back, schema);
+    }
+
+    #[test]
+    fn a_parquet_schema_takes_a_list_of_one_type() {
+        let schema: Columns = serde_yaml::from_str(
+            "{ args: [string], exec: { codes: [int] }, runs: [{ pid: int }] }",
+        )
+        .unwrap();
+        assert_eq!(
+            schema.0[0],
+            (
+                "args".into(),
+                Column::List(Box::new(Column::Type(ColumnType::String)))
+            )
+        );
+        let Column::List(run) = &schema.0[2].1 else {
+            panic!("{schema:?}")
+        };
+        assert!(matches!(**run, Column::Struct(_)));
+        let back: Columns = serde_yaml::from_str(&serde_yaml::to_string(&schema).unwrap()).unwrap();
+        assert_eq!(back, schema);
+        let parse = |s: &str| serde_yaml::from_str::<Columns>(s);
+        assert!(parse("{ args: [] }").is_err());
+        assert!(parse("{ args: [string, int] }").is_err());
+        assert!(parse("[string]").is_err());
     }
 
     #[test]
