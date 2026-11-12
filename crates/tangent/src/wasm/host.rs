@@ -32,6 +32,7 @@ bindgen!({
         "tangent:logs/state.scan": async,
         "tangent:logs/state.begin": async,
         "tangent:logs/state.commit": async,
+        "tangent:logs/lake.query": async,
     },
     with: {
         "tangent:logs/log.logview": JsonLogView,
@@ -54,11 +55,15 @@ pub struct HostEngine {
     plugin_cfg: Arc<HashMap<String, JSONValue>>,
     /// The process's enrichment tables, shared with every other instance.
     tables: Arc<Tables>,
+    /// The Parquet this plugin may query, as `NAME=PATH`; None when its
+    /// config names none.
+    lake: Option<Arc<[String]>>,
     /// If true, short-circuit remote calls with successful empty responses.
     pub disable_remote_calls: bool,
 }
 
 impl HostEngine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ctx: WasiCtx,
         state: Arc<dyn StateStore>,
@@ -66,6 +71,7 @@ impl HostEngine {
         max_ttl_ms: u64,
         config: Arc<HashMap<String, JSONValue>>,
         tables: Arc<Tables>,
+        lake: Option<Arc<[String]>>,
         disable_remote_calls: bool,
     ) -> Self {
         Self {
@@ -78,6 +84,7 @@ impl HostEngine {
             txn: None,
             plugin_cfg: config,
             tables,
+            lake,
             disable_remote_calls,
         }
     }
@@ -253,6 +260,45 @@ impl tangent::logs::config::Host for HostEngine {
 impl tangent::logs::enrichment::Host for HostEngine {
     fn lookup(&mut self, table: String, key: String) -> Option<String> {
         self.tables.lookup(&table, &key)
+    }
+}
+
+/// How long a plugin's query runs when it names no time.
+const QUERY_TIMEOUT_MS: u32 = 30_000;
+
+/// SQL over the Parquet the plugin's `tables` name. The statement may be a
+/// model's, so it runs as `tangent query`'s does: it reads the tables and
+/// the plugin's views, and nothing else.
+impl tangent::logs::lake::Host for HostEngine {
+    async fn query(&mut self, s: tangent::logs::lake::Statement) -> Result<String, String> {
+        if self.txn.is_some() {
+            return Err("commit or roll back the state transaction first: it would hold every worker's state for the query".into());
+        }
+        let Some(tables) = &self.lake else {
+            return Err("this plugin has no `tables` in the config to query".into());
+        };
+        let q = crate::query::Query {
+            tables: tables.to_vec(),
+            views: s
+                .views
+                .into_iter()
+                .map(|(name, select)| format!("{name}={select}"))
+                .collect(),
+            sql: s.sql,
+            max_rows: s.max_rows as usize,
+            max_cell: s.max_cell as usize,
+            json: s.json,
+        };
+        let wait = s.timeout_ms.unwrap_or(QUERY_TIMEOUT_MS);
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(u64::from(wait)),
+            crate::query::run(&q),
+        )
+        .await
+        {
+            Ok(rows) => rows.map_err(|e| format!("{e:#}")),
+            Err(_) => Err(format!("the query ran over {wait} ms")),
+        }
     }
 }
 
@@ -522,8 +568,53 @@ mod tests {
             tangent_shared::runtime::StateConfig::default().max_ttl_ms,
             Arc::new(HashMap::default()),
             Arc::new(Tables::default()),
+            None,
             true,
         )
+    }
+
+    /// `lake.query`: the plugin's `tables` and its own views, read and
+    /// nothing else; and no table for a plugin whose config names none.
+    #[tokio::test]
+    async fn a_plugin_queries_its_tables_and_only_reads() {
+        use tangent::logs::lake::{Host as _, Statement};
+        let lake = crate::query::tests::lake();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = sqlite(tmp.path());
+        let statement = |sql: &str| Statement {
+            views: vec![("records".into(), "SELECT program, pid FROM lake".into())],
+            sql: sql.into(),
+            max_rows: 10,
+            json: true,
+            max_cell: 100,
+            timeout_ms: None,
+        };
+        let mut g = guest(&store);
+        g.lake = Some(Arc::from([format!(
+            "lake={}",
+            lake.path().join("logs").display()
+        )]));
+        let rows = g
+            .query(statement("SELECT count(*) AS n FROM records"))
+            .await
+            .unwrap();
+        assert_eq!(rows.trim(), r#"{"n":3}"#);
+        let e = g
+            .query(statement("CREATE TABLE mine AS SELECT 1"))
+            .await
+            .unwrap_err();
+        assert!(e.contains("DDL"), "{e}");
+        // not while a transaction holds the state
+        g.begin().await.unwrap();
+        let e = g.query(statement("SELECT 1")).await.unwrap_err();
+        assert!(e.contains("transaction"), "{e}");
+        g.rollback();
+
+        let e = guest(&store)
+            .query(statement("SELECT 1"))
+            .await
+            .unwrap_err();
+        assert!(e.contains("no `tables`"), "{e}");
     }
 
     fn sqlite(dir: &std::path::Path) -> Arc<dyn StateStore> {

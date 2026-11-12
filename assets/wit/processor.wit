@@ -61,6 +61,35 @@ interface enrichment {
 }
 
 
+/// Parquet files read with SQL: the `tables` the plugin's config names, each
+/// a file or a directory with every `.parquet` file under it, as a
+/// `rolling_file` sink keeps a lake. The plugin reads those and nothing else.
+interface lake {
+  record statement {
+    /// Views over the tables and the views before them, each a name and its
+    /// `SELECT`. The plugin writes these: they are not held to reading.
+    views: list<tuple<string, string>>,
+    /// One statement, which can only read the tables and views: it creates,
+    /// changes and copies nothing, sets no option and names no file, so it
+    /// may come from somewhere the plugin does not trust, such as a model
+    /// that has read the records.
+    sql: string,
+    /// The result is cut to this many rows.
+    max-rows: u32,
+    /// True: each row a JSON object on a line, whole. False: a table to
+    /// read, each cell cut at `max-cell` characters, the rows left out
+    /// counted.
+    json: bool,
+    max-cell: u32,
+    /// The statement is given up after this long; none is 30 s.
+    timeout-ms: option<u32>,
+  }
+
+  /// The statement's rows, or why there are none: the SQL is wrong, a table
+  /// has no file yet, the time ran out.
+  query: func(s: statement) -> result<string, string>;
+}
+
 /// Keyed state in the pipeline's state store, shared by every worker and
 /// every record: a plugin that keeps state per tenant puts the tenant in its
 /// keys, such as `count:<org>`.
@@ -151,5 +180,6 @@ world processor {
   import state;
   import config;
   import enrichment;
+  import lake;
   export mapper;
 }

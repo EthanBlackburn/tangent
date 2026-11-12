@@ -194,6 +194,32 @@ DataFusion's core has no JSON functions, so `tangent query` adds [datafusion-fun
 
 The statement can only read, and only those tables and views. `CREATE`, `DROP`, `INSERT`, `COPY` and `SET` are refused, a file is not a table by its path, and no function reads a file, so the statement may come from somewhere you do not trust, such as a model that has read the records. The tables and views are yours and are not held to that. `--max-rows` (1000) and `--max-cell` (500 characters) cut what is printed, and say so. `--json` prints each row as a JSON object on a line instead, its values whole and a null left out, for a program to read.
 
+A plugin reads a lake the same way, with `lake.query`: its `tables` in the config name the Parquet it may read, each a file or a directory as `--table` takes, relative to the working directory as the sink's `path` is, and the call runs one statement over them and returns its rows, as JSON lines or as the table above. The plugin gives the views, which are its own; the statement is held to reading them and the tables, so it too may be a model's. A plugin with no `tables` has nothing to query:
+
+```yaml
+plugins:
+  investigate:
+    module_type: rust
+    path: ./investigate
+    tables:
+      lake: lake/logs              # what sink `lake` above writes
+```
+
+```rust
+use tangent::logs::lake::{query, Statement};
+
+let rows = query(&Statement {
+    views: vec![("recent".into(), "SELECT ts, source, record FROM lake WHERE ts > now() - INTERVAL '1 day'".into())],
+    sql: "SELECT source, count(*) AS n FROM recent GROUP BY 1".into(),
+    max_rows: 100,
+    json: true,                    // false: a table to read, each cell cut at max_cell characters
+    max_cell: 500,
+    timeout_ms: None,              // 30 s
+})?;
+```
+
+A file is in the lake once the sink has sealed it, `max_file_age_seconds` after it was opened, so a plugin that asks about records minutes old waits for them first: `group_by` with `expire_after_ms` holds its records that long, on workers of the plugin's own.
+
 An `s3` sink goes through the same WAL and puts each sealed file in `bucket_name` as one object, named as a `rolling_file` sink's files are. Its `key_prefix` is what each object's key starts with, before a `/` and the name: a strftime template rendered in UTC for each record's own time, read from `timestamp_field` as a `rolling_file` sink's `path` is, so `logs/cloudtrail/%Y/%m/%d` puts each day's records under a prefix of their own, whenever they arrive, a replay's too (`%%` is a `%`). It is a path in the bucket, and strftime is all that is rendered: `tangent run` and `tangent config` refuse one that is not a strftime template, holds a `{{ field }}`, starts with `/`, or has an empty (`//`), `.` or `..` segment. Without it, objects go to the bucket's root. As in a `rolling_file` sink, a record without a time goes under the time it reaches the sink and is counted, a record arriving after its prefix's objects went out adds another object under it, and records far out of time order make small objects:
 
 ```yaml

@@ -1,8 +1,9 @@
-//! `tangent query`: one read-only SQL statement over Parquet files, by
-//! DataFusion. For reading a lake a `rolling_file` sink keeps, by hand or by
-//! a program that takes its SQL from somewhere it does not trust (a model
-//! that has read the records): the statement can read the tables and views
-//! named on the command line and nothing else. It cannot create, change or
+//! One read-only SQL statement over Parquet files, by DataFusion: `tangent
+//! query` on the command line, and `lake.query` for a plugin, over the
+//! `tables` its config names. For reading a lake a `rolling_file` sink keeps,
+//! by hand or by a program that takes its SQL from somewhere it does not
+//! trust (a model that has read the records): the statement can read the
+//! tables and views it was given and nothing else. It cannot create, change or
 //! copy anything, set an option, or name a file.
 //!
 //! DataFusion's core reads no JSON, and a lake keeps each record whole as
@@ -189,7 +190,7 @@ fn cell(value: &str, max: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use datafusion::arrow::array::{Int64Array, ListArray, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Int64Type, Schema};
@@ -198,7 +199,7 @@ mod tests {
     use std::sync::Arc;
 
     /// A lake of two hours, three rows.
-    fn lake() -> tempfile::TempDir {
+    pub(crate) fn lake() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let schema = Arc::new(Schema::new(vec![
             Field::new("program", DataType::Utf8, true),
