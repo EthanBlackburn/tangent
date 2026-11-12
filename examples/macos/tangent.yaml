@@ -24,21 +24,7 @@
 include:
   - ../../packs/macos/ingest.yaml             # plugin macos, on one worker
   - ../../packs/macos/judge.yaml              # the judge (and the enrich-ip and behavior-baseline packs it includes), reading sessions with the macos pack's brief and answer: pass, look or flag
-
-sinks:
-  lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
-    type: rolling_file
-    path: lake/logs/%Y/%m/%d/%H
-    wal_path: lake/wal
-    max_file_age_seconds: 3600
-    compression: { type: zstd, level: 3 }
-    encoding:
-      type: parquet
-      record_column: record      # each record whole, for the fields the schema leaves out
-      schema:
-        ts: timestamp
-        source: string
-        _norm: { org: string, actor: string, kind: string, ip: string }
+  - ../../packs/macos/lake.yaml               # sink lake: every record as Parquet, the columns the second reviewer queries
 
 sources:
   es:

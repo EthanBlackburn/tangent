@@ -1,0 +1,48 @@
+# macos: the lake, every record plugin `macos` finishes, kept as Parquet
+# files, a directory an hour; delete old hours to trim it. Include it and
+# route plugin macos to sink `lake` (examples/macos does). Its paths are
+# relative to where tangent runs.
+#
+# The columns are the fields a question about a record turns on, typed, and
+# `record` keeps each record whole beside them. The second reviewer (plugin
+# macos_review, review.yaml) queries them, so a column renamed here is
+# renamed there.
+sinks:
+  lake:
+    type: rolling_file
+    path: lake/logs/%Y/%m/%d/%H
+    wal_path: lake/wal
+    max_file_age_seconds: 300      # a record is in a file a query can read within about six minutes, for an alert's review
+    compression: { type: zstd, level: 3 }
+    encoding:
+      type: parquet
+      record_column: record
+      schema:
+        ts: timestamp
+        source: string
+        _norm: { org: string, actor: string, kind: string, ip: string }
+        event: string
+        session: { id: string, entry: string, turn: string, window: string }
+        process: { pid: int, ppid: int, path: string, name: string, signer: string, team: string, platform: bool, tty: string, uid: int }
+        parents: [string]
+        responsible: string
+        exec: { args: [string], cwd: string }
+        file: string
+        from: string
+        access: string
+        modified: bool
+        connect: { host: string, dst: string, port: int }
+        prompt: { text: string }
+        _facts:
+          credentials: bool
+          persistence: bool
+          agent_settings: bool
+          agent_instructions: bool
+          agent_mcp: bool
+          agent_state: bool
+          agent_extensions: bool
+          steering_env: bool
+          scratch_program: bool
+          unsigned: bool
+          rename_over: bool
+          notes: [string]
