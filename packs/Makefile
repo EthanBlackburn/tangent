@@ -11,11 +11,14 @@ PACKS := $(filter $(PACKS),$(patsubst %/ingest.yaml,%,$(wildcard */ingest.yaml))
 # another file fails here.
 test: $(addprefix test-,$(PACKS)) test-macos-unit test-macos-net test-macos-ps test-macos-agent test-baseline test-shared
 
-# packs/macos's three plugins' own tests: the summary and the verdicts have
-# no fixture (`tangent plugin test` runs a plugin a record at a time). After
-# test-macos, whose compile writes each plugin's .tangent/wit.
+# packs/macos's plugins' own tests: the summary and the verdicts have no
+# fixture (`tangent plugin test` runs a plugin a record at a time), and the
+# reviewer's loop runs against a made-up model. After test-macos, whose
+# compile writes each of ingest.yaml's plugins its .tangent/wit; the
+# reviewer is review.yaml's, compiled here for the same.
 test-macos-unit: test-macos
-	for c in . sessions verdicts; do (cd macos/$$c && cargo test) || exit 1; done
+	cd macos && $(TANGENT) plugin compile --config review.yaml
+	for c in . sessions verdicts review; do (cd macos/$$c && cargo test) || exit 1; done
 
 # packs/macos's tcpdump joiner, which is Python, not a plugin.
 test-macos-net:

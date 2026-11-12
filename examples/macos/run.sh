@@ -7,6 +7,7 @@
 #   ./run.sh /path/to/a/config.yaml    # sockets, lake and verdicts beside it
 #   SAVE=1 ./run.sh          # also keep the sensor's and net.py's lines, to replay
 #   SENSOR=/path/to/tangent-sensor ./run.sh   # a sensor from elsewhere than packs/macos/sensor/build: a release's
+#   REVIEW=1 ./run.sh        # review.yaml: each alert also reviewed by a stronger model, the lake to query: reviews.ndjson
 #
 # The order: a snapshot of what is running goes first, so the first events
 # have someone above them; the sensor starts; the snapshot goes again, for what
@@ -21,7 +22,8 @@
 # stops everything; tangent finishes the sessions it holds first.
 set -euo pipefail
 
-config=${1:-$(dirname "$0")/haiku.yaml}
+if [ -n "${REVIEW:-}" ]; then default=review.yaml; else default=haiku.yaml; fi
+config=${1:-$(dirname "$0")/$default}
 pack=$(cd "$(dirname "$0")/../../packs/macos" && pwd)
 tangent=${TANGENT:-tangent}
 sensor=${SENSOR:-$pack/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor}
@@ -85,5 +87,5 @@ stop() {
 }
 trap stop INT TERM
 
-echo "capturing into $(pwd): alerts.ndjson and verdicts.ndjson. Ctrl-C to stop."
+echo "capturing into $(pwd): alerts.ndjson and verdicts.ndjson${REVIEW:+ and reviews.ndjson}. Ctrl-C to stop."
 wait "$tangent_pid"
