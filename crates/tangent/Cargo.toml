@@ -72,6 +72,10 @@ arrow-array = "57.0.0"
 arrow-json = "57.0.0"
 arrow-schema = "57.0.0"
 arrow-ipc = "57.0.0"
+# `tangent query` and a plugin's `lake.query`: SQL over a lake's Parquet files. 52 is the release on the arrow and parquet 57 the sinks write with.
+datafusion = { version = "52.5.0", default-features = false, features = ["parquet", "sql", "nested_expressions", "datetime_expressions", "regex_expressions", "string_expressions", "unicode_expressions", "recursive_protection"] }
+# JSON functions and the -> and ->> operators, for a lake's record column: DataFusion's core has none.
+datafusion-functions-json = "0.52.0"
 tikv-jemallocator = { version = "0.6.1", features = ["profiling"] }
 tikv-jemalloc-ctl = {version = "0.6.1", features = ["stats", "profiling"], optional=true}
 libc = {version = "0.2.177", optional=true}

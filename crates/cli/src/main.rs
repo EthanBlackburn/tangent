@@ -9,7 +9,7 @@ use tangent_bench::BenchOptions;
 use tangent_runtime::RuntimeOptions;
 
 mod fetch;
-mod query;
+use tangent_runtime::query;
 mod scaffold;
 mod state;
 mod test;
