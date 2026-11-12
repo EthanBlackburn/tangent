@@ -33,10 +33,6 @@ ahash = "0.8.12"
 reqwest = { version = "0.12.24", features = ["json"] }
 sha2 = "0.10.9"
 hex = "0.4.3"
-# `tangent query`: SQL over a lake's Parquet files. 52 is the release on the arrow and parquet 57 the sinks write with.
-datafusion = { version = "52.5.0", default-features = false, features = ["parquet", "sql", "nested_expressions", "datetime_expressions", "regex_expressions", "string_expressions", "unicode_expressions", "recursive_protection"] }
-# JSON functions and the -> and ->> operators, for a lake's record column: DataFusion's core has none.
-datafusion-functions-json = "0.52.0"
 
 [[bin]]
 name = "tangent"

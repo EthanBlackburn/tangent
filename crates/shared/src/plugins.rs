@@ -43,6 +43,14 @@ pub struct PluginConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<PathBuf>,
 
+    /// Parquet the plugin may read with SQL (`lake.query`), by the name its
+    /// statements use: a file, or a directory and every `.parquet` file
+    /// under it. Relative to the working directory, as a sink's path is, so
+    /// the lake a `rolling_file` sink keeps is named as the sink names it,
+    /// up to its first `%`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tables: BTreeMap<String, PathBuf>,
+
     /// When a call fails (the guest traps or returns an error), its records
     /// are dropped; false passes them on unchanged, as if the plugin were
     /// not there.
@@ -95,6 +103,7 @@ impl Default for PluginConfig {
             config: HashMap::default(),
             state_namespace: None,
             data: None,
+            tables: BTreeMap::new(),
             drop_on_error: true,
             group_by: Vec::new(),
             max_events: None,

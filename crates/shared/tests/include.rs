@@ -1201,7 +1201,8 @@ fn every_path_field_is_rebased() {
         tests: _, // PATHS: input, expected
         config: _,
         state_namespace: _,
-        data: _, // PATHS
+        data: _,   // PATHS
+        tables: _, // not rebased: relative to the working directory, as the sink that writes them is
         drop_on_error: _,
         group_by: _,
         max_events: _,

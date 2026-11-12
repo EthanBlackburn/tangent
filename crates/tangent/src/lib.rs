@@ -17,6 +17,7 @@ pub mod dag;
 pub mod enrichment;
 pub mod group;
 pub mod inference;
+pub mod query;
 pub mod record;
 pub mod router;
 pub mod sinks;
