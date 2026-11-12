@@ -1,0 +1,7 @@
+# The fixture's addresses, as GeoLite2 Country and ASN answer them: the macos
+# plugin's test reads this file as its `geo` and `asn` tables (ingest.yaml),
+# whatever the config's. An address not here is in no network these tables
+# know. Documentation addresses and AS numbers: nobody's.
+
+"203.0.113.5": {"country": {"iso_code": "NL"}, "autonomous_system_number": 64500, "autonomous_system_organization": "Example Hosting B.V."}
+"198.51.100.7": {"country": {"iso_code": "US"}, "autonomous_system_number": 64501, "autonomous_system_organization": "Example CDN, Inc."}
