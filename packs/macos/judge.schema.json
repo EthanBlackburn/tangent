@@ -1,0 +1,33 @@
+{
+  "title": "Verdict",
+  "description": "What the session did and who did it, and whether it may be someone acting against the owner: pass, look or flag.",
+  "type": "object",
+  "properties": {
+    "assessment": {
+      "type": "string",
+      "maxLength": 400
+    },
+    "warrants_investigation": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "look",
+        "flag"
+      ]
+    },
+    "why": {
+      "type": "string",
+      "maxLength": 400
+    },
+    "so_far": {
+      "type": "string",
+      "maxLength": 900
+    }
+  },
+  "required": [
+    "assessment",
+    "warrants_investigation",
+    "so_far"
+  ],
+  "additionalProperties": false
+}

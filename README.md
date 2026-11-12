@@ -265,7 +265,7 @@ A pack is what tangent knows about one provider's logs, and it is one plugin, na
 | [okta](/packs/okta) | `okta` | the `okta` source: the System Log | Okta's own risk signals kept |
 | [google_workspace](/packs/google_workspace) | `google_workspace` | the `google_workspace` source: login, token, drive and admin activity | each event's parameters by name |
 | [supabase](/packs/supabase) | `supabase` | the `supabase` source: a project's Auth logs | the actor is one of your product's users (`principal: user`), not held to where your people are |
-| [macos](/packs/macos) | | planned: Endpoint Security events from laptops | |
+| [macos](/packs/macos) | `macos`, `macos_sessions` | `eslogger`, Apple's Endpoint Security tool, through a socket: every program run, the writes and telling reads on an AI agent's settings, instructions, MCP config, transcripts and plugins, on credentials and on what runs at login | each session (a terminal tab, an app, an agent) summed up five minutes at a time for the judge, no baseline; environments cut to the names that steer an agent; one worker, for the process tree; examples/macos |
 
 A pack is a directory: the plugin (`Cargo.toml`, `src/`, Rust compiled to WASM), its fixtures (`tests/`), `ingest.yaml` (the plugin and its fixtures; your config says where its records go), and a README saying what it reads, writes, drops and enriches, with the lines to paste.
 
@@ -345,7 +345,7 @@ The judge is any OpenAI-compatible model: `JUDGE_URL` (a local model on `:8080` 
 
 A `tcp` source can feed several packs: route it to each, and each takes only its own `source` values. A record whose `source` no included pack takes goes no further, and `tangent run` says so. Your product's own logs have no pack: no two products' are alike, so they want a plugin of your own that fills `_norm` ([Writing a pack](#writing-a-pack) starts from packs/okta; `tangent plugin scaffold` from nothing). The judge's logfmt wants a row for each of its sources in your config, under `inference.judge.encoding.sources`, as [judge's ingest.yaml](/packs/judge/ingest.yaml) has for each pack's, for their times and the fields on every line; behavior-baseline passes their records through unlearned, with no `_baseline`.
 
-[examples/cloud-infra](/examples/cloud-infra) is every pack for a fictional company, whose cases in [tangent-eval's cases](https://github.com/EthanBlackburn/tangent-eval/tree/main/cases) it is measured against.
+[examples/cloud-infra](/examples/cloud-infra) is every pack for a fictional company, whose cases in [tangent-eval's cases](https://github.com/EthanBlackburn/tangent-eval/tree/main/cases) it is measured against. [examples/macos](/examples/macos) is the macos pack on one developer's Mac.
 
 ### Prebuilt plugins
 A plugin is a WASM component, compiled once and run on every machine, so only a pack's author needs the toolchain. Each release of tangent carries every pack's plugin as a release asset, `<plugin>.component.wasm`, built by [packs/dist.sh](/packs/dist.sh) in the release workflow, and a pack's `ingest.yaml` says so:
