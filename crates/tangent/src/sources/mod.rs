@@ -12,3 +12,4 @@ pub mod sqlite;
 pub mod sqs;
 pub mod supabase;
 pub mod tcp;
+pub mod vercel_drain;

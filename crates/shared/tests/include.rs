@@ -1103,6 +1103,7 @@ sources:
   l: { type: sqlite, path: logs.sqlite, table: logs, partition: actor, batch_size: 40, timeout_secs: 3600 }
   m: { type: github_audit, org: , since: 7d }
   n: { type: supabase, project_ref: abcdefghijklmnopqrst, token: t }
+  o: { type: vercel_drain, secret: s }
 sinks:
   s3: { type: s3, bucket_name: b, region: us-east-1, compression: { type: gzip, level: 6 } }
   file: { type: file, path: out.ndjson, compression: { type: none }, encoding: { type: ndjson }, in_flight_limit: 1, default: true }
@@ -1115,7 +1116,7 @@ sinks:
         Ok(l) => l.config,
         Err(e) => panic!("{e:#}"),
     };
-    assert_eq!(cfg.sources.len(), 13);
+    assert_eq!(cfg.sources.len(), 14);
     assert_eq!(cfg.sinks.len(), 5);
     let SourceConfig::GithubAudit(idle) = &cfg.sources["m"] else {
         panic!("github_audit");
