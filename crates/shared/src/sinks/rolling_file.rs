@@ -38,6 +38,15 @@ const fn max_file_age_seconds() -> u64 {
     60
 }
 
+/// The directory every file of the sink is under: `path` up to its first
+/// strftime specifier.
+pub fn root(path: &str) -> PathBuf {
+    Path::new(path)
+        .components()
+        .take_while(|c| !c.as_os_str().to_string_lossy().contains('%'))
+        .collect()
+}
+
 /// The directory below the sink's root that `path`'s specifiers rendered
 /// to, for a write: relative, and never up.
 pub fn subdir(prefix: &str) -> anyhow::Result<&Path> {

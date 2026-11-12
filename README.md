@@ -194,7 +194,7 @@ DataFusion's core has no JSON functions, so `tangent query` adds [datafusion-fun
 
 The statement can only read, and only those tables and views. `CREATE`, `DROP`, `INSERT`, `COPY` and `SET` are refused, a file is not a table by its path, and no function reads a file, so the statement may come from somewhere you do not trust, such as a model that has read the records. The tables and views are yours and are not held to that. `--max-rows` (1000) and `--max-cell` (500 characters) cut what is printed, and say so. `--json` prints each row as a JSON object on a line instead, its values whole and a null left out, for a program to read.
 
-A plugin reads a lake the same way, with `lake.query`: its `tables` in the config name the Parquet it may read, each a file or a directory as `--table` takes, relative to the working directory as the sink's `path` is, and the call runs one statement over them and returns its rows, as JSON lines or as the table above. The plugin gives the views, which are its own; the statement is held to reading them and the tables, so it too may be a model's. A plugin with no `tables` has nothing to query:
+A plugin reads a lake the same way, with `lake.query`: its `tables` in the config give each table a name and the sink whose records it is, and the call runs one statement over them and returns its rows, as JSON lines or as the table above. The plugin names a sink, not a path or a format: how the records are read follows from the sink, so the plugin and its SQL stay as they are when the lake moves. Today that is a `rolling_file` sink's Parquet; a table that names any other sink is refused when the config loads, with the reason. The plugin gives the views, which are its own; the statement is held to reading them and the tables, so it too may be a model's. A plugin with no `tables` has nothing to query:
 
 ```yaml
 plugins:
@@ -202,7 +202,7 @@ plugins:
     module_type: rust
     path: ./investigate
     tables:
-      lake: lake/logs              # what sink `lake` above writes
+      lake: lake                   # table `lake` is what sink `lake` above has written
 ```
 
 ```rust
@@ -294,7 +294,7 @@ loop {
 }
 ```
 
-The request and the reply are JSON, described with the call in [assets/wit/processor.wit](/assets/wit/processor.wit). A turn that fails after the node's retries (no reply in time, a refusal, a provider's error) is the call's error, and the plugin decides what its record says then. `"cache": true` asks the provider to keep the conversation so far for the next turn; one that cannot at that point answers uncached. On Bedrock that is every turn after a model's first with thinking in it, so what should be kept goes in a `{"role": "system", "text": ...}` message ahead of the others, which is cached with the prompt.
+The request and the reply are JSON, described with the call in [assets/wit/processor.wit](/assets/wit/processor.wit). A turn that fails after the node's retries (no reply in time, a refusal, a provider's error) is the call's error, and the plugin decides what its record says then. `"cache": true` asks the provider to keep the conversation so far for the next turn; one that cannot at that point answers uncached. On Bedrock that is every turn after a model's first with thinking in it, so what should be kept goes in a `{"role": "system", "text": ...}` message ahead of the others, which is cached with the prompt. [packs/macos/review](/packs/macos/review/src/lib.rs) is such a plugin: it settles an alert by querying the lake.
 
 Inference nodes run inside the workers, in DAG order with the plugins: a worker hands a model the records that reached the node, waits for the replies, and carries them on, so a batch's records stay in order and nothing else moves while the model thinks. `concurrency` bounds requests in flight to the node, every worker's together (1 for a laptop GPU, 8 or more for a hosted model); `timeout_ms` (30 s) frees a slot a hung request would otherwise hold; `retries` (2) tries again, backing off, when a request got no reply at all. `temperature` is sent only when set. A signal (SIGINT or SIGTERM) ends the calls under way rather than wait out `timeout_ms` and `retries`: records waiting on one go to no sink and are not acked, so a `sqlite` source sends them again at its next start. Another signal, a second or more after the first, exits at once. See [examples/inference-local](/examples/inference-local) and [examples/inference-bedrock](/examples/inference-bedrock).
 

@@ -46,6 +46,9 @@ pub const FILES: &[(&str, &str)] = files![
     "macos/judge.yaml",
     "macos/judge.md",
     "macos/judge.schema.json",
+    "macos/lake.yaml",
+    "macos/review.yaml",
+    "macos/review.md",
     "macos/profiles.yaml",
 ];
 
@@ -380,6 +383,8 @@ mod tests {
             "pack:judge/hosted",
             "pack:macos",
             "pack:macos/judge",
+            "pack:macos/lake",
+            "pack:macos/review",
             "pack:okta",
             "pack:supabase",
         ];
@@ -421,7 +426,10 @@ mod tests {
 
         write_out(&root, FILES).unwrap();
         let text = |rel: &str| FILES.iter().find(|(f, _)| *f == rel).unwrap().1;
-        assert_eq!(fs::read_to_string(&changed).unwrap(), text("judge/judge.md"));
+        assert_eq!(
+            fs::read_to_string(&changed).unwrap(),
+            text("judge/judge.md")
+        );
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
             text("judge/judge.schema.json")

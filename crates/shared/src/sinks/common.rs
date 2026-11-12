@@ -11,6 +11,31 @@ pub struct SinkConfig {
     pub kind: SinkKind,
 }
 
+impl SinkConfig {
+    /// Where a statement reads this sink's records back, for a plugin's
+    /// `tables`: what the sink is decides how they are read. A
+    /// `rolling_file` sink of Parquet is the directory its files are under,
+    /// and every `.parquet` file below it. No other sink's records are read
+    /// yet: each that comes to be (an `s3` sink's Parquet, a `sqlite` sink's
+    /// table) is an arm here, and the plugin and its config stay as they
+    /// are. Err is why this sink has nothing to read.
+    pub fn table(&self) -> Result<String, String> {
+        match (&self.kind, &self.common.encoding) {
+            (SinkKind::RollingFile(c), Encoding::Parquet { .. }) => {
+                Ok(rolling_file::root(&c.path).display().to_string())
+            }
+            (SinkKind::RollingFile(_), other) => Err(format!(
+                "it writes {}, and of a rolling_file sink's files only Parquet is read",
+                other.extension()
+            )),
+            (kind, _) => Err(format!(
+                "the records of a sink of type {} are not read yet, only a rolling_file sink's Parquet",
+                kind.name()
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum SinkKind {
@@ -26,6 +51,20 @@ pub enum SinkKind {
     Sqlite(sqlite::SqliteConfig),
     #[serde(rename = "slack")]
     Slack(slack::SlackConfig),
+}
+
+impl SinkKind {
+    /// The sink's `type` in a config.
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::S3(_) => "s3",
+            Self::File(_) => "file",
+            Self::RollingFile(_) => "rolling_file",
+            Self::Blackhole(_) => "blackhole",
+            Self::Sqlite(_) => "sqlite",
+            Self::Slack(_) => "slack",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

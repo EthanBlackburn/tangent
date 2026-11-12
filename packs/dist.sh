@@ -28,16 +28,17 @@ PLUGINS=(
   "macos packs/macos"
   "macos_sessions packs/macos/sessions"
   "macos_verdicts packs/macos/verdicts"
+  "macos_review packs/macos/review"
   "baseline_builder packs/behavior-baseline/builder"
   "baseline_renderer packs/behavior-baseline/renderer"
   "fresh packs/judge/fresh"
   "flagged examples/inference-local/flagged"
 )
 
-# The plugins the configs mark prebuilt: the key two lines above each
-# `prebuilt:` at a plugin's indent.
+# The plugins the configs mark prebuilt: the key above each `prebuilt:` at a
+# plugin's indent, in a pack's ingest.yaml and the configs beside it.
 prebuilt_in_configs() {
-  for f in packs/*/ingest.yaml; do
+  for f in packs/*/*.yaml; do
     awk '/^  [a-z_]+:/ { name=$1; sub(":", "", name) } /^    prebuilt:/ { print name }' "$f"
   done | sort -u
 }

@@ -283,6 +283,81 @@ hundred ordinary sessions marked. Nothing here goes to
 behavior-baseline: on a Mac, "first time" fires on every update, new project
 and plugin refresh.
 
+## The second reviewer
+
+The judge reads a summary, marks freely, and cannot look anything up, so
+most of what it marks is ordinary work. Plugin `macos_review` (`review/`,
+`review.yaml`) is a stage after `macos_verdicts` that gives each alert to a
+stronger model with the lake to query. It holds a conversation with
+inference node `reviewer` (tangent's `model.chat`): Claude Opus 5.5 on
+Bedrock unless REVIEW_MODEL names another, `review.md` as its brief, the
+alert, and two tools. `query` runs the model's SQL (tangent's `lake.query`,
+DataFusion) on one table, `records`: a view over the lake's Parquet files
+for the seven days before the alert, ending where the alert does, with a
+column for each field a question turns on (the event, the session, the
+program and its signer, parents, command line, file, destination, prompt)
+and the record whole beside them. `report` gives the answer:
+`finding`, what happened and who caused it, naming the records; `verdict`,
+`malicious`, `benign` or `unresolved` (the log cannot settle it, and the
+finding says what is missing); and `check`, what to look at or undo first.
+The alert goes on with its review, with the SQL it ran and the tokens it took; examples/macos writes them to `reviews.ndjson`.
+
+An alert's own records are in the lake once the sink seals their file, five
+minutes after opening it and up to a quarter more. So the plugin is grouped
+by an alert's session and window with `expire_after_ms: 400000`: each alert
+waits that long before its review, and the table ends that long after the
+alert's last event, so a replay's review sees what a live one would. A
+grouped plugin has workers of its own, so a review that takes a minute
+holds up neither the capture nor the judge; reviews themselves go one at a
+time (`concurrency: 1`). An alert still waiting when tangent stops is
+reviewed early or not at all.
+
+The columns are the lake's own. `lake.yaml` is the lake sink, which your
+config includes (examples/macos does): Parquet with those fields typed, a
+command line and the parents as lists, and `record`, each record whole,
+for the rest, which the reviewer reads by key (`record->>'key'`: the kept
+environment variables, a rare event's detail). A lake written without
+`lake.yaml` has only `record`, and the reviewer's view does not fit it.
+
+The SQL is written by a model that has just read whatever an attacker put in
+a command line. `lake.query` lets a statement read the plugin's table and
+view and nothing else: it cannot create, change or copy anything, set an
+option, or name a file. Your records reach one more model: the alert, and
+each query's result.
+
+The brief is the judge's definition of malicious with what the reviewer has
+that the judge lacks: what the log holds and what it leaves out (file events
+for the kept groups only, never a file's content or a connection's), that
+the judge's answer is a lead and not a finding, and that the days before
+show what is routine on this Mac.
+
+The alert is in the conversation's first message, with the columns. A model
+on Bedrock that thinks keeps only the brief cached between its turns, so a
+review's input costs about 1.7 times what it would with the alert kept too.
+`alert_with_prompt: true` in the plugin's `config` puts the alert beside the
+brief, where it is cached, which brings the cost back; it also gives text an
+attacker wrote the standing of the brief, which is why it is not the
+default.
+
+A review that fails is an `error` in the alert's `review` and the alert
+stands: the model's content filter stopped it, which what a worm leaves in
+a log can set off, or it gave no report within its twenty queries. On
+tangent-eval's macOS suite the filter stopped one review in seven, nearly
+all of them of attacks the judge had flagged.
+
+The reviewer was measured as the script it was before it was a plugin
+(`review.py`, the same brief, tools and model): on that suite's 91 alerts,
+from the log alone (its files are nowhere on disk; tangent-eval's
+macos/README.md has the run), it cleared all eleven look-alikes' alerts and
+36 of 39 on ordinary sessions, so 37 alerts were left to read, at twelve
+cents and 23 seconds an alert. Of 40 attacks that had an alert, 34 still
+stood and six were cleared, each a `look` it read as the owner's own doing:
+a cloned repository's hook or rule, a script from Downloads. Nothing the
+judge had flagged was cleared. So a `benign` is a reason to read an alert last, not to drop it,
+least of all one the judge flagged. The plugin has run on five saved alerts
+of that kind, with the script's verdicts on each; the suite has not been run
+through it.
+
 ## The cases
 
 The question under every session is who touched the agent's steering, and
@@ -345,6 +420,9 @@ path groups' unit tests, and in `sessions/` the summary's, one of them over
 a record at a time, without its grouping). The plugin drops records, so `make fixtures-macos`
 refuses to rewrite `expected.json`; after a change, run the test and copy
 `test_out.ndjson` into it once you have read the diff.
+In `review/`, `cargo test` checks the reviewer's loop against a made-up
+model, the view's bounds, and what a long result is cut to. tangent's own tests
+cover what a statement can read and cannot do (`lake.query`).
 
 ## Not here
 
