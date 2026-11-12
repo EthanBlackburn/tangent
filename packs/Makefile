@@ -2,14 +2,32 @@ TANGENT ?= tangent
 export TANGENT
 
 # Every pack: a directory with an ingest.yaml and a plugin (enrich-ip,
-# behavior-baseline, judge and macos have none).
+# behavior-baseline and judge have none).
 PACKS := $(sort $(patsubst %/Cargo.toml,%,$(wildcard */Cargo.toml)))
 PACKS := $(filter $(PACKS),$(patsubst %/ingest.yaml,%,$(wildcard */ingest.yaml)))
 
 # Each pack alone: its plugin compiled and its fixtures run from its own
 # ingest.yaml, against the tables in its tests/, so a pack that leans on
 # another file fails here.
-test: $(addprefix test-,$(PACKS)) test-baseline test-shared
+test: $(addprefix test-,$(PACKS)) test-macos-unit test-macos-net test-macos-ps test-macos-agent test-baseline test-shared
+
+# packs/macos's three plugins' own tests: the summary and the verdicts have
+# no fixture (`tangent plugin test` runs a plugin a record at a time). After
+# test-macos, whose compile writes each plugin's .tangent/wit.
+test-macos-unit: test-macos
+	for c in . sessions verdicts; do (cd macos/$$c && cargo test) || exit 1; done
+
+# packs/macos's tcpdump joiner, which is Python, not a plugin.
+test-macos-net:
+	cd macos/net && python3 -m unittest net_test
+
+# packs/macos's snapshot of what was running when the capture began.
+test-macos-ps:
+	cd macos/ps && python3 -m unittest ps_test
+
+# packs/macos's reader of Claude Code's transcripts.
+test-macos-agent:
+	cd macos/agent && python3 -m unittest transcripts_test
 
 test-%:
 	cd $* && $(TANGENT) plugin compile --config ingest.yaml && $(TANGENT) plugin test --config ingest.yaml
@@ -40,4 +58,4 @@ fixtures-%:
 fixtures-baseline:
 	behavior-baseline/story.sh write
 
-.PHONY: test test-baseline test-shared dist fixtures-baseline
+.PHONY: test test-macos-unit test-macos-net test-macos-ps test-macos-agent test-baseline test-shared dist fixtures-baseline

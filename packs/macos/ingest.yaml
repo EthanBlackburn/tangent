@@ -1,0 +1,50 @@
+# macos: eslogger's events from a Mac into finished records, by one plugin,
+# `macos`: every program run (its environment cut to the names that steer an
+# AI agent), and the writes and telling reads on an agent's settings,
+# instructions, MCP config, transcripts and plugins, on credentials and on
+# what runs at login; the rest dropped. Include it in your config with
+# judge.yaml (the judge, with the brief and answer for a Mac's sessions in
+# place of its own), route a socket source to plugin macos, and plugin
+# macos to where its records go: examples/macos has the lines.
+# What some programs do as a matter of course, which the summary marks
+# `(usual)` (profiles.yaml).
+enrichment_tables:
+  programs: { type: document, path: profiles.yaml }
+
+runtime:
+  # The plugin builds the process tree from fork, exec and exit, in order.
+  # The workers take a source's batches in turn, so with more than one a
+  # process's fork and its exec could race: one worker keeps them in order.
+  # It is the whole pipeline's, the judge's workers too, so the model gets one
+  # request at a time.
+  workers: 1
+plugins:
+  macos:
+    module_type: rust
+    path: .
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
+    tests:
+      - input: tests/input.json
+        expected: tests/expected.json
+        enrichment_tables:            # what the fixture was written against, in any config
+          geo: { type: document, path: tests/addresses.yaml }   # GeoLite2's answers for its addresses
+          asn: { type: document, path: tests/addresses.yaml }
+          networks: { type: cidr, path: tests/networks.csv }
+  # A session's records a few minutes at a time, into one summary for the
+  # judge: what each of its programs ran and touched. Your config routes plugin
+  # macos to it, and it to the judge.
+  macos_sessions:
+    module_type: rust
+    path: sessions
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
+    group_by: [session.id, session.window]   # a session's five minutes by when its events happened, or an agent's turn: from one prompt to the next
+    max_age_ms: 900000           # and live, no later than fifteen minutes after the first of them: a long turn comes in parts
+    expire_after_ms: 60000       # or a minute of the session's quiet
+  # What the judge said of each session: its running summary kept in state
+  # for the session's next summary (`so_far`), and each `look` or `flag` a
+  # person has not been told of in this turn passed on. Your config routes the
+  # judge to it, and it to where alerts go.
+  macos_verdicts:
+    module_type: rust
+    path: verdicts
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
