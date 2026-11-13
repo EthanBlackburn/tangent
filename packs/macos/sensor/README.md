@@ -14,6 +14,12 @@ rest (the stat blocks, the code hashes), so a line is about half the size of
 eslogger's. Nothing is filtered yet: every event of the ten kinds is written.
 `examples/macos/run.sh` starts it with the rest of the capture.
 
+Each line is written as its event arrives. When the reader is too slow the
+kernel drops events, and the sensor says on stderr how many of each kind, by
+the gaps in the numbers the kernel gives them. Of the ten, only `tcc_modify`
+may be missing (it came with macOS 15.4) and the sensor goes on without it;
+any other event refused, it stops.
+
 One Swift file, no dependencies. It needs root and, for the terminal that
 starts it, Full Disk Access.
 
@@ -46,6 +52,29 @@ profile beside it, and is signed with the entitlements the profile lists. The
 bundle's identifier and the team are read from the profile: neither is in
 this directory, and `*.provisionprofile` is ignored by git.
 
+## Hand it out
+
+The entitlement is the signer's, not the Mac's: a build signed with the
+team's Developer ID, with a Developer ID profile in it, runs on any Mac, and
+whoever downloads it asks Apple for nothing. In the developer account that
+takes a Developer ID Application certificate and a Developer ID profile for
+the same App ID; then
+
+```bash
+./build.sh developer-id.provisionprofile "Developer ID Application"   # both architectures, timestamped
+./notarize.sh --keychain-profile NAME                                 # or --key FILE --key-id ID --issuer UUID
+```
+
+`notarize.sh` sends the bundle to Apple's notary, staples the ticket on and
+writes `build/tangent-sensor-macos.zip`, which Gatekeeper lets through on a
+Mac that has never seen it. `.github/workflows/sensor.yml` does the same on
+a release, from six secrets it lists, and uploads the zip beside the
+binaries; where the secrets are not set it builds nothing. The bundle's
+version is tangent's, from the workspace's Cargo.toml.
+
+A build from source, or a fork's, cannot be signed with another team's
+entitlement: it needs its own grant from Apple.
+
 ## Limits
 
 - It is started by hand or by `run.sh`, under sudo. It is not yet a launch
@@ -54,4 +83,6 @@ this directory, and `*.provisionprofile` is ignored by git.
   after they have crossed the socket.
 - `btm_launch_item_add` and `tcc_modify` are written from Apple's headers
   and eslogger's field names; neither has occurred in a run yet.
+- The notarized build has been through Gatekeeper on the Mac that built it,
+  as a quarantined download. It has not been run on a second Mac.
 - Endpoint Security reports no network. `net/net.py` stays.
