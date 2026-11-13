@@ -10,13 +10,17 @@
 # bundle, so the binary is built as build/TangentSensor.app/Contents/MacOS/tangent-sensor
 # with the profile beside it, and signed with the entitlements the profile
 # itself lists: the bundle's identifier and the team are read from the
-# profile, and neither is written here.
+# profile, and neither is written here. The bundle's version is tangent's,
+# from the workspace's Cargo.toml, so a sensor says which release it is of.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 profile=${1:-}
 identity=${2:-Apple Development}
 app=build/TangentSensor.app
+# a bundle's version is digits and dots: 0.2.0-rc.1 is written 0.2.0
+version=$(sed -n 's/^version = "\([0-9.]*\).*"$/\1/p' ../../../Cargo.toml | head -1)
+[ -n "$version" ] || { echo "no version in the workspace's Cargo.toml" >&2; exit 1; }
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 
@@ -28,8 +32,8 @@ lipo -create build/tangent-sensor.arm64 build/tangent-sensor.x86_64 -output "$ap
 rm build/tangent-sensor.arm64 build/tangent-sensor.x86_64
 
 if [ -z "$profile" ]; then
-  sed "s/BUNDLE_ID/dev.tangent.sensor/" Info.plist > "$app/Contents/Info.plist"
-  echo "built $app, unsigned: it cannot open an Endpoint Security client"
+  sed -e "s/BUNDLE_ID/dev.tangent.sensor/" -e "s/VERSION/$version/" Info.plist > "$app/Contents/Info.plist"
+  echo "built $app $version, unsigned: it cannot open an Endpoint Security client"
   exit 0
 fi
 
@@ -43,12 +47,12 @@ if ! plutil -extract Entitlements.com\\.apple\\.developer\\.endpoint-security\\.
   exit 1
 fi
 
-sed "s/BUNDLE_ID/$bundle_id/" Info.plist > "$app/Contents/Info.plist"
+sed -e "s/BUNDLE_ID/$bundle_id/" -e "s/VERSION/$version/" Info.plist > "$app/Contents/Info.plist"
 cp "$profile" "$app/Contents/embedded.provisionprofile"
 # a build to hand out is notarized, and Apple's notary wants its time of signing
 stamp=--timestamp=none
 case "$identity" in "Developer ID"*) stamp=--timestamp ;; esac
 codesign --force --options runtime "$stamp" --sign "$identity" --entitlements build/entitlements.plist "$app"
 codesign --verify --strict "$app"
-echo "built and signed $app ($bundle_id)"
+echo "built and signed $app $version ($bundle_id)"
 echo "run: sudo $(pwd)/$app/Contents/MacOS/tangent-sensor | nc -U es.sock"

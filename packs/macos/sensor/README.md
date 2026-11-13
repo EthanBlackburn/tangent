@@ -69,7 +69,8 @@ the same App ID; then
 writes `build/tangent-sensor-macos.zip`, which Gatekeeper lets through on a
 Mac that has never seen it. `.github/workflows/sensor.yml` does the same on
 a release, from six secrets it lists, and uploads the zip beside the
-binaries; where the secrets are not set it builds nothing.
+binaries; where the secrets are not set it builds nothing. The bundle's
+version is tangent's, from the workspace's Cargo.toml.
 
 A build from source, or a fork's, cannot be signed with another team's
 entitlement: it needs its own grant from Apple.
