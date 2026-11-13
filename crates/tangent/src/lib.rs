@@ -177,15 +177,7 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
 
     if !opts.once {
         wait_for_shutdown_signal().await?;
-        stop_models.cancel();
-        // a signal within a second of the first is the same stop
-        tokio::spawn(async {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if wait_for_shutdown_signal().await.is_ok() {
-                tracing::warn!("second signal; exiting now");
-                std::process::exit(130);
-            }
-        });
+        stopping(&stop_models);
     }
 
     #[cfg(feature = "alloc-prof")]
@@ -199,6 +191,19 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+/// What the first signal starts: the model calls end, and a second signal
+/// exits at once. One within a second of the first is the same stop.
+pub(crate) fn stopping(stop_models: &CancellationToken) {
+    stop_models.cancel();
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if wait_for_shutdown_signal().await.is_ok() {
+            tracing::warn!("second signal; exiting now");
+            std::process::exit(130);
+        }
+    });
 }
 
 pub async fn wait_for_shutdown_signal() -> Result<()> {

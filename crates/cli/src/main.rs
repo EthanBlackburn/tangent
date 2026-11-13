@@ -94,15 +94,15 @@ enum Commands {
     /// Read a past range of the config's sources through it, as fast as it
     /// is read, then close every group and wait for the judge. Each source
     /// whose past tangent can read is read (a cloudtrail source's, from its
-    /// account's Event history), and the rest are left out, as are Slack, S3
-    /// and rolling_file sinks. The history it builds starts empty and is gone
+    /// account's Event history), and the rest are left out, as are Slack, S3,
+    /// rolling_file and sqlite sinks. The history it builds starts empty and is gone
     /// after; a live pipeline's state and lake are left as they are
     Replay {
         /// Path to YAML config
         #[arg(long, value_name = "FILE")]
         config: PathBuf,
         /// Start of the range: a date (2026-10-01, midnight UTC), an RFC 3339
-        /// time, or a span before now (1d, 12h)
+        /// time, or a span before now (1d, 12h, 30m)
         #[arg(long, value_name = "WHEN")]
         from: String,
         /// End of the range, as --from; five minutes ago when left out, since
