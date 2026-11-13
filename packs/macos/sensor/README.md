@@ -46,16 +46,6 @@ profile beside it, and is signed with the entitlements the profile lists. The
 bundle's identifier and the team are read from the profile: neither is in
 this directory, and `*.provisionprofile` is ignored by git.
 
-## Check it against eslogger
-
-```bash
-./compare.sh        # both at once for a minute, then compare.py over the two
-```
-
-`compare.py` takes the events both saw in the time both ran, matches them by
-time, kind and pid, and compares every field plugin `macos` reads. It prints
-counts and field names, never a value.
-
 ## Limits
 
 - It is started by hand or by `run.sh`, under sudo. It is not yet a launch
@@ -63,6 +53,5 @@ counts and field names, never a value.
 - No filtering at the source: the plugin still drops most `open` events
   after they have crossed the socket.
 - `btm_launch_item_add` and `tcc_modify` are written from Apple's headers
-  and eslogger's field names; neither occurred in the minute it was compared
-  over.
+  and eslogger's field names; neither has occurred in a run yet.
 - Endpoint Security reports no network. `net/net.py` stays.
