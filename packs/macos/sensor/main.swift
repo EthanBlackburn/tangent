@@ -271,7 +271,16 @@ case ES_NEW_CLIENT_RESULT_ERR_TOO_MANY_CLIENTS: fail("too many Endpoint Security
 default: fail("es_new_client failed (\(made.rawValue))")
 }
 guard let client else { fail("es_new_client gave no client") }
-guard es_subscribe(client, subscribed, UInt32(subscribed.count)) == ES_RETURN_SUCCESS else {
-    fail("es_subscribe failed")
+// one at a time: an older macOS does not know the newest of them (tcc_modify
+// came with 15.4), and the rest are still worth having
+var taken = 0
+for kind in subscribed {
+    if es_subscribe(client, [kind], 1) == ES_RETURN_SUCCESS {
+        taken += 1
+    } else {
+        FileHandle.standardError.write(
+            Data("tangent-sensor: this macOS does not report event type \(kind.rawValue): going on without it\n".utf8))
+    }
 }
+guard taken > 0 else { fail("es_subscribe failed for every event") }
 dispatchMain()
