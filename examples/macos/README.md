@@ -25,7 +25,7 @@ lines beside the config, to replay. By hand, the same is:
 ```bash
 tangent plugin compile --config tangent.yaml
 tangent run --config haiku.yaml &              # Claude Haiku on Bedrock, AWS_PROFILE set; or tangent.yaml, a local model
-sudo ../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor | nc -U es.sock
+sudo ../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor | nc -U es.sock   # or the release's
 python3 ../../packs/macos/ps/ps.py | nc -U es.sock           # once, after the sensor starts: what was already running
 python3 ../../packs/macos/agent/transcripts.py | nc -U es.sock   # optional: what you asked Claude Code
 sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
@@ -34,11 +34,19 @@ tail -f alerts.ndjson
 ```
 
 The sensor is [packs/macos/sensor](/packs/macos/sensor), the pack's
-Endpoint Security client: build and sign it first (its README; it takes an
-entitlement Apple grants to a developer team). It needs root, and the
-terminal it runs in needs Full Disk Access (System Settings, Privacy &
-Security), restarted after the grant. `run.sh` looks for it where it is
-built; `SENSOR=/path/to/tangent-sensor ./run.sh` names another.
+Endpoint Security client. A release has it built, signed and notarized, as
+`tangent-sensor-macos.zip` beside the binaries: download it, unzip it, and
+name the binary inside,
+
+```bash
+SENSOR=/path/to/TangentSensor.app/Contents/MacOS/tangent-sensor ./run.sh
+```
+
+It runs on any Mac, with nothing to ask of Apple. Building it yourself takes
+an entitlement Apple grants to a developer team (the sensor's README), and
+`run.sh` with no `SENSOR` looks for it where that build leaves it. It needs
+root, and the terminal it runs in needs Full Disk Access (System Settings,
+Privacy & Security), restarted after the grant.
 
 `transcripts.py` shows the judge what you asked Claude Code, beside what it
 then ran (packs/macos/README.md, "What the agent was asked"). Your prompts
