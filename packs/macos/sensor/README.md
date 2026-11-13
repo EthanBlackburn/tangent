@@ -1,25 +1,25 @@
 # sensor
 
-An Endpoint Security client of the pack's own, in `eslogger`'s place:
+The pack's Endpoint Security client: what plugin `macos` reads.
 
 ```bash
-sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify | nc -U es.sock
 sudo build/TangentSensor.app/Contents/MacOS/tangent-sensor | nc -U es.sock
 ```
 
-are the same to plugin `macos`. It subscribes to the same ten events and
-writes each as one JSON line in eslogger's shape, holding what the plugin
-reads and leaving out the rest (the stat blocks, the code hashes), so a line
-is about half the size. Nothing is filtered yet: every event of the ten kinds
-is written, as eslogger writes them. `examples/macos/run.sh` takes it as
-`SENSOR=/path/to/tangent-sensor ./run.sh`.
+It subscribes to ten events (`exec fork exit open close create rename unlink
+btm_launch_item_add tcc_modify`) and writes each as one JSON line to stdout.
+The lines are in the shape of `eslogger`'s, Apple's own Endpoint Security
+tool, with its field names: they hold what the plugin reads and leave out the
+rest (the stat blocks, the code hashes), so a line is about half the size of
+eslogger's. Nothing is filtered yet: every event of the ten kinds is written.
+`examples/macos/run.sh` starts it with the rest of the capture.
 
 One Swift file, no dependencies. It needs root and, for the terminal that
-starts it, Full Disk Access, as eslogger does.
+starts it, Full Disk Access.
 
 ## What it needs from Apple
 
-`eslogger` is Apple's, and carries Apple's entitlement. A client of your own
+An Endpoint Security client
 needs `com.apple.developer.endpoint-security.client`, which Apple grants to a
 developer team on request and macOS checks against a provisioning profile.
 Without both the binary is not allowed to start. Once, for a team:
@@ -80,8 +80,8 @@ entitlement: it needs its own grant from Apple.
 
 ## Limits
 
-- It is started by hand or by `run.sh`, under sudo, as eslogger is. It is not
-  yet a launch daemon.
+- It is started by hand or by `run.sh`, under sudo. It is not yet a launch
+  daemon.
 - No filtering at the source: the plugin still drops most `open` events
   after they have crossed the socket.
 - `btm_launch_item_add` and `tcc_modify` are written from Apple's headers

@@ -15,31 +15,30 @@ tangent plugin compile --config tangent.yaml   # once
 ```
 
 `run.sh` starts tangent and what feeds it in the order that matters (the
-snapshot, eslogger, the snapshot again, the network capture, the transcript
+snapshot, the sensor, the snapshot again, the network capture, the transcript
 reader), with one sudo prompt. It names its own pid as the capture's, and
 the plugin leaves out what it and the programs under it do: a packet capture
 piped to a socket is what a sniffer looks like, and the judge said so of
-this one in every run. `SAVE=1 ./run.sh` also keeps eslogger's and net.py's
+this one in every run. `SAVE=1 ./run.sh` also keeps the sensor's and net.py's
 lines beside the config, to replay. By hand, the same is:
 
 ```bash
 tangent plugin compile --config tangent.yaml
 tangent run --config haiku.yaml &              # Claude Haiku on Bedrock, AWS_PROFILE set; or tangent.yaml, a local model
-sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify | nc -U es.sock
-python3 ../../packs/macos/ps/ps.py | nc -U es.sock           # once, after eslogger starts: what was already running
+sudo ../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor | nc -U es.sock
+python3 ../../packs/macos/ps/ps.py | nc -U es.sock           # once, after the sensor starts: what was already running
 python3 ../../packs/macos/agent/transcripts.py | nc -U es.sock   # optional: what you asked Claude Code
 sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
   | python3 ../../packs/macos/net/net.py | nc -U net.sock    # optional: network connections
 tail -f alerts.ndjson
 ```
 
-`eslogger` needs root, and the terminal it runs in needs Full Disk Access
-(System Settings, Privacy & Security), restarted after the grant.
-
-`SENSOR=/path/to/TangentSensor.app/Contents/MacOS/tangent-sensor ./run.sh`
-runs [packs/macos/sensor](/packs/macos/sensor) in eslogger's place: the same
-events in the same lines, from a client of the pack's own, for a team Apple
-has granted the Endpoint Security entitlement.
+The sensor is [packs/macos/sensor](/packs/macos/sensor), the pack's
+Endpoint Security client: build and sign it first (its README; it takes an
+entitlement Apple grants to a developer team). It needs root, and the
+terminal it runs in needs Full Disk Access (System Settings, Privacy &
+Security), restarted after the grant. `run.sh` looks for it where it is
+built; `SENSOR=/path/to/tangent-sensor ./run.sh` names another.
 
 `transcripts.py` shows the judge what you asked Claude Code, beside what it
 then ran (packs/macos/README.md, "What the agent was asked"). Your prompts

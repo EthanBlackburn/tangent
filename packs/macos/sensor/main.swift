@@ -1,13 +1,13 @@
-// tangent-sensor: an Endpoint Security client that writes the events the macos
-// pack reads, one JSON line each, to stdout, in eslogger's shape:
+// tangent-sensor: the macos pack's Endpoint Security client. It writes the
+// events plugin macos reads, one JSON line each, to stdout:
 //
-//   sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify | nc -U es.sock
 //   sudo tangent-sensor | nc -U es.sock
 //
-// are the same to plugin macos. A line holds what the plugin reads of
-// eslogger's and leaves out the rest (the stat blocks, the code hashes), so
-// it is a fraction of the size. Nothing is filtered yet: every event of the
-// ten kinds is written, as eslogger writes them.
+// The lines are in the shape of eslogger's, Apple's own Endpoint Security
+// tool, with its field names. A line holds what the plugin reads and leaves
+// out the rest (the stat blocks, the code hashes), so it is about half the
+// size of eslogger's. Nothing is filtered yet: every event of the ten kinds
+// is written.
 //
 // It needs root, Full Disk Access for the terminal that starts it, and the
 // com.apple.developer.endpoint-security.client entitlement, which Apple

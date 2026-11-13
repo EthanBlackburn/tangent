@@ -1,4 +1,5 @@
-# macos: eslogger's events from a Mac into finished records, by one plugin,
+# macos: Endpoint Security's events from a Mac, as packs/macos/sensor writes
+# them, into finished records, by one plugin,
 # `macos`: every program run (its environment cut to the names that steer an
 # AI agent), and the writes and telling reads on an agent's settings,
 # instructions, MCP config, transcripts and plugins, on credentials and on
