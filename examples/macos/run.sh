@@ -31,8 +31,13 @@ config=$(basename "$config")
 
 sudo -v
 
+# The last run's sockets are still here, and tangent has not made its own
+# yet: waiting for a socket below would find the dead ones.
+rm -f es.sock net.sock
 "$tangent" run --config "$config" > tangent.log 2>&1 &
 tangent_pid=$!
+# however the script ends, tangent does not stay behind it
+trap 'kill -TERM "$tangent_pid" 2>/dev/null || true' EXIT
 for _ in $(seq 100); do
   [ -S es.sock ] && [ -S net.sock ] && break
   kill -0 "$tangent_pid" 2>/dev/null || { echo "tangent stopped: see $(pwd)/tangent.log" >&2; exit 1; }
