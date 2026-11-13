@@ -26,6 +26,11 @@ tail -f alerts.ndjson
 to stdout only, and tangent reads sockets, so `nc -U` joins them: root writes
 the socket, tangent owns it, and nothing listens on a port.
 
+[`sensor/`](sensor) is an Endpoint Security client of the pack's own that
+takes eslogger's place on that line and writes the same events in the same
+shape, at about half the size. It needs an entitlement Apple grants to a
+developer team; eslogger needs nothing, and stays the default.
+
 ## What the plugin keeps
 
 Endpoint Security reports everything: on a developer's Mac, about 13,000

@@ -36,6 +36,11 @@ tail -f alerts.ndjson
 `eslogger` needs root, and the terminal it runs in needs Full Disk Access
 (System Settings, Privacy & Security), restarted after the grant.
 
+`SENSOR=/path/to/TangentSensor.app/Contents/MacOS/tangent-sensor ./run.sh`
+runs [packs/macos/sensor](/packs/macos/sensor) in eslogger's place: the same
+events in the same lines, from a client of the pack's own, for a team Apple
+has granted the Endpoint Security entitlement.
+
 `transcripts.py` shows the judge what you asked Claude Code, beside what it
 then ran (packs/macos/README.md, "What the agent was asked"). Your prompts
 then reach the model that judges, and the lake, with the command lines that

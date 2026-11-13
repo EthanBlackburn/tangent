@@ -6,6 +6,8 @@
 #   ./run.sh tangent.yaml    # a local model
 #   ./run.sh /path/to/a/config.yaml    # sockets, lake and verdicts beside it
 #   SAVE=1 ./run.sh          # also keep eslogger's and net.py's lines, to replay
+#   SENSOR=/path/to/TangentSensor.app/Contents/MacOS/tangent-sensor ./run.sh
+#                            # packs/macos/sensor in eslogger's place
 #
 # The order: a snapshot of what is running goes first, so the first events
 # have someone above them; eslogger starts; the snapshot goes again, for what
@@ -54,7 +56,9 @@ save() {
 
 # Each pipeline's last program is ours, not root's, so it is the one to stop:
 # what is above it ends when its pipe closes.
-sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify \
+capture=(eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify)
+[ -z "${SENSOR:-}" ] || capture=("$SENSOR")   # packs/macos/sensor's binary: the same events, in the same lines
+sudo "${capture[@]}" \
   | save es.raw.zst zstd | nc -U es.sock &
 feeds=($!)
 sleep 1
