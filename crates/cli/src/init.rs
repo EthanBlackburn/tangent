@@ -50,8 +50,10 @@ mod tests {
         (source.profile.clone(), judge.profile.clone())
     }
 
-    /// The only test here that reads or sets AWS_PROFILE, so setting it
-    /// races no other.
+    /// The source and the judge share one profile: the shell's
+    /// AWS_PROFILE, or `default` when it is unset. The test reads the
+    /// variable and sets nothing: it is the whole process's, and other
+    /// tests run beside this one.
     #[test]
     fn writes_a_config_whose_source_and_judge_use_aws_profile_or_default() {
         let dir = tempfile::tempdir().unwrap();
@@ -59,17 +61,24 @@ mod tests {
         let path = dir.path().join("tangent.yaml");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG);
 
-        std::env::set_var("AWS_PROFILE", "work");
-        let work = Some("work".to_string());
-        assert_eq!(profiles(&path), (work.clone(), work), "the shell's profile");
+        let want = std::env::var("AWS_PROFILE")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .or_else(|| Some("default".to_string()));
+        assert_eq!(profiles(&path), (want.clone(), want));
+    }
 
-        std::env::remove_var("AWS_PROFILE");
-        let default = Some("default".to_string());
-        assert_eq!(
-            profiles(&path),
-            (default.clone(), default),
-            "unset is default"
-        );
+    /// The profile is a quoted scalar: a name with ` #` or `: ` in it is
+    /// the whole name, not a comment's start or a mapping.
+    #[test]
+    fn a_profile_name_is_taken_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tangent.yaml");
+        let named = CONFIG.replace("${AWS_PROFILE:-default}", "team #1: prod");
+        assert_ne!(named, CONFIG);
+        std::fs::write(&path, named).unwrap();
+        let want = Some("team #1: prod".to_string());
+        assert_eq!(profiles(&path), (want.clone(), want));
     }
 
     #[test]

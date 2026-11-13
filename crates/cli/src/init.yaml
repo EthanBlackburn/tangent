@@ -10,7 +10,7 @@
 
 # The AWS profile (~/.aws/config) that reads CloudTrail and calls Bedrock:
 # $AWS_PROFILE, or default when it is unset, as the aws CLI picks one.
-x-profile: &profile ${AWS_PROFILE:-default}    # EDIT to name another profile
+x-profile: &profile "${AWS_PROFILE:-default}"    # EDIT to name another profile
 
 include:
   - pack:judge/hosted          # the judge, for a hosted model, with the enrich-ip and behavior-baseline packs
@@ -41,32 +41,11 @@ enrichment_tables:
   asn: { type: mmdb, path: data/GeoLite2-ASN.mmdb }
   networks: { type: cidr, path: data/networks.csv }
 
-# `tangent run` keeps every record in the lake; `tangent replay` writes nothing to it.
-sinks:
-  lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
-    type: rolling_file
-    path: lake/logs/%Y/%m/%d/%H
-    wal_path: lake/wal
-    max_file_age_seconds: 3600
-    compression: { type: zstd, level: 3 }
-    encoding:
-      type: parquet
-      record_column: record      # each record whole, for the fields the schema leaves out
-      schema:
-        ts: timestamp
-        source: string
-        _norm: { org: string, actor: string, kind: string, ip: string }
-
+# The two edges that are this file's: the source to its plugin, and the
+# plugin's records to the judge pack, which goes on from there (each actor's
+# history, the model, then alerts.ndjson and verdicts.ndjson).
 dag:
   - from: aws_audit
     to: [cloudtrail]
-  - from: cloudtrail           # each record kept, learned and judged
-    to: [lake, baseline_builder, baseline_renderer]
-  - from: baseline_renderer
-    to: [judge]
-  - from: judge
-    to: [fresh]
-  - from: fresh                # verdicts on the new records
-    to: [flagged, verdicts]
-  - from: flagged              # those the model flagged
-    to: [alerts]
+  - from: cloudtrail           # each record learned and judged
+    to: [baseline_builder, baseline_renderer]
