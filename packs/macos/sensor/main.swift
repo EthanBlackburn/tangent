@@ -100,11 +100,15 @@ func destination(
 
 // MARK: the ten events
 
-let subscribed: [es_event_type_t] = [
-    ES_EVENT_TYPE_NOTIFY_EXEC, ES_EVENT_TYPE_NOTIFY_FORK, ES_EVENT_TYPE_NOTIFY_EXIT,
-    ES_EVENT_TYPE_NOTIFY_OPEN, ES_EVENT_TYPE_NOTIFY_CLOSE, ES_EVENT_TYPE_NOTIFY_CREATE,
-    ES_EVENT_TYPE_NOTIFY_RENAME, ES_EVENT_TYPE_NOTIFY_UNLINK,
-    ES_EVENT_TYPE_NOTIFY_BTM_LAUNCH_ITEM_ADD, ES_EVENT_TYPE_NOTIFY_TCC_MODIFY,
+/// Each with eslogger's name for it. The last is the one a macOS this is built
+/// for (13 and later) may not know: tcc_modify came with 15.4.
+let subscribed: [(kind: es_event_type_t, name: String, since: String?)] = [
+    (ES_EVENT_TYPE_NOTIFY_EXEC, "exec", nil), (ES_EVENT_TYPE_NOTIFY_FORK, "fork", nil),
+    (ES_EVENT_TYPE_NOTIFY_EXIT, "exit", nil), (ES_EVENT_TYPE_NOTIFY_OPEN, "open", nil),
+    (ES_EVENT_TYPE_NOTIFY_CLOSE, "close", nil), (ES_EVENT_TYPE_NOTIFY_CREATE, "create", nil),
+    (ES_EVENT_TYPE_NOTIFY_RENAME, "rename", nil), (ES_EVENT_TYPE_NOTIFY_UNLINK, "unlink", nil),
+    (ES_EVENT_TYPE_NOTIFY_BTM_LAUNCH_ITEM_ADD, "btm_launch_item_add", nil),
+    (ES_EVENT_TYPE_NOTIFY_TCC_MODIFY, "tcc_modify", "15.4"),
 ]
 
 /// The event under eslogger's name for it, and its body.
@@ -230,9 +234,42 @@ func write(line: Data) {
     }
 }
 
+func warn(_ what: String) {
+    FileHandle.standardError.write(Data("tangent-sensor: \(what)\n".utf8))
+}
+
+// MARK: what the kernel dropped
+
+// Each line is written from the handler, so a reader that stalls (a full
+// pipe) holds the handler, and when the client's queue in the kernel is full
+// the kernel drops events. It numbers the ones of each type as it queues
+// them, so a gap in a type's numbers is what was dropped. The handler is
+// called for one message at a time, and these are only touched from it.
+var last: [UInt32: UInt64] = [:]  // by event type, the last seq_num seen
+var dropped: [String: UInt64] = [:]  // by event name, not yet reported
+var reported = 0  // the second of the last report
+
+/// Counts what went missing before this message, and says so on stderr, at
+/// most once a second.
+func account(_ m: UnsafePointer<es_message_t>, _ kind: String) {
+    let type = m.pointee.event_type.rawValue
+    let seq = m.pointee.seq_num
+    if let before = last[type], seq > before + 1 {
+        dropped[kind, default: 0] += seq - before - 1
+    }
+    last[type] = seq
+    let now = m.pointee.time.tv_sec
+    guard !dropped.isEmpty, now > reported else { return }
+    let each = dropped.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
+    warn("the kernel dropped events the reader was too slow to take, and they are not in the capture: \(each)")
+    dropped = [:]
+    reported = now
+}
+
 func emit(_ m: UnsafePointer<es_message_t>) {
     guard let (kind, body) = event(m) else { return }
     let v = m.pointee.version
+    if v >= 2 { account(m, kind) }
     var record: [String: Any] = [
         "time": stamp(m.pointee.time.tv_sec, m.pointee.time.tv_nsec),
         "mach_time": m.pointee.mach_time,
@@ -252,8 +289,13 @@ func emit(_ m: UnsafePointer<es_message_t>) {
 // MARK: main
 
 func fail(_ why: String) -> Never {
-    FileHandle.standardError.write(Data("tangent-sensor: \(why)\n".utf8))
+    warn(why)
     exit(1)
+}
+
+func version(_ dotted: String) -> OperatingSystemVersion {
+    let n = dotted.split(separator: ".").map { Int($0) ?? 0 } + [0, 0, 0]
+    return OperatingSystemVersion(majorVersion: n[0], minorVersion: n[1], patchVersion: n[2])
 }
 
 signal(SIGPIPE, SIG_IGN)  // a closed pipe is an error from write, handled there
@@ -271,16 +313,15 @@ case ES_NEW_CLIENT_RESULT_ERR_TOO_MANY_CLIENTS: fail("too many Endpoint Security
 default: fail("es_new_client failed (\(made.rawValue))")
 }
 guard let client else { fail("es_new_client gave no client") }
-// one at a time: an older macOS does not know the newest of them (tcc_modify
-// came with 15.4), and the rest are still worth having
-var taken = 0
-for kind in subscribed {
-    if es_subscribe(client, [kind], 1) == ES_RETURN_SUCCESS {
-        taken += 1
-    } else {
-        FileHandle.standardError.write(
-            Data("tangent-sensor: this macOS does not report event type \(kind.rawValue): going on without it\n".utf8))
+// one at a time, so a refusal names its event. Only an event newer than the
+// oldest macOS this runs on may be refused, and only by a macOS older than
+// the event: without exec or fork there is no process tree, and a capture
+// that looks whole and is not is worse than none.
+for (kind, name, since) in subscribed {
+    if es_subscribe(client, [kind], 1) == ES_RETURN_SUCCESS { continue }
+    guard let since, !ProcessInfo.processInfo.isOperatingSystemAtLeast(version(since)) else {
+        fail("es_subscribe refused \(name)")
     }
+    warn("\(name) came with macOS \(since), and this is \(ProcessInfo.processInfo.operatingSystemVersionString): going on without it")
 }
-guard taken > 0 else { fail("es_subscribe failed for every event") }
 dispatchMain()

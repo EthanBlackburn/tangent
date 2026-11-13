@@ -14,6 +14,12 @@ rest (the stat blocks, the code hashes), so a line is about half the size of
 eslogger's. Nothing is filtered yet: every event of the ten kinds is written.
 `examples/macos/run.sh` starts it with the rest of the capture.
 
+Each line is written as its event arrives. When the reader is too slow the
+kernel drops events, and the sensor says on stderr how many of each kind, by
+the gaps in the numbers the kernel gives them. Of the ten, only `tcc_modify`
+may be missing (it came with macOS 15.4) and the sensor goes on without it;
+any other event refused, it stops.
+
 One Swift file, no dependencies. It needs root and, for the terminal that
 starts it, Full Disk Access.
 
