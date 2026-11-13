@@ -216,11 +216,20 @@ impl DagRuntime {
         close_groups(&self.groups, &self.router, None).await;
     }
 
-    /// Records in closed groups waiting for their key's group out to be
-    /// through, across the grouped plugins: what a caller feeding the DAG
-    /// faster than real time holds in memory.
-    pub fn waiting(&self) -> usize {
-        self.groups.iter().map(|(g, _, _)| g.waiting()).sum()
+    /// Records in groups not yet out, open or waiting for their key's group
+    /// out to be through, across the grouped plugins: what a caller feeding
+    /// the DAG faster than real time holds in memory.
+    pub fn held(&self) -> usize {
+        self.groups.iter().map(|(g, _, _)| g.held()).sum()
+    }
+
+    /// Closes every open group and does not wait for them: for a caller
+    /// feeding the DAG faster than groups go quiet, whose open groups would
+    /// otherwise only grow.
+    pub async fn close_open_groups(&self) {
+        for (g, _, _) in &self.groups {
+            let _ = g.close_open().await;
+        }
     }
 
     pub async fn shutdown(self, worker_timeout: Duration, sink_timeout: Duration) -> Result<()> {
