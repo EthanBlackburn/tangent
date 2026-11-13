@@ -1,0 +1,97 @@
+# packs/macos/sensor on a release: built for both kinds of Mac, signed with
+# the Developer ID of the team Apple granted the Endpoint Security entitlement
+# to, notarized, and uploaded beside the binaries as tangent-sensor-macos.zip.
+# A Mac that downloads it needs nothing from Apple: the entitlement is the
+# signer's, and travels in the bundle (packs/macos/sensor/README.md).
+#
+# dist's release workflow calls this once the release exists
+# (dist-workspace.toml's publish-jobs). Run by hand (workflow_dispatch) it
+# builds the same zip and keeps it as the run's artifact, on no release.
+#
+# It needs six secrets, which only that team can supply. Where they are not
+# set (a fork, or this repository before they are) it says so and builds
+# nothing, and the release goes on without a sensor:
+#
+#   SENSOR_DEVELOPER_ID_P12           the Developer ID Application certificate and its key, base64
+#   SENSOR_DEVELOPER_ID_P12_PASSWORD  the .p12's password
+#   SENSOR_PROFILE                    the Developer ID provisioning profile for the sensor's App ID, base64
+#   SENSOR_NOTARY_KEY                 an App Store Connect API key (the .p8's text), for the notary
+#   SENSOR_NOTARY_KEY_ID              its key ID
+#   SENSOR_NOTARY_ISSUER              its issuer ID
+#
+# The actions are pinned by commit: a moved tag is how tj-actions was turned.
+name: The macOS sensor
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: dist's plan, for the release's tag
+        required: true
+        type: string
+  workflow_dispatch:
+
+jobs:
+  sensor:
+    runs-on: macos-latest
+    permissions:
+      contents: write        # the zip onto the release
+    env:
+      P12: ${{ secrets.SENSOR_DEVELOPER_ID_P12 }}
+      P12_PASSWORD: ${{ secrets.SENSOR_DEVELOPER_ID_P12_PASSWORD }}
+      PROFILE: ${{ secrets.SENSOR_PROFILE }}
+      NOTARY_KEY: ${{ secrets.SENSOR_NOTARY_KEY }}
+      NOTARY_KEY_ID: ${{ secrets.SENSOR_NOTARY_KEY_ID }}
+      NOTARY_ISSUER: ${{ secrets.SENSOR_NOTARY_ISSUER }}
+    steps:
+      - name: Is there a Developer ID to sign with?
+        id: have
+        run: |
+          if [ -n "$P12" ] && [ -n "$PROFILE" ] && [ -n "$NOTARY_KEY" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no Developer ID in this repository's secrets: the sensor is not built"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.have.outputs.yes
+        with:
+          persist-credentials: false
+      # A keychain of this run's own, which codesign may use without asking.
+      - name: The identity into a keychain, the profile and the notary's key into files
+        if: steps.have.outputs.yes
+        run: |
+          set -euo pipefail
+          keychain=$RUNNER_TEMP/sensor.keychain-db
+          pass=$(openssl rand -hex 16)
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          printf %s "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security import "$RUNNER_TEMP/id.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/id.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          printf %s "$PROFILE" | base64 --decode > "$RUNNER_TEMP/developer-id.provisionprofile"
+          printf '%s\n' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+      - name: Build and sign
+        if: steps.have.outputs.yes
+        run: packs/macos/sensor/build.sh "$RUNNER_TEMP/developer-id.provisionprofile" "Developer ID Application"
+      - name: Notarize
+        if: steps.have.outputs.yes
+        run: packs/macos/sensor/notarize.sh --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER"
+      - name: Keep the zip with the run
+        if: steps.have.outputs.yes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tangent-sensor-macos
+          path: packs/macos/sensor/build/tangent-sensor-macos.zip
+      - name: Upload it to the release
+        if: steps.have.outputs.yes && inputs.plan
+        run: gh release upload "$TAG" packs/macos/sensor/build/tangent-sensor-macos.zip --clobber --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ fromJson(inputs.plan || '{}').announcement_tag }}
+      - name: Forget the key
+        if: always() && steps.have.outputs.yes
+        run: |
+          security delete-keychain "$RUNNER_TEMP/sensor.keychain-db" || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/developer-id.provisionprofile"

@@ -36,6 +36,7 @@ Tangent ships with everything you need to develop, test, and benchmark your own 
 * `tangent bench` – measure throughput and latency before deploying
 * `tangent run` – start the Tangent runtime
 * `tangent config` – print a config as the runtime reads it, its includes merged
+* `tangent query` – one read-only SQL statement over a lake's Parquet files
 
 ## Why use Tangent?
 1. **Use real languages, not DSLs** – Real code > DSL. Reviewable, testable, LLM‑friendly.
@@ -159,7 +160,7 @@ sources:
 
 A partition value's records not yet sent go oldest first, `batch_size` to a batch, one batch of a value at a time. Fewer wait until the oldest is `timeout_secs` older than the newest record stored, so a replay of old logs goes as live ones do, or until nothing new has been stored for `timeout_secs`; then they go topped up to `batch_size` with the value's latest records already sent, which carry `"_context": true`. A batch's new records get the time it is through the DAG in `emitted`, NULL until then, and the value's next batch goes then; a restart sends again what was not. The table is a queue: once a batch is through the DAG, the same transaction deletes the value's sent records past its latest `batch_size` - 1, the most a top-up uses, so it holds what is not sent yet and what tops up each value's next batch. Keep the full history elsewhere, in a `rolling_file` sink. A record that arrives after its value's later ones were sent is topped up with what is left.
 
-A `file` sink appends every write to one file at `path`, which only NDJSON survives, so it takes no other encoding. A `rolling_file` sink keeps records as whole files for a query engine (DataFusion, DuckDB, Spark) to read, starting a new file each time the WAL an `s3` sink uses seals one: a write is acked once it is in the WAL under `wal_path`, a WAL file is sealed at `object_max_bytes` of records or `max_file_age_seconds` after it was opened, and each sealed file becomes one file in the directory, in the sink's `encoding`, synced and renamed into place (copied under a hidden temporary name first if the WAL is on another filesystem), so a reader listing the directory sees whole files only. `path` may hold strftime specifiers, rendered in UTC for each record's own time, the RFC 3339 string in the field `timestamp_field` names (`ts` unless set; found as `group_by` finds a field, so `a.b` is a key holding all of it or else field `b` of the object at `a`, and `a[0].b` is in the first item of the list at `a`), so `lake/logs/%Y/%m/%d/%H` puts each hour's records in a directory of their own, whenever they arrive, a replay's too, and a query engine can skip an hour by its path. A record whose field is missing or not RFC 3339 (an epoch number, which a `sqlite` sink's `timestamp_key` takes, is not) goes under the time it reaches the sink, and `tangent_sink_records_untimed_total{sink}` counts it; a `path` with no specifier reads no record's time. A record arriving after its hour's file was sealed adds another file there. The WAL keeps a file open for at most 32 directories at once, sealing the one written longest ago, so records far out of time order make small files. A file is named as an `s3` object is, `<ULID>.parquet` (`.ndjson.zst` for zstd NDJSON), and the ULIDs sort by time. Parquet has the columns its `schema` names, in order, each a name and a type: `string`, `int` (64 bits), `float` (a double), `bool`, `timestamp` (milliseconds in UTC, read from RFC 3339 text in any zone), or a map of columns, a struct, for a nested object; every column may be null. `record_column` keeps each record beside the columns, its line without the line break, for the fields the schema leaves out. A record the schema cannot read (a type it does not give the field, a time arrow cannot parse) does not fail its file: it is kept in `record_column` with its typed columns null, or, without a record column or if it is not JSON, dropped, as JSON drops a line that is not JSON and Avro one its schema does not take; `tangent_sink_records_unfit_total{fate="kept"|"dropped"}` counts them once their file is out, not at each try:
+A `file` sink appends every write to one file at `path`, which only NDJSON survives, so it takes no other encoding. A `rolling_file` sink keeps records as whole files for a query engine (DataFusion, DuckDB, Spark) to read, starting a new file each time the WAL an `s3` sink uses seals one: a write is acked once it is in the WAL under `wal_path`, a WAL file is sealed at `object_max_bytes` of records or `max_file_age_seconds` after it was opened, and each sealed file becomes one file in the directory, in the sink's `encoding`, synced and renamed into place (copied under a hidden temporary name first if the WAL is on another filesystem), so a reader listing the directory sees whole files only. `path` may hold strftime specifiers, rendered in UTC for each record's own time, the RFC 3339 string in the field `timestamp_field` names (`ts` unless set; found as `group_by` finds a field, so `a.b` is a key holding all of it or else field `b` of the object at `a`, and `a[0].b` is in the first item of the list at `a`), so `lake/logs/%Y/%m/%d/%H` puts each hour's records in a directory of their own, whenever they arrive, a replay's too, and a query engine can skip an hour by its path. A record whose field is missing or not RFC 3339 (an epoch number, which a `sqlite` sink's `timestamp_key` takes, is not) goes under the time it reaches the sink, and `tangent_sink_records_untimed_total{sink}` counts it; a `path` with no specifier reads no record's time. A record arriving after its hour's file was sealed adds another file there. The WAL keeps a file open for at most 32 directories at once, sealing the one written longest ago, so records far out of time order make small files. A file is named as an `s3` object is, `<ULID>.parquet` (`.ndjson.zst` for zstd NDJSON), and the ULIDs sort by time. Parquet has the columns its `schema` names, in order, each a name and a type: `string`, `int` (64 bits), `float` (a double), `bool`, `timestamp` (milliseconds in UTC, read from RFC 3339 text in any zone), a map of columns, a struct, for a nested object, or a one-item list of any of these, `[string]`, for a list of them; every column may be null. `record_column` keeps each record beside the columns, its line without the line break, for the fields the schema leaves out. A record the schema cannot read (a type it does not give the field, a time arrow cannot parse) does not fail its file: it is kept in `record_column` with its typed columns null, or, without a record column or if it is not JSON, dropped, as JSON drops a line that is not JSON and Avro one its schema does not take; `tangent_sink_records_unfit_total{fate="kept"|"dropped"}` counts them once their file is out, not at each try:
 
 ```yaml
 sinks:
@@ -178,7 +179,46 @@ sinks:
         ts: timestamp
         source: string
         _norm: { org: string, actor: string }
+        args: [string]
 ```
+
+`tangent query` reads such a lake back: one SQL statement, by [DataFusion](https://datafusion.apache.org), over the tables named on the command line, each a Parquet file or a directory and every `.parquet` file under it, and the result as a table. `--table` again with the same name adds a path to that table, and `--view NAME=SELECT` gives the statement a view over the tables:
+
+```bash
+tangent query --table lake=lake/logs "SELECT source, count(*) FROM lake GROUP BY 1"
+tangent query --table lake=lake/logs/2026/11/06 --view "errors=SELECT ts, record FROM lake WHERE record LIKE '%AccessDenied%'" \
+  "SELECT count(*) FROM errors"
+```
+
+DataFusion's core has no JSON functions, so `tangent query` adds [datafusion-functions-json](https://github.com/datafusion-contrib/datafusion-functions-json)'s, for the `record_column` a lake keeps each record whole in: `record->>'eventName'`, `record->'actor'->>'id'`, `json_get_str(record, 'actor', 'id')`, `json_get_int`, `json_get_bool`, `json_get_json` (a nested value as JSON text), `json_get_array`, `json_contains`, `json_length`. A key that is not there is null. `->` and `->>` bind more loosely than a comparison, so compare in brackets: `(record->>'eventName') = 'GetObject'`.
+
+The statement can only read, and only those tables and views. `CREATE`, `DROP`, `INSERT`, `COPY` and `SET` are refused, a file is not a table by its path, and no function reads a file, so the statement may come from somewhere you do not trust, such as a model that has read the records. The tables and views are yours and are not held to that. `--max-rows` (1000) and `--max-cell` (500 characters) cut what is printed, and say so. `--json` prints each row as a JSON object on a line instead, its values whole and a null left out, for a program to read.
+
+A plugin reads a lake the same way, with `lake.query`: its `tables` in the config name the Parquet it may read, each a file or a directory as `--table` takes, relative to the working directory as the sink's `path` is, and the call runs one statement over them and returns its rows, as JSON lines or as the table above. The plugin gives the views, which are its own; the statement is held to reading them and the tables, so it too may be a model's. A plugin with no `tables` has nothing to query:
+
+```yaml
+plugins:
+  investigate:
+    module_type: rust
+    path: ./investigate
+    tables:
+      lake: lake/logs              # what sink `lake` above writes
+```
+
+```rust
+use tangent::logs::lake::{query, Statement};
+
+let rows = query(&Statement {
+    views: vec![("recent".into(), "SELECT ts, source, record FROM lake WHERE ts > now() - INTERVAL '1 day'".into())],
+    sql: "SELECT source, count(*) AS n FROM recent GROUP BY 1".into(),
+    max_rows: 100,
+    json: true,                    // false: a table to read, each cell cut at max_cell characters
+    max_cell: 500,
+    timeout_ms: None,              // 30 s
+})?;
+```
+
+A file is in the lake once the sink has sealed it, `max_file_age_seconds` after it was opened, so a plugin that asks about records minutes old waits for them first: `group_by` with `expire_after_ms` holds its records that long, on workers of the plugin's own.
 
 An `s3` sink goes through the same WAL and puts each sealed file in `bucket_name` as one object, named as a `rolling_file` sink's files are. Its `key_prefix` is what each object's key starts with, before a `/` and the name: a strftime template rendered in UTC for each record's own time, read from `timestamp_field` as a `rolling_file` sink's `path` is, so `logs/cloudtrail/%Y/%m/%d` puts each day's records under a prefix of their own, whenever they arrive, a replay's too (`%%` is a `%`). It is a path in the bucket, and strftime is all that is rendered: `tangent run` and `tangent config` refuse one that is not a strftime template, holds a `{{ field }}`, starts with `/`, or has an empty (`//`), `.` or `..` segment. Without it, objects go to the bucket's root. As in a `rolling_file` sink, a record without a time goes under the time it reaches the sink and is counted, a record arriving after its prefix's objects went out adds another object under it, and records far out of time order make small objects:
 
@@ -250,7 +290,7 @@ Unknown keys aside, a config without `include:` reads as it always has.
 An edge names its nodes and nothing else, `from: aws_audit` and `to: [cloudtrail, lake]`: a name is one node, so no source, plugin, inference node and sink share one, and a config where two do fails to load, naming both. `tangent run` checks the DAG before it starts: an edge to a node no file defines is an error, and so is one out of a sink or into a source. It warns about a source with no edge out, and names once a source whose records none of its targets take, as when no included plugin's probe claims a record's `source`; `tangent_unrouted_records_total` counts every record dropped that way, per node.
 
 ## Packs
-A pack is what tangent knows about one provider's logs, and it is one plugin, named after the logs it reads. Tangent's own sources read the logs (`cloudtrail`, `github_audit`, `okta` and `google_workspace` read the providers' APIs; `tcp` takes anything else as NDJSON with a `source` field), and the pack's plugin turns each raw record into a finished one:
+A pack is what tangent knows about one provider's logs, and it is one plugin, named after the logs it reads. Tangent's own sources read the logs (`cloudtrail`, `github_audit`, `okta`, `google_workspace` and `supabase` read the providers' APIs; `tcp` takes anything else as NDJSON with a `source` field), and the pack's plugin turns each raw record into a finished one:
 
 1. drops the keys only the pipeline writes (`_norm`, `_facts`, `_ip`, `_context`, `_baseline`), so a log line cannot speak for it;
 2. normalizes it: `_norm` says who did what, from where, to what (`actor`, `person`, `org`, `kind`, `ip`, `country`, `dest`, `target`), the same way for every provider;
@@ -264,7 +304,8 @@ A pack is what tangent knows about one provider's logs, and it is one plugin, na
 | [github](/packs/github) | `github_audit`, `gha_ci`, `runner_egress` | the `github_audit` source; Actions job logs and runner egress as NDJSON | a CI run told per repository, which is not a principal |
 | [okta](/packs/okta) | `okta` | the `okta` source: the System Log | Okta's own risk signals kept |
 | [google_workspace](/packs/google_workspace) | `google_workspace` | the `google_workspace` source: login, token, drive and admin activity | each event's parameters by name |
-| [macos](/packs/macos) | | planned: Endpoint Security events from laptops | |
+| [supabase](/packs/supabase) | `supabase` | the `supabase` source: a project's Auth logs | the actor is one of your product's users (`principal: user`), not held to where your people are |
+| [macos](/packs/macos) | `macos`, `macos_sessions` | Endpoint Security's events, from the pack's own sensor, through a socket: every program run, the writes and telling reads on an AI agent's settings, instructions, MCP config, transcripts and plugins, on credentials and on what runs at login | each session (a terminal tab, an app, an agent) summed up five minutes at a time for the judge, no baseline; environments cut to the names that steer an agent; one worker, for the process tree; examples/macos |
 
 A pack is a directory: the plugin (`Cargo.toml`, `src/`, Rust compiled to WASM), its fixtures (`tests/`), `ingest.yaml` (the plugin and its fixtures; your config says where its records go), and a README saying what it reads, writes, drops and enriches, with the lines to paste.
 
@@ -344,7 +385,7 @@ The judge is any OpenAI-compatible model: `JUDGE_URL` (a local model on `:8080` 
 
 A `tcp` source can feed several packs: route it to each, and each takes only its own `source` values. A record whose `source` no included pack takes goes no further, and `tangent run` says so. Your product's own logs have no pack: no two products' are alike, so they want a plugin of your own that fills `_norm` ([Writing a pack](#writing-a-pack) starts from packs/okta; `tangent plugin scaffold` from nothing). The judge's logfmt wants a row for each of its sources in your config, under `inference.judge.encoding.sources`, as [judge's ingest.yaml](/packs/judge/ingest.yaml) has for each pack's, for their times and the fields on every line; behavior-baseline passes their records through unlearned, with no `_baseline`.
 
-[examples/cloud-infra](/examples/cloud-infra) is every pack for a fictional company, whose cases in [tangent-eval's cases](https://github.com/EthanBlackburn/tangent-eval/tree/main/cases) it is measured against.
+[examples/cloud-infra](/examples/cloud-infra) is every pack for a fictional company, whose cases in [tangent-eval's cases](https://github.com/EthanBlackburn/tangent-eval/tree/main/cases) it is measured against. [examples/macos](/examples/macos) is the macos pack on one developer's Mac.
 
 ### Prebuilt plugins
 A plugin is a WASM component, compiled once and run on every machine, so only a pack's author needs the toolchain. Each release of tangent carries every pack's plugin as a release asset, `<plugin>.component.wasm`, built by [packs/dist.sh](/packs/dist.sh) in the release workflow, and a pack's `ingest.yaml` says so:

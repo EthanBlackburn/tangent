@@ -11,6 +11,7 @@ use crate::sources::okta::OktaConfig;
 use crate::sources::socket::SocketConfig;
 use crate::sources::sqlite::SqliteConfig;
 use crate::sources::sqs::SQSConfig;
+use crate::sources::supabase::SupabaseConfig;
 use crate::sources::tcp::TcpConfig;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -38,6 +39,8 @@ pub enum SourceConfig {
     Okta(OktaConfig),
     #[serde(rename = "google_workspace")]
     GoogleWorkspace(GoogleWorkspaceConfig),
+    #[serde(rename = "supabase")]
+    Supabase(SupabaseConfig),
     #[serde(rename = "sqlite")]
     Sqlite(SqliteConfig),
 }
@@ -50,7 +53,8 @@ impl SourceConfig {
         match self {
             SourceConfig::GithubAudit(_)
             | SourceConfig::Okta(_)
-            | SourceConfig::GoogleWorkspace(_) => true,
+            | SourceConfig::GoogleWorkspace(_)
+            | SourceConfig::Supabase(_) => true,
             SourceConfig::MSK(_)
             | SourceConfig::File(_)
             | SourceConfig::Socket(_)

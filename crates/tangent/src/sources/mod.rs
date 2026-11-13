@@ -11,4 +11,5 @@ pub mod poll;
 pub mod socket;
 pub mod sqlite;
 pub mod sqs;
+pub mod supabase;
 pub mod tcp;

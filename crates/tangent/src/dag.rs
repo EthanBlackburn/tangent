@@ -216,11 +216,20 @@ impl DagRuntime {
         close_groups(&self.groups, &self.router, None).await;
     }
 
-    /// Records in closed groups waiting for their key's group out to be
-    /// through, across the grouped plugins: what a caller feeding the DAG
-    /// faster than real time holds in memory.
-    pub fn waiting(&self) -> usize {
-        self.groups.iter().map(|(g, _, _)| g.waiting()).sum()
+    /// Records in groups not yet out, open or waiting for their key's group
+    /// out to be through, across the grouped plugins: what a caller feeding
+    /// the DAG faster than real time holds in memory.
+    pub fn held(&self) -> usize {
+        self.groups.iter().map(|(g, _, _)| g.held()).sum()
+    }
+
+    /// Closes every open group and does not wait for them: for a caller
+    /// feeding the DAG faster than groups go quiet, whose open groups would
+    /// otherwise only grow.
+    pub async fn close_open_groups(&self) {
+        for (g, _, _) in &self.groups {
+            let _ = g.close_open().await;
+        }
     }
 
     pub async fn shutdown(self, worker_timeout: Duration, sink_timeout: Duration) -> Result<()> {
@@ -417,6 +426,7 @@ fn load(
                         plugin_cfg.config.clone(),
                         plugin_cfg.state_namespace.as_deref(),
                         data_dir.as_deref(),
+                        &plugin_cfg.tables,
                         plugin_cfg.drop_on_error,
                     )
                     .with_context(|| format!("plugin {name}: loading {}", plugin_path.display()))?,
@@ -584,6 +594,17 @@ fn spawn_consumers(
                     .await
                     {
                         tracing::error!("google_workspace consumer error: {e:#}");
+                    }
+                }));
+            }
+            (name, SourceConfig::Supabase(sb)) => {
+                let router = router.clone();
+                handles.push(tokio::spawn(async move {
+                    if let Err(e) =
+                        sources::supabase::run_consumer(name, sb, router, store, shutdown.clone())
+                            .await
+                    {
+                        tracing::error!("supabase consumer error: {e:#}");
                     }
                 }));
             }

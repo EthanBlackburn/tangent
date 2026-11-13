@@ -155,10 +155,17 @@ data-event selectors. With a bucket role, these calls carry the session name
 source's past from CloudTrail's Event history through LookupEvents, so it
 needs no trail, queue or bucket. It uses the source's `region` and `profile`
 credentials and reads the account they belong to, in every commercial region.
-An opt-in region the account hasn't enabled is skipped, and so, with a
-warning, is an opt-in region whose endpoint can't be reached. An organization
-trail's other accounts are not included. The identity needs
-`cloudtrail:LookupEvents`. Event history keeps 90 days of management events
+An opt-in region that does not know the credentials is skipped: one the
+account hasn't enabled, or one it has that the session's token is not valid
+in (a token from STS's global endpoint is valid only in the regions every
+account has, unless the account sets those tokens to be valid in all regions).
+The two answer alike, so the first line replay prints counts them together.
+Skipped with a warning are a region where LookupEvents is denied, as under an
+organization's policy that allows only some regions, and an opt-in region
+whose endpoint can't be reached. An organization trail's other accounts are
+not included. The identity needs `cloudtrail:LookupEvents`. A range that
+can't be read to its end (a region that stops answering) is judged as far as
+it was read, and the replay then fails, saying where it stopped. Event history keeps 90 days of management events
 only: a replay gets no data events, and a `--from` more than 90 days back is
 refused. LookupEvents allows two calls a second per region and returns 50
 events a call, so an hour with 5,000 events in one region takes about 50

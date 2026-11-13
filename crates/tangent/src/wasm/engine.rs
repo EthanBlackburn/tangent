@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
 use crate::enrichment::Tables;
 use crate::state::{StateStore, PLUGIN_NS};
-use crate::wasm::host::tangent::logs::{config, enrichment, log, remote, state};
+use crate::wasm::host::tangent::logs::{config, enrichment, lake, log, remote, state};
 use crate::wasm::host::{HostEngine, Processor};
 pub struct WasmEngine {
     engine: Engine,
@@ -25,6 +26,9 @@ pub struct WasmEngine {
     /// Each plugin's data directory (`plugins.<name>.data`), seen by the
     /// guest read-only at `/data`.
     data: HashMap<Arc<str>, PathBuf>,
+    /// Each plugin's Parquet tables (`plugins.<name>.tables`), as
+    /// `NAME=PATH`, for its `lake.query`.
+    lake: HashMap<Arc<str>, Arc<[String]>>,
     /// The enrichment tables, loaded once for the process: every engine and
     /// every plugin instance holds the same ones.
     tables: Arc<Tables>,
@@ -52,6 +56,7 @@ impl WasmEngine {
             &mut linker,
             |host: &mut HostEngine| host,
         )?;
+        lake::add_to_linker::<HostEngine, HostEngine>(&mut linker, |host: &mut HostEngine| host)?;
 
         Ok(Self {
             engine,
@@ -63,6 +68,7 @@ impl WasmEngine {
             config: HashMap::new(),
             state_ns: HashMap::new(),
             data: HashMap::new(),
+            lake: HashMap::new(),
             pass_on_error: HashSet::new(),
         })
     }
@@ -71,6 +77,7 @@ impl WasmEngine {
         Ok(Component::from_file(&self.engine, loc)?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn load_precompiled(
         &mut self,
         name: Arc<str>,
@@ -78,6 +85,7 @@ impl WasmEngine {
         cfg: HashMap<String, Value>,
         state_ns: Option<&str>,
         data: Option<&Path>,
+        tables: &BTreeMap<String, PathBuf>,
         drop_on_error: bool,
     ) -> Result<Component> {
         let comp = unsafe { Component::deserialize_file(&self.engine, &loc)? };
@@ -86,6 +94,13 @@ impl WasmEngine {
         self.state_ns.insert(Arc::clone(&name), ns);
         if let Some(dir) = data {
             self.data.insert(Arc::clone(&name), dir.to_path_buf());
+        }
+        if !tables.is_empty() {
+            let named = tables
+                .iter()
+                .map(|(table, path)| format!("{table}={}", path.display()))
+                .collect();
+            self.lake.insert(Arc::clone(&name), named);
         }
         if !drop_on_error {
             self.pass_on_error.insert(Arc::clone(&name));
@@ -124,6 +139,7 @@ impl WasmEngine {
                 self.max_ttl_ms,
                 self.config.get(component_name).unwrap().clone(),
                 Arc::clone(&self.tables),
+                self.lake.get(component_name).cloned(),
                 self.disable_remote_calls,
             ),
         ))

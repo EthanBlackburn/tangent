@@ -1102,6 +1102,7 @@ sources:
   k: { type: google_workspace, credentials_file: c.json, subject: admin@example.com }
   l: { type: sqlite, path: logs.sqlite, table: logs, partition: actor, batch_size: 40, timeout_secs: 3600 }
   m: { type: github_audit, org: , since: 7d }
+  n: { type: supabase, project_ref: abcdefghijklmnopqrst, token: t }
 sinks:
   s3: { type: s3, bucket_name: b, region: us-east-1, compression: { type: gzip, level: 6 } }
   file: { type: file, path: out.ndjson, compression: { type: none }, encoding: { type: ndjson }, in_flight_limit: 1, default: true }
@@ -1114,7 +1115,7 @@ sinks:
         Ok(l) => l.config,
         Err(e) => panic!("{e:#}"),
     };
-    assert_eq!(cfg.sources.len(), 12);
+    assert_eq!(cfg.sources.len(), 13);
     assert_eq!(cfg.sinks.len(), 5);
     let SourceConfig::GithubAudit(idle) = &cfg.sources["m"] else {
         panic!("github_audit");
@@ -1200,7 +1201,8 @@ fn every_path_field_is_rebased() {
         tests: _, // PATHS: input, expected
         config: _,
         state_namespace: _,
-        data: _, // PATHS
+        data: _,   // PATHS
+        tables: _, // not rebased: relative to the working directory, as the sink that writes them is
         drop_on_error: _,
         group_by: _,
         max_events: _,

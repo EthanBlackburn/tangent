@@ -1,0 +1,10 @@
+plugins/
+state.sqlite*
+alerts.ndjson
+verdicts.ndjson
+lake/
+*.sock
+# run.sh's: tangent's log, and with SAVE=1 the raw capture, which holds every command line
+tangent.log
+es.raw.zst
+net.raw.ndjson

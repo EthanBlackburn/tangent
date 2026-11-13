@@ -1,0 +1,18 @@
+# macos, judged: the judge reads sessions, each a summary of what one
+# terminal tab, app or agent ran and touched in five minutes, as JSON lines,
+# with this pack's brief and its answer (what the session did, then pass,
+# look or flag) in place of the judge pack's, which are written for a
+# company's cloud. It includes the judge, so a config includes this and the
+# pack (and pack:judge/hosted as well for a hosted model):
+#
+#   include: [pack:macos, pack:macos/judge]
+include:
+  - ../judge/ingest.yaml
+
+inference:
+  judge:
+    prompt_file: judge.md
+    schema_file: judge.schema.json
+    encoding: { type: ndjson }
+    batch_bytes: 48000
+    max_tokens: 500

@@ -18,9 +18,10 @@ tap = "telophasehq/homebrew-telophase"
 install-path = "CARGO_HOME"
 # Publish jobs to run in CI: Homebrew, then the packs' components attested and
 # each bundle uploaded beside its component, for `tangent plugin fetch`
-# (.github/workflows/attest-packs.yml)
-publish-jobs = ["homebrew", "./attest-packs"]
-github-custom-job-permissions = { attest-packs = { contents = "write", id-token = "write", attestations = "write" } }
+# (.github/workflows/attest-packs.yml), then the macos pack's sensor, signed
+# and notarized (.github/workflows/sensor.yml)
+publish-jobs = ["homebrew", "./attest-packs", "./sensor"]
+github-custom-job-permissions = { attest-packs = { contents = "write", id-token = "write", attestations = "write" }, sensor = { contents = "write" } }
 # Whether to install an updater program
 install-updater = false
 # Every binary attested with GitHub's artifact attestations
@@ -34,6 +35,10 @@ artifacts = [
   "target/packs/github.component.wasm",
   "target/packs/okta.component.wasm",
   "target/packs/google_workspace.component.wasm",
+  "target/packs/supabase.component.wasm",
+  "target/packs/macos.component.wasm",
+  "target/packs/macos_sessions.component.wasm",
+  "target/packs/macos_verdicts.component.wasm",
   "target/packs/baseline_builder.component.wasm",
   "target/packs/baseline_renderer.component.wasm",
   "target/packs/fresh.component.wasm",

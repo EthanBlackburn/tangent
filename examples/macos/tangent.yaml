@@ -1,0 +1,63 @@
+# macos: this Mac's Endpoint Security events through packs/macos, each record kept in
+# the lake, and each session (a terminal tab, an app, an agent, with all it
+# ran) summarized five minutes at a time and judged, with packs/macos's brief
+# in place of the judge's, which is written for a company's cloud. One
+# config, one process.
+#
+#   tangent plugin compile --config tangent.yaml
+#   tangent run --config tangent.yaml &     # a local model: JUDGE_URL, JUDGE_MODEL (packs/judge/README.md); haiku.yaml for Claude Haiku
+#   sudo ../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor \
+#     | nc -U es.sock                       # packs/macos/sensor, built and signed (its README)
+#   python3 ../../packs/macos/ps/ps.py | nc -U es.sock     # once: what was already running
+#   python3 ../../packs/macos/agent/transcripts.py | nc -U es.sock   # what you asked Claude Code
+#   sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
+#     | python3 ../../packs/macos/net/net.py | nc -U net.sock
+#   tail -f alerts.ndjson
+#
+# The sensor needs root, and the terminal it runs in Full Disk Access (System
+# Settings, Privacy & Security), restarted after the grant. It writes to
+# stdout only, so nc joins it to the socket: root writes it, you own it, and
+# nothing listens on a port. Endpoint Security sees no network: tcpdump does,
+# each packet tagged with the process that sent it, and net.py, run as you,
+# makes the new connections of it (packs/macos/README.md). It is optional:
+# without it the net socket stays quiet.
+include:
+  - ../../packs/macos/ingest.yaml             # plugin macos, on one worker
+  - ../../packs/macos/judge.yaml              # the judge (and the enrich-ip and behavior-baseline packs it includes), reading sessions with the macos pack's brief and answer: pass, look or flag
+
+sinks:
+  lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    type: rolling_file
+    path: lake/logs/%Y/%m/%d/%H
+    wal_path: lake/wal
+    max_file_age_seconds: 3600
+    compression: { type: zstd, level: 3 }
+    encoding:
+      type: parquet
+      record_column: record      # each record whole, for the fields the schema leaves out
+      schema:
+        ts: timestamp
+        source: string
+        _norm: { org: string, actor: string, kind: string, ip: string }
+
+sources:
+  es:
+    type: socket
+    socket_path: es.sock
+  net:                           # new connections, from tcpdump through packs/macos/net/net.py
+    type: socket
+    socket_path: net.sock
+
+dag:
+  - from: es
+    to: [macos]
+  - from: net                    # joined to the same process tree
+    to: [macos]
+  - from: macos                  # every record kept; each session summarized
+    to: [lake, macos_sessions]
+  - from: macos_sessions         # and judged (packs/judge)
+    to: [judge]
+  - from: judge                  # what it said of a session, kept for the session's next summary
+    to: [macos_verdicts]
+  - from: macos_verdicts         # and a `look` or a `flag` a person has not been told of in this turn
+    to: [alerts]

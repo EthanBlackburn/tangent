@@ -1,0 +1,18 @@
+# supabase: a Supabase project's logs into finished records, by one plugin,
+# `supabase`: normalized, trimmed, its address enriched, the profile's facts
+# added. Include it in your config with packs/enrich-ip/ingest.yaml, route a
+# `supabase` source to plugin supabase, and plugin supabase to where its
+# records go, and give the config a `profile` table; README.md has the lines.
+plugins:
+  supabase:
+    module_type: rust
+    path: .
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
+    tests:
+      - input: tests/input.json
+        expected: tests/expected.json
+        enrichment_tables:            # what the fixtures were written against, in any config
+          geo: { type: document, path: tests/addresses.yaml }   # GeoLite2's answers for their addresses
+          asn: { type: document, path: tests/addresses.yaml }
+          networks: { type: cidr, path: tests/networks.csv }
+          profile: { type: document, path: tests/profile.yaml }

@@ -65,6 +65,8 @@ pub trait Dispatch: Send + Sync {
 
 enum Msg {
     Records(Vec<JsonLogView>),
+    /// Close every open group.
+    Close,
     /// Close every open group; answer once none is open, waiting or out.
     Flush(oneshot::Sender<()>),
 }
@@ -73,15 +75,25 @@ enum Msg {
 #[derive(Clone)]
 pub struct Grouper {
     tx: mpsc::Sender<Msg>,
-    waiting: Arc<AtomicUsize>,
+    held: Arc<AtomicUsize>,
 }
 
 impl Grouper {
-    /// Records in closed groups waiting for their key's group out to be
-    /// through: what grows in memory while records come faster than the
-    /// plugin takes a key's groups.
-    pub fn waiting(&self) -> usize {
-        self.waiting.load(Ordering::Relaxed)
+    /// Records in groups not yet out: in an open group, or in a closed one
+    /// waiting for its key's group out to be through. What grows in memory
+    /// while records come faster than groups close and the plugin takes
+    /// them.
+    pub fn held(&self) -> usize {
+        self.held.load(Ordering::Relaxed)
+    }
+
+    /// Closes every open group now, whatever its age, and does not wait for
+    /// them: each goes to the plugin, or waits behind its key's group out.
+    pub async fn close_open(&self) -> Result<()> {
+        self.tx
+            .send(Msg::Close)
+            .await
+            .map_err(|_| anyhow!("the grouping task is gone"))
     }
 
     pub async fn add(&self, records: Vec<JsonLogView>) -> Result<()> {
@@ -113,18 +125,18 @@ pub fn spawn(
 ) -> (Grouper, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(1024);
     let (done_tx, done_rx) = mpsc::unbounded_channel();
-    let waiting = Arc::new(AtomicUsize::new(0));
+    let held = Arc::new(AtomicUsize::new(0));
     let task = Task {
         node,
         cfg,
         out,
         store,
         keys: HashMap::new(),
-        waiting: Arc::clone(&waiting),
+        held: Arc::clone(&held),
         done_tx,
         flushing: Vec::new(),
     };
-    (Grouper { tx, waiting }, tokio::spawn(task.run(rx, done_rx)))
+    (Grouper { tx, held }, tokio::spawn(task.run(rx, done_rx)))
 }
 
 /// A group still taking records.
@@ -151,8 +163,8 @@ struct Task {
     out: Arc<dyn Dispatch>,
     store: Arc<dyn StateStore>,
     keys: HashMap<Arc<str>, Key>,
-    /// The records in every key's `waiting`.
-    waiting: Arc<AtomicUsize>,
+    /// The records in every key's `open` and `waiting`.
+    held: Arc<AtomicUsize>,
     /// Where a group's walk reports it is through, with the group's records.
     done_tx: mpsc::UnboundedSender<(Arc<str>, Vec<JsonLogView>)>,
     flushing: Vec<oneshot::Sender<()>>,
@@ -178,16 +190,9 @@ impl Task {
                             self.add(r).await;
                         }
                     }
+                    Some(Msg::Close) => self.close_open().await,
                     Some(Msg::Flush(answer)) => {
-                        let open: Vec<Arc<str>> = self
-                            .keys
-                            .iter()
-                            .filter(|(_, k)| k.open.is_some())
-                            .map(|(key, _)| Arc::clone(key))
-                            .collect();
-                        for key in open {
-                            self.close(key).await;
-                        }
+                        self.close_open().await;
                         self.flushing.push(answer);
                         self.answer_if_idle();
                     }
@@ -226,6 +231,7 @@ impl Task {
         });
         open.records.push(r);
         open.last = now;
+        self.held.fetch_add(1, Ordering::Relaxed);
         if self
             .cfg
             .max_events
@@ -254,6 +260,18 @@ impl Task {
         }
     }
 
+    async fn close_open(&mut self) {
+        let open: Vec<Arc<str>> = self
+            .keys
+            .iter()
+            .filter(|(_, k)| k.open.is_some())
+            .map(|(key, _)| Arc::clone(key))
+            .collect();
+        for key in open {
+            self.close(key).await;
+        }
+    }
+
     async fn close(&mut self, key: Arc<str>) {
         let Some(k) = self.keys.get_mut(&key) else {
             return;
@@ -262,7 +280,6 @@ impl Task {
             return;
         };
         if k.out {
-            self.waiting.fetch_add(records.len(), Ordering::Relaxed);
             k.waiting.push_back(records);
         } else {
             self.send(key, records).await;
@@ -270,6 +287,7 @@ impl Task {
     }
 
     async fn send(&mut self, key: Arc<str>, records: Vec<JsonLogView>) {
+        self.held.fetch_sub(records.len(), Ordering::Relaxed);
         let mut all = self.history(&key).await;
         all.extend(records.iter().cloned());
         let done = Arc::new(Through {
@@ -304,10 +322,7 @@ impl Task {
             None => None,
         };
         match next {
-            Some(records) => {
-                self.waiting.fetch_sub(records.len(), Ordering::Relaxed);
-                self.send(Arc::clone(&key), records).await
-            }
+            Some(records) => self.send(Arc::clone(&key), records).await,
             None => {
                 if self
                     .keys
@@ -578,10 +593,10 @@ mod tests {
         assert!(last[3..].iter().all(|r| r.get("_context").is_none()));
     }
 
-    /// The records waiting behind a key's group out are counted until they
-    /// go.
+    /// The records in groups not yet out are counted until they go: those
+    /// waiting behind a key's group out, and those in a group still open.
     #[tokio::test]
-    async fn the_records_waiting_behind_a_group_are_counted() {
+    async fn the_records_held_in_groups_are_counted() {
         let (g, out) = start(Some(2), 60_000, 0);
         g.add((1..=6).map(|id| rec("a", id)).collect())
             .await
@@ -589,14 +604,40 @@ mod tests {
         g.add(vec![rec("b", 7), rec("b", 8)]).await.unwrap();
         settle().await;
         assert_eq!(out.ids(), [vec![1, 2], vec![7, 8]]);
-        assert_eq!(g.waiting(), 4, "a's 3 to 6; b's group is out, not waiting");
+        assert_eq!(g.held(), 4, "a's 3 to 6; b's group is out, not held");
         out.ack(0).await;
         settle().await;
-        assert_eq!(g.waiting(), 2);
+        assert_eq!(g.held(), 2);
         out.ack(2).await;
         settle().await;
         assert_eq!(out.ids().len(), 4);
-        assert_eq!(g.waiting(), 0);
+        assert_eq!(g.held(), 0);
+        g.add(vec![rec("c", 9)]).await.unwrap();
+        settle().await;
+        assert_eq!(
+            g.held(),
+            1,
+            "c's group is open: one more record would close it"
+        );
+    }
+
+    /// Open groups close when asked to, though none is full, quiet or old,
+    /// and the caller does not wait for them to be through.
+    #[tokio::test]
+    async fn open_groups_close_when_asked() {
+        let (g, out) = start(None, 60_000, 0);
+        g.add(vec![rec("a", 1), rec("a", 2), rec("b", 3)])
+            .await
+            .unwrap();
+        settle().await;
+        assert!(out.ids().is_empty());
+        assert_eq!(g.held(), 3);
+        g.close_open().await.unwrap();
+        settle().await;
+        let mut ids = out.ids();
+        ids.sort();
+        assert_eq!(ids, [vec![1, 2], vec![3]]);
+        assert_eq!(g.held(), 0);
     }
 
     /// A group whose walk ended without firing its ack (a signal, a failed

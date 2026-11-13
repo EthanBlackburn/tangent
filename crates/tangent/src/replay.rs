@@ -4,7 +4,8 @@
 //! re-run of live, so an actor's group can hold more of its records than
 //! live would have closed together. After the last hour every open group
 //! closes, and replay ends once each is through: the judge has answered and
-//! the sinks have what it said.
+//! the sinks have what it said. A range that could not be read to its end is
+//! judged as far as it was read, and the replay then fails with why.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -29,10 +30,9 @@ use tokio_util::sync::CancellationToken;
 use crate::dag::DagRuntime;
 use crate::router::Router;
 use crate::sources::cloudtrail_history;
-use crate::sources::decoding::chunk_ndjson;
-use crate::sources::poll::frame;
-use crate::wait_for_shutdown_signal;
+use crate::sources::poll::{duration_ms, frame};
 use crate::worker::Ack;
+use crate::{stopping, wait_for_shutdown_signal};
 
 pub struct ReplayOptions {
     pub config: PathBuf,
@@ -61,16 +61,18 @@ pub trait Past: Send {
     fn read(&self) -> String;
 }
 
-/// The past of the source `name`, when replay can read its kind's.
+/// The past of the source `name`, when replay can read its kind's, for a
+/// replay started at `started`.
 async fn past(
     name: &str,
     src: &SourceConfig,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
+    started: DateTime<Utc>,
 ) -> Result<Option<Box<dyn Past>>> {
     match src {
         SourceConfig::Cloudtrail(c) => Ok(Some(Box::new(
-            cloudtrail_history::past(name, c, from, to).await?,
+            cloudtrail_history::past(name, c, from, to, started).await?,
         ))),
         _ => Ok(None),
     }
@@ -87,13 +89,16 @@ struct Replayed {
 pub async fn replay(opts: ReplayOptions) -> Result<()> {
     let mut cfg = Config::from_file(&opts.config)?;
     cfg.validate()?;
-    let (from, to) = range(&opts.from, opts.to.as_deref())?;
+    // One now for the whole replay: a span before now and a source's "no
+    // further back than" are measured from the same instant.
+    let started = Utc::now();
+    let (from, to) = range(&opts.from, opts.to.as_deref(), started)?;
 
     // A source with a past is read here and stays in the config, its edges
     // taking what is read on; the rest would mix today's records in.
     let mut sources = Vec::new();
     for (name, src) in std::mem::take(&mut cfg.sources) {
-        match past(&name, &src, from, to).await? {
+        match past(&name, &src, from, to, started).await? {
             Some(past) => {
                 sources.push(Replayed {
                     node: NodeRef::Source {
@@ -121,11 +126,15 @@ pub async fn replay(opts: ReplayOptions) -> Result<()> {
 /// `[from, to)`, `to` five minutes ago when left out: CloudTrail typically
 /// has an event in Event history within five minutes of its call, so a range
 /// up to now would miss the last few minutes' late events.
-fn range(from: &str, to: Option<&str>) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
-    let from = parse_when(from)?;
+fn range(
+    from: &str,
+    to: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
+    let from = parse_when(from, now)?;
     let to = match to {
-        Some(to) => parse_when(to)?,
-        None => Utc::now() - cloudtrail_history::lag(),
+        Some(to) => parse_when(to, now)?,
+        None => now - cloudtrail_history::lag(),
     };
     ensure!(from < to, "from ({from}) is not before to ({to})");
     Ok((from, to))
@@ -164,40 +173,53 @@ async fn sweep(
         println!("  {}: {}{records}", s.name, s.past.size());
     }
 
-    let chunks = cfg.batch_size_kb();
     let stop_models = CancellationToken::new();
     let dag = DagRuntime::fed(cfg, path, stop_models.clone()).await?;
 
-    let mut read = false;
+    // Listened for until replay returns: while the range is read, while the
+    // last groups are judged, and through the shutdown after either.
+    let signals = tokio::spawn({
+        let stop_models = stop_models.clone();
+        async move {
+            if wait_for_shutdown_signal().await.is_ok() {
+                stopping(&stop_models);
+            }
+        }
+    });
+
     let swept = tokio::select! {
-        r = async {
-            step(&mut sources, first, &mut hour, to, &dag, chunks).await?;
-            read = true;
-            tracing::info!("replay: the range is read; closing every group");
-            dag.finish().await;
-            Ok::<_, anyhow::Error>(())
-        } => r,
-        r = wait_for_shutdown_signal() => {
-            r?;
-            stop_models.cancel();
-            // a signal within a second of the first is the same stop
-            tokio::spawn(async {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                if wait_for_shutdown_signal().await.is_ok() {
-                    tracing::warn!("second signal; exiting now");
-                    std::process::exit(130);
-                }
-            });
-            Err(if read {
-                anyhow!("stopped while the last groups were judged: the range was read, but groups not yet judged were left out")
-            } else {
-                anyhow!("stopped before {}: the rest of the range, and groups not yet judged, were left out", when(hour))
-            })
+        r = step(&mut sources, first, &mut hour, to, &dag) => r,
+        () = stop_models.cancelled() => Err(anyhow!(
+            "stopped with the range read to {}: the rest of it, and groups not yet judged, were left out",
+            when(hour)
+        )),
+    };
+    // What was read is judged, whether or not that was the whole range: a
+    // region that failed at the range's last hour does not cost the rest.
+    let swept = if stop_models.is_cancelled() {
+        swept
+    } else {
+        match &swept {
+            Ok(()) => tracing::info!("replay: the range is read; closing every group"),
+            Err(e) => tracing::error!(
+                "replay: the range could not be read past {}; judging what was read. {e:#}",
+                when(hour)
+            ),
+        }
+        tokio::select! {
+            () = dag.finish() => swept,
+            () = stop_models.cancelled() => Err(match swept {
+                Ok(()) => anyhow!("stopped while the last groups were judged: the range was read, but groups not yet judged were left out"),
+                Err(e) => e.context("stopped while the last groups were judged: groups not yet judged were left out"),
+            }),
         }
     };
 
-    dag.shutdown(Duration::from_secs(120), Duration::from_secs(120))
-        .await?;
+    let down = dag
+        .shutdown(Duration::from_secs(120), Duration::from_secs(120))
+        .await;
+    signals.abort();
+    down?;
 
     let records: u64 = sources.iter().map(|s| s.records).sum();
     println!(
@@ -222,11 +244,17 @@ async fn sweep(
     swept
 }
 
-/// Records replay lets wait in groups behind their key's before it reads
-/// the next hour. Parsed, a CloudTrail record takes about 6 KB, so this is
-/// about 300 MB. A key sends one group at a time, so reading further ahead
-/// would not get the judge through them any sooner.
-const WAITING: usize = 50_000;
+/// Records replay lets groups hold, open or waiting behind their key's,
+/// before it reads the next hour. Parsed, a CloudTrail record takes about
+/// 6 KB, so this is about 300 MB. A key sends one group at a time, so reading
+/// further ahead would not get the judge through them any sooner.
+const HELD: usize = 50_000;
+
+/// Records handed to the DAG together. The workers take a piece's records
+/// in turn, so two of them may reach a group in either order, as two of one
+/// trail file may live; a piece is in its groups before the next goes, so
+/// the pieces keep the order of time.
+const PIECE: usize = 500;
 
 /// Each hour's records into the DAG, until the range is read.
 async fn step(
@@ -235,44 +263,46 @@ async fn step(
     hour: &mut DateTime<Utc>,
     to: DateTime<Utc>,
     dag: &DagRuntime,
-    chunks: usize,
 ) -> Result<()> {
     let mut got = first;
     loop {
         for (s, records) in sources.iter_mut().zip(got) {
-            s.records += records.len() as u64;
-            store(&dag.router, &s.node, frames(records, chunks)?).await?;
+            for piece in records.chunks(PIECE) {
+                store(&dag.router, &s.node, frames(piece)?).await?;
+                s.records += piece.len() as u64;
+            }
         }
         tracing::info!(hour = %when(*hour), "replay: stored up to");
         if *hour >= to {
             return Ok(());
         }
-        // A busy actor's next groups wait in memory; on a long range they
-        // would fill it.
-        if dag.waiting() > WAITING {
+        // Groups are in memory, and on a long range they would fill it: a
+        // busy actor's next groups wait behind its group out, and a group
+        // with no `max_events` stays open for as long as the sweep keeps
+        // its actor from going quiet. Past the limit the open ones close
+        // too, and the judge is waited for.
+        if dag.held() > HELD {
             tracing::info!(
-                waiting = dag.waiting(),
-                "replay: waiting for the judge to catch up"
+                held = dag.held(),
+                "replay: closing the open groups and waiting for the judge to catch up"
             );
-            while dag.waiting() > WAITING {
+            dag.close_open_groups().await;
+            while dag.held() > HELD {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
-        *hour = (*hour + TimeDelta::hours(1)).min(to);
+        let next = (*hour + TimeDelta::hours(1)).min(to);
         got = Vec::new();
         for s in sources.iter_mut() {
-            got.push(s.past.until(*hour).await?);
+            got.push(s.past.until(next).await?);
         }
+        *hour = next;
     }
 }
 
-/// Records as NDJSON frames of about `chunks` bytes, as a source hands them on.
-fn frames(records: Vec<Value>, chunks: usize) -> Result<Vec<BytesMut>> {
-    let mut ndjson = BytesMut::new();
-    for v in &records {
-        ndjson.extend_from_slice(&frame(v)?);
-    }
-    Ok(chunk_ndjson(&mut ndjson, chunks))
+/// Records as NDJSON lines, as a source hands them on.
+fn frames(records: &[Value]) -> Result<Vec<BytesMut>> {
+    records.iter().map(frame).collect()
 }
 
 /// Hands `frames` to the DAG as the source `node` would, and waits until
@@ -303,18 +333,30 @@ impl Ack for Stored {
     }
 }
 
-/// Sinks that post, upload or archive become blackholes: a replay of last
-/// month sends no alerts and archives nothing a second time. A rolling_file
-/// sink's WAL is the live pipeline's when replay runs beside it, and opening
-/// it would seal and publish the file the live process is writing.
+/// Sinks that send what they are given on become blackholes: a replay of
+/// last month posts no alerts, archives nothing a second time, and puts
+/// nothing in the queue another pipeline reads. A rolling_file sink's WAL is
+/// the live pipeline's when replay runs beside it, and opening it would seal
+/// and publish the file the live process is writing. A file sink is where
+/// the replay's answers are read. A plugin that queries a lake reads the live
+/// pipeline's, which holds none of what the replay read.
 fn keep_local(cfg: &mut Config) {
     for (name, sink) in &mut cfg.sinks {
-        if matches!(
-            sink.kind,
-            SinkKind::Slack(_) | SinkKind::S3(_) | SinkKind::RollingFile(_)
-        ) {
+        let kept = match sink.kind {
+            SinkKind::File(_) | SinkKind::Blackhole(_) => true,
+            SinkKind::Slack(_)
+            | SinkKind::S3(_)
+            | SinkKind::RollingFile(_)
+            | SinkKind::Sqlite(_) => false,
+        };
+        if !kept {
             tracing::warn!(sink = %name, "replay sends and archives nothing; this sink is left out");
             sink.kind = SinkKind::Blackhole(BlackholeConfig {});
+        }
+    }
+    for (name, plugin) in &cfg.plugins {
+        if !plugin.tables.is_empty() {
+            tracing::warn!(plugin = %name, "this plugin queries a lake, and replay writes none of the range to one: what it reads there is the live pipeline's, today's records and not the range's");
         }
     }
 }
@@ -343,18 +385,16 @@ fn lines_after(path: &Path, from: u64) -> std::io::Result<u64> {
     }
 }
 
-/// `2026-10-01` (midnight UTC), an RFC 3339 time, or a span before now:
-/// `1d`, `12h`.
-pub fn parse_when(s: &str) -> Result<DateTime<Utc>> {
+/// `2026-10-01` (midnight UTC), an RFC 3339 time, or a span before `now`
+/// with its unit: `1d`, `12h`, `30m`.
+pub fn parse_when(s: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
     let s = s.trim();
-    let ago = |unit: char, span: fn(i64) -> Option<TimeDelta>| {
-        s.strip_suffix(unit)
-            .and_then(|n| n.parse::<u32>().ok())
-            .and_then(|n| span(n.into()))
-            .map(|d| Utc::now() - d)
-    };
-    if let Some(t) = ago('d', TimeDelta::try_days).or_else(|| ago('h', TimeDelta::try_hours)) {
-        return Ok(t);
+    // a span says its unit: a bare number is seconds to a source's config,
+    // and here more likely a year
+    if s.ends_with(|c: char| c.is_ascii_lowercase()) {
+        if let Some(span) = duration_ms(s).and_then(TimeDelta::try_milliseconds) {
+            return Ok(now - span);
+        }
     }
     s.parse::<DateTime<Utc>>()
         .or_else(|_| {
@@ -363,7 +403,7 @@ pub fn parse_when(s: &str) -> Result<DateTime<Utc>> {
         })
         .map_err(|_| {
             anyhow!(
-                "{s:?}: want a date (2026-10-01), an RFC 3339 time, or a span before now (1d, 12h)"
+                "{s:?}: want a date (2026-10-01), an RFC 3339 time, or a span before now (1d, 12h, 30m)"
             )
         })
 }
@@ -411,25 +451,43 @@ mod tests {
 
     #[test]
     fn a_range_is_dates_times_or_a_span_before_now() {
+        let now = Utc::now();
         assert_eq!(
-            parse_when("2026-10-01").unwrap(),
-            parse_when("2026-10-01T00:00:00Z").unwrap()
+            parse_when("2026-10-01", now).unwrap(),
+            parse_when("2026-10-01T00:00:00Z", now).unwrap()
         );
-        let near =
-            |t: DateTime<Utc>, ago: TimeDelta| (Utc::now() - ago - t).abs() < TimeDelta::seconds(5);
-        assert!(near(parse_when("1d").unwrap(), TimeDelta::days(1)));
-        assert!(near(parse_when("12h").unwrap(), TimeDelta::hours(12)));
-        for bad in ["last week", "1w", "-1d", "d", "1.5h"] {
-            assert!(parse_when(bad).is_err(), "{bad}");
+        assert_eq!(parse_when("1d", now).unwrap(), now - TimeDelta::days(1));
+        assert_eq!(parse_when("12h", now).unwrap(), now - TimeDelta::hours(12));
+        // as a source's config writes a span
+        assert_eq!(
+            parse_when("30m", now).unwrap(),
+            now - TimeDelta::minutes(30)
+        );
+        assert_eq!(
+            parse_when("1.5h", now).unwrap(),
+            now - TimeDelta::minutes(90)
+        );
+        for bad in ["last week", "1w", "-1d", "d", "2026", "90"] {
+            assert!(parse_when(bad, now).is_err(), "{bad}");
         }
+    }
+
+    /// The longest range Event history keeps is not refused for the time it
+    /// took to get from reading `--from` to asking the source: both are
+    /// measured from the replay's one start.
+    #[test]
+    fn ninety_days_back_is_in_event_history() {
+        let started = Utc::now();
+        let (from, to) = range("90d", None, started).unwrap();
+        cloudtrail_history::range_end(from, to, started).unwrap();
     }
 
     /// Without --to the range ends five minutes before the replay starts:
     /// Event history reads it whole, so past() says nothing of its end.
     #[test]
     fn to_left_out_is_five_minutes_ago() {
-        let (from, to) = range("1d", None).unwrap();
         let started = Utc::now();
+        let (from, to) = range("1d", None, started).unwrap();
         assert!(to <= started - cloudtrail_history::lag());
         assert_eq!(
             cloudtrail_history::range_end(from, to, started).unwrap(),
@@ -508,7 +566,7 @@ dag:
     /// config, replay's state in `state`: what reached the sink.
     async fn two_hours(root: &Path, state: &Path, edit: impl FnOnce(&mut Config)) -> Vec<Value> {
         let path = pipeline(root);
-        let t0 = parse_when("2026-10-01").unwrap();
+        let t0 = parse_when("2026-10-01", Utc::now()).unwrap();
         let at = |m: i64| t0 + TimeDelta::minutes(m);
         let mut past = VecDeque::new();
         for m in [5, 20, 50, 65, 80, 110] {
@@ -555,6 +613,62 @@ dag:
             vec![5, 20, 50, 65, 80, 110],
             "each record judged once: {read:?}"
         );
+    }
+
+    /// A past that gives its first hour and then fails.
+    struct FailsAfter(Option<Vec<Value>>);
+
+    #[async_trait]
+    impl Past for FailsAfter {
+        async fn until(&mut self, _: DateTime<Utc>) -> Result<Vec<Value>> {
+            self.0
+                .take()
+                .ok_or_else(|| anyhow!("LookupEvents in us-east-1: no answer"))
+        }
+        fn size(&self) -> String {
+            String::new()
+        }
+        fn estimate(&self) -> Option<u64> {
+            None
+        }
+        fn read(&self) -> String {
+            String::new()
+        }
+    }
+
+    /// A range that cannot be read to its end fails the replay, but only
+    /// after what was read is judged: the first hour's records are through
+    /// the grouped plugin to its sink, though their groups had not expired.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn what_was_read_before_a_failure_is_judged() {
+        let (dir, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = pipeline(dir.path());
+        let t0 = parse_when("2026-10-01", Utc::now()).unwrap();
+        let first = (0..3)
+            .map(|n| json!({"source": "test", "ts": t0.to_rfc3339(), "actor": "a", "n": n}))
+            .collect();
+        let sources = vec![Replayed {
+            name: "test".into(),
+            node: NodeRef::Source {
+                name: "test".into(),
+            },
+            past: Box::new(FailsAfter(Some(first))),
+            records: 0,
+        }];
+        let cfg = Config::from_file(&path).unwrap();
+        let e = sweep(
+            cfg,
+            &path,
+            state.path(),
+            sources,
+            t0,
+            t0 + TimeDelta::hours(3),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("no answer"), "{e:#}");
+        let read = std::fs::read_to_string(dir.path().join("read.ndjson")).unwrap();
+        assert_eq!(read.lines().count(), 3, "{read}");
     }
 
     /// The history replay builds goes to a state of its own: the live

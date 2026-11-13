@@ -336,8 +336,48 @@ pub(crate) mod testing {
         kept: Arc<Kept>,
     }
 
+    /// A store that reads and refuses every write: a full disk.
+    struct Refusing(LruStore);
+
+    #[async_trait]
+    impl StateStore for Refusing {
+        async fn begin(&self) -> Result<Box<dyn crate::state::Txn>> {
+            self.0.begin().await
+        }
+        async fn set(&self, _: &str, _: &str, _: &StateValue, _: Option<u64>) -> Result<()> {
+            anyhow::bail!("no space left on device")
+        }
+        async fn scan(
+            &self,
+            ns: Option<&str>,
+            key_prefix: &str,
+            limit: usize,
+        ) -> Result<Vec<crate::state::Entry>> {
+            self.0.scan(ns, key_prefix, limit).await
+        }
+        async fn counts(&self, ns: Option<&str>) -> Result<Vec<crate::state::Count>> {
+            self.0.counts(ns).await
+        }
+        async fn purge_expired(&self) -> Result<u64> {
+            self.0.purge_expired().await
+        }
+        async fn reset(&self) -> Result<()> {
+            self.0.reset().await
+        }
+    }
+
     impl Keeper {
         pub fn new(name: &str) -> Self {
+            Self::with_store(name, Arc::new(LruStore::new(Default::default()).unwrap()))
+        }
+
+        /// A keeper whose state store refuses every write.
+        pub fn refusing(name: &str) -> Self {
+            let store = Refusing(LruStore::new(Default::default()).unwrap());
+            Self::with_store(name, Arc::new(store))
+        }
+
+        fn with_store(name: &str, store: Arc<dyn StateStore>) -> Self {
             let kept = Arc::new(Kept::default());
             let manager = Arc::new(SinkManager::for_test(
                 vec![(Arc::from("kept"), Arc::clone(&kept) as Arc<dyn Sink>)],
@@ -353,7 +393,6 @@ pub(crate) mod testing {
                 }],
             );
             let router = Arc::new(Router::new(outs, Arc::clone(&manager)));
-            let store = Arc::new(LruStore::new(Default::default()).unwrap());
             Self {
                 poller: Poller::new(Arc::from(name), store, router, Duration::minutes(5)),
                 manager,

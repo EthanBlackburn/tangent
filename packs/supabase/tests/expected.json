@@ -1,0 +1,172 @@
+[
+ {
+  "_facts": {
+   "ip": {
+    "asn": 64496,
+    "country": "US",
+    "org": "Example Broadband"
+   },
+   "notes": [],
+   "principal": "user"
+  },
+  "_norm": {
+   "actor": "ana@example.com",
+   "org": "acme"
+  },
+  "auth_event": {
+   "action": "login",
+   "actor_username": "ana@example.com",
+   "actor_via_sso": "false",
+   "log_type": "account",
+   "traits": {
+    "provider": "email"
+   }
+  },
+  "component": "api",
+  "level": "info",
+  "log": "auth_logs",
+  "method": "POST",
+  "msg": "request completed",
+  "path": "/token",
+  "remote_addr": "203.0.113.9",
+  "source": "supabase",
+  "status": "200",
+  "ts": "2026-11-09T12:00:00Z"
+ },
+ {
+  "_facts": {
+   "ip": {
+    "asn": 64500,
+    "country": "NL",
+    "hosting": "datacenter",
+    "org": "Example Hosting",
+    "tor": true
+   },
+   "notes": [
+    "198.51.100.24 is a Tor exit (Example Hosting)"
+   ]
+  },
+  "_norm": {
+   "org": "acme"
+  },
+  "component": "api",
+  "error": "400: Invalid login credentials",
+  "level": "info",
+  "log": "auth_logs",
+  "method": "POST",
+  "msg": "400: Invalid login credentials",
+  "path": "/token",
+  "remote_addr": "198.51.100.24",
+  "source": "supabase",
+  "status": "400",
+  "ts": "2026-11-09T12:04:10Z"
+ },
+ {
+  "_facts": {
+   "ip": {
+    "asn": 64500,
+    "country": "NL",
+    "hosting": "datacenter",
+    "org": "Example Hosting",
+    "tor": true
+   },
+   "notes": [
+    "198.51.100.24 is a Tor exit (Example Hosting)"
+   ],
+   "principal": "user"
+  },
+  "_norm": {
+   "actor": "ana@example.com",
+   "org": "acme"
+  },
+  "auth_event": {
+   "action": "login",
+   "actor_username": "ana@example.com",
+   "actor_via_sso": "false",
+   "log_type": "account",
+   "traits": {
+    "provider": "email"
+   }
+  },
+  "component": "api",
+  "level": "info",
+  "log": "auth_logs",
+  "method": "POST",
+  "msg": "request completed",
+  "path": "/token",
+  "remote_addr": "198.51.100.24",
+  "source": "supabase",
+  "status": "200",
+  "ts": "2026-11-09T12:04:31Z"
+ },
+ {
+  "_facts": {
+   "notes": [
+    "user_deleted is a kind the org watches every time"
+   ],
+   "principal": "user",
+   "watch": true
+  },
+  "_norm": {
+   "actor": "ana@example.com",
+   "org": "acme"
+  },
+  "auth_audit_event": {
+   "action": "user_deleted",
+   "actor_username": "ana@example.com",
+   "actor_via_sso": "false",
+   "log_type": "team"
+  },
+  "level": "info",
+  "log": "auth_audit_logs",
+  "msg": "audit_event",
+  "source": "supabase",
+  "ts": "2026-11-09T12:06:02Z"
+ },
+ {
+  "_facts": {
+   "ip": {
+    "asn": 64511,
+    "country": "BR",
+    "org": "Example Telecom"
+   },
+   "notes": [],
+   "principal": "user"
+  },
+  "_norm": {
+   "actor": "rui@example.org",
+   "org": "acme"
+  },
+  "auth_event": {
+   "action": "user_signedup",
+   "actor_username": "rui@example.org",
+   "log_type": "team",
+   "traits": {
+    "provider": "google"
+   }
+  },
+  "component": "api",
+  "level": "info",
+  "log": "auth_logs",
+  "method": "POST",
+  "msg": "request completed",
+  "path": "/signup",
+  "remote_addr": "192.0.2.77",
+  "source": "supabase",
+  "status": "200",
+  "ts": "2026-11-09T12:10:45Z"
+ },
+ {
+  "_facts": {
+   "notes": []
+  },
+  "_norm": {
+   "org": "acme"
+  },
+  "event_message": "connection authorized: user=authenticator database=postgres",
+  "log": "postgres_logs",
+  "severity_text": "LOG",
+  "source": "supabase",
+  "ts": "2026-11-09T12:11:00Z"
+ }
+]
