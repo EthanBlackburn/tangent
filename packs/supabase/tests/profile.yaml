@@ -1,0 +1,10 @@
+# The company in the supabase fixtures, cut to what tests/expected.json turns
+# on. The fixtures' test reads it as its `profile` table (ingest.yaml), in any
+# config that includes this pack. packs/README.md#the-profile lists every key.
+
+org: acme                        # the org every one of your own infrastructure logs is folded into
+own_sources: [supabase]
+
+countries: [US]                  # where your people are; says nothing of your product's users
+
+watch: [user_deleted]            # a kind a person wants seen every time

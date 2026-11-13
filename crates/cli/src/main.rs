@@ -9,6 +9,7 @@ use tangent_bench::BenchOptions;
 use tangent_runtime::RuntimeOptions;
 
 mod fetch;
+use tangent_runtime::query;
 mod scaffold;
 mod state;
 mod test;
@@ -108,6 +109,35 @@ enum Commands {
         /// CloudTrail typically has an event within five minutes of its call
         #[arg(long, value_name = "WHEN")]
         to: Option<String>,
+    },
+
+    /// Run one read-only SQL statement over Parquet files (a `rolling_file`
+    /// sink's lake) and print the result as a table. The statement can read
+    /// the tables and views named here and nothing else: it cannot create,
+    /// change or copy anything, set an option, or name a file, so it may
+    /// come from somewhere you do not trust. JSON text is read with
+    /// `col->>'key'` and `json_get_str(col, 'key', …)`
+    Query {
+        /// NAME=PATH: a Parquet file, or a directory and every .parquet file
+        /// under it. Repeat a name for one table over several paths
+        #[arg(long = "table", value_name = "NAME=PATH", required = true)]
+        tables: Vec<String>,
+        /// NAME=SELECT: a view the statement can read, over the tables and
+        /// the views before it
+        #[arg(long = "view", value_name = "NAME=SELECT")]
+        views: Vec<String>,
+        /// Rows printed; the rest are counted
+        #[arg(long, default_value_t = 1000)]
+        max_rows: usize,
+        /// Characters of a value printed; the rest are counted
+        #[arg(long, default_value_t = 500)]
+        max_cell: usize,
+        /// Print each row as a JSON object on a line, its values whole, for
+        /// a program to read
+        #[arg(long)]
+        json: bool,
+        /// The statement
+        sql: String,
     },
 
     /// Inspect a pipeline's state store (read-only, works while it runs)
@@ -239,6 +269,25 @@ async fn main() -> Result<()> {
                 state_dir: state.path().to_path_buf(),
             })
             .await?;
+        }
+
+        Commands::Query {
+            tables,
+            views,
+            max_rows,
+            max_cell,
+            json,
+            sql,
+        } => {
+            let q = query::Query {
+                tables,
+                views,
+                sql,
+                max_rows,
+                max_cell,
+                json,
+            };
+            print!("{}", query::run(&q).await?);
         }
 
         Commands::State { config, command } => {

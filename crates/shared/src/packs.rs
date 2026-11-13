@@ -41,12 +41,25 @@ pub const FILES: &[(&str, &str)] = files![
     "github/ingest.yaml",
     "okta/ingest.yaml",
     "google_workspace/ingest.yaml",
+    "supabase/ingest.yaml",
+    "macos/ingest.yaml",
+    "macos/judge.yaml",
+    "macos/judge.md",
+    "macos/judge.schema.json",
+    "macos/profiles.yaml",
 ];
+
+/// YAML that is a pack's data, an enrichment table's file, and not a config
+/// to include.
+const DATA: &[&str] = &["macos/profiles.yaml"];
 
 /// A file's name after `pack:`: `judge/hosted.yaml` is `judge/hosted`, and a
 /// pack's ingest.yaml is the pack's own, `cloudtrail/ingest.yaml`
-/// `cloudtrail`. A file that is not YAML has none.
+/// `cloudtrail`. A file that is not YAML has none, nor has a pack's data.
 fn name_of(file: &str) -> Option<&str> {
+    if DATA.contains(&file) {
+        return None;
+    }
     let stem = file.strip_suffix(".yaml")?;
     Some(stem.strip_suffix("/ingest").unwrap_or(stem))
 }
@@ -351,6 +364,7 @@ mod tests {
             "judge/ingest",
             "judge/hosted.yaml",
             "judge/judge.md",
+            "macos/profiles",
             "cloudtrail/",
             "/cloudtrail",
         ] {
@@ -364,7 +378,10 @@ mod tests {
             "pack:google_workspace",
             "pack:judge",
             "pack:judge/hosted",
+            "pack:macos",
+            "pack:macos/judge",
             "pack:okta",
+            "pack:supabase",
         ];
         assert_eq!(names(), all);
         // an unknown name writes nothing: it fails first

@@ -297,20 +297,23 @@ fn fields(columns: &Columns) -> Vec<Field> {
     columns
         .0
         .iter()
-        .map(|(name, col)| {
-            let ty = match col {
-                Column::Type(ColumnType::String) => DataType::Utf8,
-                Column::Type(ColumnType::Int) => DataType::Int64,
-                Column::Type(ColumnType::Float) => DataType::Float64,
-                Column::Type(ColumnType::Bool) => DataType::Boolean,
-                Column::Type(ColumnType::Timestamp) => {
-                    DataType::Timestamp(TimeUnit::Millisecond, Some("+00:00".into()))
-                }
-                Column::Struct(inner) => DataType::Struct(fields(inner).into()),
-            };
-            Field::new(name, ty, true)
-        })
+        .map(|(name, col)| Field::new(name, data_type(col), true))
         .collect()
+}
+
+fn data_type(col: &Column) -> DataType {
+    match col {
+        Column::Type(ColumnType::String) => DataType::Utf8,
+        Column::Type(ColumnType::Int) => DataType::Int64,
+        Column::Type(ColumnType::Float) => DataType::Float64,
+        Column::Type(ColumnType::Bool) => DataType::Boolean,
+        Column::Type(ColumnType::Timestamp) => {
+            DataType::Timestamp(TimeUnit::Millisecond, Some("+00:00".into()))
+        }
+        Column::Struct(inner) => DataType::Struct(fields(inner).into()),
+        // "item" is the name Parquet's readers expect of a list's items
+        Column::List(item) => DataType::List(Arc::new(Field::new("item", data_type(item), true))),
+    }
 }
 
 /// What a sink's encoding would fail on at every file, found when the sink
@@ -423,6 +426,7 @@ mod tests {
     use super::*;
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Int64Type, TimestampMillisecondType};
+    use arrow_array::Array;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     /// ts as a time, `_norm`'s org and actor, and n; nothing else.
@@ -503,6 +507,58 @@ mod tests {
             .iter()
             .collect();
         assert_eq!(n, [Some(1), None, Some(3)]);
+    }
+
+    #[test]
+    fn parquet_writes_a_list_column_and_a_list_in_a_struct() {
+        let schema: Columns =
+            serde_yaml::from_str("{ parents: [string], exec: { args: [string], codes: [int] } }")
+                .unwrap();
+        let enc = Encoding::Parquet {
+            schema,
+            record_column: None,
+        };
+        let lines = concat!(
+            r#"{"parents":["zsh","/sbin/launchd"],"exec":{"args":["git","status"],"codes":[0,1]}}"#,
+            "\n",
+            r#"{"exec":{"args":[]},"other":[1]}"#,
+        );
+        let out = normalize_from_ndjson(&enc, &Compression::default(), lines.into()).unwrap();
+        let (leaves, batch) = read(out);
+        assert_eq!(
+            leaves,
+            [
+                "parents.list.item",
+                "exec.args.list.item",
+                "exec.codes.list.item"
+            ]
+        );
+        let list = |col: &ArrayRef, row: usize| -> Option<Vec<Option<String>>> {
+            let col = col.as_list::<i32>();
+            col.is_valid(row).then(|| {
+                col.value(row)
+                    .as_string::<i32>()
+                    .iter()
+                    .map(|s| s.map(str::to_string))
+                    .collect()
+            })
+        };
+        let parents = batch.column_by_name("parents").unwrap();
+        assert_eq!(
+            list(parents, 0),
+            Some(vec![Some("zsh".into()), Some("/sbin/launchd".into())])
+        );
+        assert_eq!(list(parents, 1), None);
+        let exec = batch.column_by_name("exec").unwrap().as_struct();
+        let args = exec.column_by_name("args").unwrap();
+        assert_eq!(
+            list(args, 0),
+            Some(vec![Some("git".into()), Some("status".into())])
+        );
+        assert_eq!(list(args, 1), Some(vec![]));
+        let codes = exec.column_by_name("codes").unwrap().as_list::<i32>();
+        assert_eq!(codes.value(0).as_primitive::<Int64Type>().values(), &[0, 1]);
+        assert!(codes.is_null(1));
     }
 
     #[test]
