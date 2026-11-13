@@ -4,9 +4,9 @@ One developer's Mac, where AI coding agents run: the machine the [Endpoint AI
 Agent Abuse catalog](https://github.com/0x4D31/endpoint-ai-agent-abuse)
 describes, where a package script plants a hook in the agent's settings,
 poisons its instructions, adds an MCP server, reads its transcripts, or starts
-it with its API traffic pointed elsewhere. The telemetry is `eslogger`,
-Apple's Endpoint Security command-line tool, already on every Mac. The pack
-is two plugins: `macos` turns eslogger's events into records, which go to the
+it with its API traffic pointed elsewhere. The telemetry is Endpoint Security's, read by the pack's own
+client, [`sensor/`](sensor). The pack
+is two plugins: `macos` turns the sensor's events into records, which go to the
 lake, and `macos_sessions` sums up each session's records, a few minutes at a
 time, for the [judge](../judge). [examples/macos](/examples/macos) runs it,
 one config:
@@ -15,16 +15,21 @@ one config:
 cd examples/macos
 tangent plugin compile --config tangent.yaml
 tangent run --config haiku.yaml &               # or tangent.yaml: a local model
-sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify | nc -U es.sock
+sudo ../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor | nc -U es.sock
 sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
   | python3 ../../packs/macos/net/net.py | nc -U net.sock    # optional: network connections
 tail -f alerts.ndjson
 ```
 
-`eslogger` needs root, and the terminal it runs in needs Full Disk Access
+The sensor needs root, and the terminal it runs in needs Full Disk Access
 (System Settings → Privacy & Security), restarted after the grant. It writes
 to stdout only, and tangent reads sockets, so `nc -U` joins them: root writes
 the socket, tangent owns it, and nothing listens on a port.
+
+The sensor is built and signed from [`sensor/`](sensor), and needs an
+entitlement Apple grants to a developer team: its README has the steps. Its
+lines are in the shape of `eslogger`'s, Apple's own Endpoint Security tool,
+at about half the size.
 
 ## What the plugin keeps
 
@@ -103,14 +108,14 @@ all, with the rest counted. About 700 bytes a record.
 
 ## What was already running
 
-eslogger shows a process when it forks, execs or does something the pack
+The sensor shows a process when it forks, execs or does something the pack
 subscribes to. The terminal, the apps and an agent left open were started
 before the capture, so the programs they run have no one above them and
 `responsible` has a pid and no name: in a ten-minute run 68 of 249 programs'
 chains ended in `(unknown)`, and the judge read one as "no known launcher".
 `ps/ps.py`, standard library only and run as you, lists what is running
 (`ps -axo pid=,ppid=,lstart=,comm=`) as one JSON line each; sent to the
-eslogger socket once, right after eslogger starts, it gives the tree each
+sensor's socket once, right after the sensor starts, it gives the tree each
 process's parent, path and start. The plugin takes a line only for a process
 it does not know, or knows by another start, and a process's first event replaces what the snapshot said (its
 signature, and its parent unless launchd has taken it since), so a late or
@@ -119,7 +124,7 @@ repeated snapshot does no harm. `ps/ps_test.py` checks it.
 ## The capture's own processes
 
 The script that runs the capture (examples/macos/run.sh) writes one line to
-the eslogger socket, `{"monitor": {"pid": N}}`, with its own pid. From then
+the sensor's socket, `{"monitor": {"pid": N}}`, with its own pid. From then
 on the plugin drops the records of that process and everything under it
 (tcpdump, net.py, the snapshot and the transcript reader), though the tree
 still knows them. A name or a command line could not exempt them, since a
@@ -326,7 +331,7 @@ sent, and the package's contents, are not in these records.
 
 ## Tests
 
-`tests/input.json` is thirty-eight synthetic eslogger records, two of
+`tests/input.json` is thirty-eight synthetic records as eslogger writes them, two of
 net.py's lines, two of ps.py's and one of transcripts.py's (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
 started from it with `ANTHROPIC_BASE_URL` set, the person's prompt to it, the agent saving its config and
