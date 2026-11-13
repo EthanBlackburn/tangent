@@ -462,8 +462,14 @@ pub struct Page {
 /// What LookupEvents in a region answers.
 pub enum Answer {
     Page(Page),
-    /// An opt-in region the account hasn't enabled.
+    /// An opt-in region that does not know the credentials: one the account
+    /// hasn't enabled, or one it has that the session's token is not valid
+    /// in (a token from STS's global endpoint, unless the account has set
+    /// those to be valid in all regions). The two answer alike.
     NotEnabled,
+    /// A region where the identity may not call LookupEvents, as under an
+    /// organization's policy that denies some regions: what it answered.
+    Denied(String),
     /// An opt-in region whose endpoint could not be reached on its first
     /// call: what failed.
     Unreachable(String),
@@ -573,12 +579,17 @@ impl Lookup for Clients {
                     .collect(),
                 next: out.next_token,
             })),
-            // a disabled opt-in region holds none of the account's credentials
+            // A disabled opt-in region holds none of the account's
+            // credentials; an enabled one refuses a token that is not valid
+            // in it with the same code.
             Err(e)
                 if OPT_IN_REGIONS.contains(&region)
                     && e.code() == Some("UnrecognizedClientException") =>
             {
                 Ok(Answer::NotEnabled)
+            }
+            Err(e) if e.code() == Some("AccessDeniedException") => {
+                Ok(Answer::Denied(DisplayErrorContext(&e).to_string()))
             }
             Err(e @ (SdkError::DispatchFailure(_) | SdkError::TimeoutError(_))) if first => {
                 Ok(Answer::Unreachable(DisplayErrorContext(&e).to_string()))
@@ -606,8 +617,11 @@ pub struct History {
     end: DateTime<Utc>,
     next: DateTime<Utc>,
     pace: Duration,
-    /// Regions the account hasn't enabled.
+    /// Opt-in regions that did not know the credentials: not enabled, or
+    /// not taking the session's token.
     pub not_enabled: usize,
+    /// Regions where the identity may not call LookupEvents.
+    pub denied: usize,
     /// Opt-in regions whose endpoint could not be reached.
     pub unreachable: usize,
     pub calls: u64,
@@ -643,6 +657,7 @@ impl History {
             next: from,
             pace: PACE,
             not_enabled: 0,
+            denied: 0,
             unreachable: 0,
             calls: 0,
             records: 0,
@@ -736,9 +751,16 @@ impl History {
                 Answer::NotEnabled => {
                     tracing::debug!(
                         region = r.name,
-                        "not enabled in the account: no Event history to read"
+                        "this opt-in region does not know the credentials: not enabled in the account, or the session's token is not valid there. Its Event history is not read"
                     );
                     self.not_enabled += 1;
+                }
+                Answer::Denied(msg) => {
+                    tracing::warn!(
+                        region = r.name,
+                        "LookupEvents is denied in this region, so its Event history is left out: {msg}"
+                    );
+                    self.denied += 1;
                 }
                 Answer::Unreachable(msg) => {
                     tracing::warn!(
@@ -749,6 +771,13 @@ impl History {
                 }
             }
         }
+        ensure!(
+            !kept.is_empty(),
+            "no region's Event history could be read ({} denied, {} not enabled, {} unreachable): the identity needs cloudtrail:LookupEvents",
+            self.denied,
+            self.not_enabled,
+            self.unreachable
+        );
         self.regions = kept;
 
         let own = self.run.calls(Utc::now());
@@ -831,14 +860,14 @@ async fn region(
 
 /// The source's past for `tangent replay`: the Event history of the account
 /// its credentials are in, every region's, for `[from, to)` up to when the
-/// replay started.
+/// replay started, `started`.
 pub(crate) async fn past(
     name: &str,
     cfg: &CloudtrailConfig,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
+    started: DateTime<Utc>,
 ) -> Result<History> {
-    let started = Utc::now();
     let end = range_end(from, to, started).with_context(|| format!("source {name}"))?;
     let aws = aws(cfg).await;
     if end < to {
@@ -869,7 +898,13 @@ impl Past for History {
         Ok(out)
     }
     fn size(&self) -> String {
-        let mut out = format!("{} not enabled", self.not_enabled);
+        let mut out = format!(
+            "{} opt-in not enabled, or not taking these credentials",
+            self.not_enabled
+        );
+        if self.denied > 0 {
+            out += &format!(", {} denied", self.denied);
+        }
         if self.unreachable > 0 {
             out += &format!(", {} unreachable", self.unreachable);
         }
@@ -914,6 +949,7 @@ mod tests {
     struct Mem {
         events: HashMap<&'static str, Vec<Value>>,
         disabled: Vec<&'static str>,
+        denied: Vec<&'static str>,
         unreachable: Vec<&'static str>,
         failing: Vec<&'static str>,
         page: usize,
@@ -935,6 +971,9 @@ mod tests {
                 .push((region, end, Instant::now()));
             if self.disabled.contains(&region) {
                 return Ok(Answer::NotEnabled);
+            }
+            if self.denied.contains(&region) {
+                return Ok(Answer::Denied("AccessDeniedException".into()));
             }
             if self.unreachable.contains(&region) {
                 return Ok(Answer::Unreachable("connect timeout".into()));
@@ -963,7 +1002,7 @@ mod tests {
     }
 
     fn at(s: &str) -> DateTime<Utc> {
-        parse_when(s).unwrap()
+        parse_when(s, Utc::now()).unwrap()
     }
 
     fn event(time: &str, id: &str) -> Value {
@@ -1146,6 +1185,37 @@ mod tests {
         let e = h.until(at("2026-10-01T11:00:00Z")).await.unwrap_err();
         assert!(
             format!("{e:#}").contains("LookupEvents in eu-central-1"),
+            "{e:#}"
+        );
+    }
+
+    /// A region an organization's policy denies is left out, default or
+    /// opt-in, and the rest are read; denied everywhere, there is nothing to
+    /// read and the replay says what the identity needs.
+    #[tokio::test]
+    async fn a_region_that_denies_lookup_events_is_skipped() {
+        let mem = Mem {
+            events: HashMap::from([("us-east-1", vec![event("2026-10-01T10:05:00Z", "a")])]),
+            denied: vec!["sa-east-1", "ap-south-1"],
+            ..Mem::default()
+        };
+        let mut h = history(mem, "2026-10-01T10:00:00Z", "2026-10-01T12:00:00Z");
+        assert_eq!(
+            ids(&h.until(at("2026-10-01T11:00:00Z")).await.unwrap()),
+            ["a"]
+        );
+        assert_eq!((h.regions(), h.denied), (32, 2));
+        h.until(at("2026-10-01T12:00:00Z")).await.unwrap();
+        assert_eq!(h.calls, 34 + 32, "a region that denies is not asked again");
+
+        let mem = Mem {
+            denied: DEFAULT_REGIONS.into_iter().chain(OPT_IN_REGIONS).collect(),
+            ..Mem::default()
+        };
+        let mut h = history(mem, "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z");
+        let e = h.until(at("2026-10-01T11:00:00Z")).await.unwrap_err();
+        assert!(
+            format!("{e:#}").contains("the identity needs cloudtrail:LookupEvents"),
             "{e:#}"
         );
     }
