@@ -20,7 +20,12 @@ app=build/TangentSensor.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 
-swiftc -O -o "$app/Contents/MacOS/tangent-sensor" main.swift -lEndpointSecurity -lbsm
+# both kinds of Mac in one binary, for macOS 13 and later (Info.plist says so too)
+for arch in arm64 x86_64; do
+  swiftc -O -target "$arch-apple-macos13.0" -o "build/tangent-sensor.$arch" main.swift -lEndpointSecurity -lbsm
+done
+lipo -create build/tangent-sensor.arm64 build/tangent-sensor.x86_64 -output "$app/Contents/MacOS/tangent-sensor"
+rm build/tangent-sensor.arm64 build/tangent-sensor.x86_64
 
 if [ -z "$profile" ]; then
   sed "s/BUNDLE_ID/dev.tangent.sensor/" Info.plist > "$app/Contents/Info.plist"
@@ -40,7 +45,10 @@ fi
 
 sed "s/BUNDLE_ID/$bundle_id/" Info.plist > "$app/Contents/Info.plist"
 cp "$profile" "$app/Contents/embedded.provisionprofile"
-codesign --force --options runtime --sign "$identity" --entitlements build/entitlements.plist "$app"
+# a build to hand out is notarized, and Apple's notary wants its time of signing
+stamp=--timestamp=none
+case "$identity" in "Developer ID"*) stamp=--timestamp ;; esac
+codesign --force --options runtime "$stamp" --sign "$identity" --entitlements build/entitlements.plist "$app"
 codesign --verify --strict "$app"
 echo "built and signed $app ($bundle_id)"
 echo "run: sudo $(pwd)/$app/Contents/MacOS/tangent-sensor | nc -U es.sock"

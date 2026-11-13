@@ -56,6 +56,28 @@ this directory, and `*.provisionprofile` is ignored by git.
 time, kind and pid, and compares every field plugin `macos` reads. It prints
 counts and field names, never a value.
 
+## Hand it out
+
+The entitlement is the signer's, not the Mac's: a build signed with the
+team's Developer ID, with a Developer ID profile in it, runs on any Mac, and
+whoever downloads it asks Apple for nothing. In the developer account that
+takes a Developer ID Application certificate and a Developer ID profile for
+the same App ID; then
+
+```bash
+./build.sh developer-id.provisionprofile "Developer ID Application"   # both architectures, timestamped
+./notarize.sh --keychain-profile NAME                                 # or --key FILE --key-id ID --issuer UUID
+```
+
+`notarize.sh` sends the bundle to Apple's notary, staples the ticket on and
+writes `build/tangent-sensor-macos.zip`, which Gatekeeper lets through on a
+Mac that has never seen it. `.github/workflows/sensor.yml` does the same on
+a release, from six secrets it lists, and uploads the zip beside the
+binaries; where the secrets are not set it builds nothing.
+
+A build from source, or a fork's, cannot be signed with another team's
+entitlement: it needs its own grant from Apple.
+
 ## Limits
 
 - It is started by hand or by `run.sh`, under sudo, as eslogger is. It is not
@@ -65,4 +87,6 @@ counts and field names, never a value.
 - `btm_launch_item_add` and `tcc_modify` are written from Apple's headers
   and eslogger's field names; neither occurred in the minute it was compared
   over.
+- The notarized build has been through Gatekeeper on the Mac that built it,
+  as a quarantined download. It has not been run on a second Mac.
 - Endpoint Security reports no network. `net/net.py` stays.
