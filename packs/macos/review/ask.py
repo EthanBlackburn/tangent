@@ -5,8 +5,7 @@
     python3 -I ask.py < reviews.ndjson > feedback.ndjson            # a finished run's
 
 Each line read is a review, as plugin macos_review writes it. One that stands (its
-verdict is not `benign`, or the judge's answer was `flag`; --all asks about
-every one) is shown in a dialog on this Mac: the session, the verdict, what
+verdict is not `benign`; --all asks about every one) is shown in a dialog on this Mac: the session, the verdict, what
 the reviewer found and what it says to check, a field for a note, and three
 buttons, "Not me", "Not sure" and "That was me". The dialog waits for an
 answer, the next review behind it, unless --give-up says how long.
@@ -87,9 +86,8 @@ def part(review, key):
 
 
 def stands(review):
-    """Whether a person should be asked: the review did not clear it, or the judge flagged it."""
-    verdict = part(review, "review").get("verdict")
-    return verdict != "benign" or part(review, "judge").get("warrants_investigation") == "flag"
+    """Whether a person should be asked: the review did not clear it."""
+    return part(review, "review").get("verdict") != "benign"
 
 
 def cut(text, limit):

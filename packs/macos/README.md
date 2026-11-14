@@ -349,8 +349,7 @@ attacker wrote the standing of the brief, which is why it is not the
 default.
 
 `review/ask.py` puts each review that stands to the Mac's owner: one not
-called `benign`, or of something the judge flagged, since no look-alike
-drew a `flag`. It is a dialog (`osascript`'s `display dialog`) with the
+called `benign`. It is a dialog (`osascript`'s `display dialog`) with the
 session, the verdict, the finding and what to check, a field for a note,
 and three buttons: "Not me", "Not sure", "That was me". The answer is a
 line of `feedback.ndjson`: the session, both verdicts, the review's time

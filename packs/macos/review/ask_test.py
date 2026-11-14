@@ -52,9 +52,9 @@ class Stands(unittest.TestCase):
         for verdict in ("malicious", "unresolved", None):
             self.assertTrue(ask.stands(review(verdict)), verdict)
 
-    def test_a_benign_review_does_not_unless_the_judge_flagged(self):
+    def test_a_benign_review_does_not_whatever_the_judge_said(self):
         self.assertFalse(ask.stands(review("benign")))
-        self.assertTrue(ask.stands(review("benign", judge="flag")))
+        self.assertFalse(ask.stands(review("benign", judge="flag")))
 
 
 class Wording(unittest.TestCase):

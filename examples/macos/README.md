@@ -30,8 +30,7 @@ and writes what happened and whether it was malicious to
 `reviews.ndjson`, about seven minutes after the alert, once the lake has
 its records. It uses the AWS credentials the Haiku judge does.
 
-Each review that stands (not called `benign`, or of something the judge
-flagged) then comes up as a dialog on this Mac: what the reviewer found,
+Each review that stands (not called `benign`) then comes up as a dialog on this Mac: what the reviewer found,
 what it says to check, and three buttons, "Not me", "Not sure" and "That
 was me", with room for a note. Your answer goes to `feedback.ndjson`. The
 dialog waits for you, the next behind it. `ASK=0` leaves the dialogs out,
