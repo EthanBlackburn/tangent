@@ -171,6 +171,7 @@ pub async fn run(opts: TestOptions) -> Result<()> {
                 // Relative to the test config, which sits next to the original.
                 data: plugin_cfg.data.clone(),
                 tables: plugin_cfg.tables.clone(),
+                models: plugin_cfg.models.clone(),
                 // A test sees a failed call as a failure, not a pass-through.
                 drop_on_error: true,
                 // A test hands the plugin its input as it is, ungrouped.
@@ -182,7 +183,16 @@ pub async fn run(opts: TestOptions) -> Result<()> {
 
             let test_config = tangent_shared::Config {
                 runtime,
-                inference: Default::default(),
+                // The nodes the plugin holds conversations with, which it
+                // reaches with --enable-http. An `api_key` is never written
+                // to a file, the test config included, so a node that needs
+                // one is asked without it.
+                inference: cfg
+                    .inference
+                    .iter()
+                    .filter(|(node, _)| plugin_cfg.models.contains(node))
+                    .map(|(node, cfg)| (Arc::clone(node), cfg.clone()))
+                    .collect(),
                 sources,
                 sinks,
                 plugins,
