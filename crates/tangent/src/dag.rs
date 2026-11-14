@@ -20,6 +20,7 @@ use wasmtime::component::Component;
 use crate::{
     enrichment::Tables,
     group::{self, Dispatch, GroupConfig, Grouper},
+    inference::Nodes,
     router::Router,
     sinks::manager::SinkManager,
     sources, state,
@@ -106,7 +107,19 @@ impl DagRuntime {
                 anyhow::bail!("plugin {name}: max_age_ms must be at least 1");
             }
         }
-        let (engines, components) = load(&cfg, &plugins, config_dir, &store, &tables, workers)?;
+        // One of each inference node, whichever pool runs it and whichever
+        // plugin holds a conversation with it.
+        let models = crate::inference::nodes(&cfg.inference, config_dir)?;
+        let (engines, components) = load(
+            &cfg,
+            &plugins,
+            config_dir,
+            &store,
+            &tables,
+            &models,
+            &stop_models,
+            workers,
+        )?;
         let mut outs: HashMap<NodeRef, Vec<NodeRef>> = HashMap::default();
         // `validate` has checked every name, so each resolves
         for e in &cfg.dag {
@@ -123,18 +136,14 @@ impl DagRuntime {
         let router =
             Arc::new(Router::new(outs, Arc::clone(&sink_manager)).with_sink_batch(batch_size));
 
-        // One concurrency limit per inference node, whichever pool runs it.
-        let permits = crate::inference::permits(&cfg.inference);
-        // Every worker hosts every plugin and every inference node, and walks
+        // Every worker hosts every plugin, reaches every inference node, and walks
         // the DAG for the records it is handed.
         let pool = Arc::new(
             WorkerPool::new(
                 workers,
                 engines,
                 components,
-                &cfg.inference,
-                &permits,
-                config_dir,
+                Arc::clone(&models),
                 batch_size,
                 batch_age,
                 Arc::clone(&router),
@@ -150,15 +159,22 @@ impl DagRuntime {
         let mut groups = Vec::new();
         let mut groupers = std::collections::HashMap::new();
         for (name, p) in cfg.plugins.iter().filter(|(_, p)| !p.group_by.is_empty()) {
-            let (engines, components) = load(&cfg, &plugins, config_dir, &store, &tables, workers)?;
+            let (engines, components) = load(
+                &cfg,
+                &plugins,
+                config_dir,
+                &store,
+                &tables,
+                &models,
+                &stop_models,
+                workers,
+            )?;
             let pool = Arc::new(
                 WorkerPool::new(
                     workers,
                     engines,
                     components,
-                    &cfg.inference,
-                    &permits,
-                    config_dir,
+                    Arc::clone(&models),
                     batch_size,
                     batch_age,
                     Arc::clone(&router),
@@ -391,6 +407,8 @@ fn load(
     config_dir: &Path,
     store: &Arc<dyn StateStore>,
     tables: &Arc<Tables>,
+    models: &Nodes,
+    stop: &CancellationToken,
     workers: usize,
 ) -> Result<Loaded> {
     let mut engines: Vec<WasmEngine> = (0..workers)
@@ -399,6 +417,8 @@ fn load(
                 Arc::clone(store),
                 cfg.runtime.state.max_ttl_ms,
                 Arc::clone(tables),
+                Arc::clone(models),
+                stop.clone(),
                 cfg.runtime.disable_remote_calls,
             )
         })
@@ -427,6 +447,7 @@ fn load(
                         plugin_cfg.state_namespace.as_deref(),
                         data_dir.as_deref(),
                         &plugin_cfg.tables,
+                        &plugin_cfg.models,
                         plugin_cfg.drop_on_error,
                     )
                     .with_context(|| format!("plugin {name}: loading {}", plugin_path.display()))?,
@@ -912,7 +933,17 @@ mod tests {
 
         let plugins = compiled_plugins(&cfg, &plugins_dir, Some(&cache)).unwrap();
         assert_eq!(plugins, [fetched.join("p.cwasm")]);
-        let (_, components) = load(&cfg, &plugins, root, &store, &tables, 2).unwrap();
+        let (_, components) = load(
+            &cfg,
+            &plugins,
+            root,
+            &store,
+            &tables,
+            &Default::default(),
+            &Default::default(),
+            2,
+        )
+        .unwrap();
         assert_eq!(components.len(), 2);
         assert!(components.iter().all(|c| c.len() == 1 && &*c[0].0 == "p"));
 

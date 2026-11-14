@@ -13,9 +13,14 @@
 //! mode on an OpenAI-compatible server. A server that ignores both (mlx_lm)
 //! is held to the prompt, and a reply that is not a JSON object is the error.
 
+use ahash::HashMap;
 use anyhow::{anyhow, bail, Context, Result};
-use rig_core::completion::request::CompletionRequest;
-use rig_core::completion::AssistantContent;
+use rig_core::completion::message::CallId;
+use rig_core::completion::message::StopReason;
+use rig_core::completion::request::{CompletionRequest, ToolDefinition};
+use rig_core::completion::{
+    AssistantContent, CacheRetention, CompletionResponse, Message, OnUnsupported,
+};
 use rig_core::operation::Completion;
 use rig_core::providers::openai::{OpenAIConfig, Route};
 use rig_core::{schemars, DynModel};
@@ -36,8 +41,7 @@ pub struct InferenceNode {
     /// The shape the backend is asked to enforce, from `schema_file`.
     schema: Option<schemars::Schema>,
     model: DynModel<Completion>,
-    /// `concurrency` permits: requests in flight to this node, shared by
-    /// every worker's copy of it.
+    /// `concurrency` permits: requests in flight to this node.
     sem: Arc<Semaphore>,
 }
 
@@ -120,14 +124,102 @@ impl InferenceNode {
         })
     }
 
-    /// Every record through the model, a request per value of `group_by`
-    /// split at `batch_bytes` (and `budget_tokens`), each under one of the node's permits; the
-    /// annotated records, in the order given.
-    /// The node, its requests in flight counted against `sem` with every
-    /// other copy given the same one.
-    pub fn sharing(mut self, sem: Arc<Semaphore>) -> Self {
-        self.sem = sem;
-        self
+    /// One turn of a conversation a plugin holds (`model.chat`): the
+    /// plugin's messages and tools to the model, under one of the node's
+    /// permits and with its prompt, timeout and retries, and the model's
+    /// turn back, as the plugin interface describes both. A turn the model
+    /// did not finish is the error: one it failed or refused, one with
+    /// neither text nor a call, one `max_tokens` cut with a call in it.
+    pub async fn chat(&self, request: &str) -> Result<String> {
+        let request: Value = serde_json::from_str(request).context("the request is not JSON")?;
+        let said = request
+            .get("messages")
+            .and_then(Value::as_array)
+            .context("the request has no `messages`")?;
+        if said.last().context("`messages` is empty")?["role"] != "user" {
+            bail!("the last message is not the user's");
+        }
+        if said.iter().skip(1).any(|m| m["role"] == "system") {
+            bail!("a system message goes ahead of the others");
+        }
+        let mut messages = said
+            .iter()
+            .map(chat_message)
+            .collect::<Result<Vec<Message>>>()?;
+        let last = messages.pop().expect("checked above");
+        let tools: Vec<ToolDefinition> = match request.get("tools") {
+            Some(tools) => serde_json::from_value(tools.clone()).context("`tools`")?,
+            None => Vec::new(),
+        };
+        let mut turn = CompletionRequest::new(last)
+            .messages(messages)
+            .preamble(self.prompt.trim_end())
+            .tools(tools)
+            .max_tokens(u64::from(self.cfg.max_tokens));
+        if let Some(t) = self.cfg.temperature {
+            turn = turn.temperature(t);
+        }
+        if request.get("cache").and_then(Value::as_bool) == Some(true) {
+            // where the provider can: one that cannot at this point of
+            // the conversation answers uncached
+            turn = turn
+                .cache(CacheRetention::Short)
+                .on_unsupported(OnUnsupported::Ignore);
+        }
+        if !self.cfg.extra.is_empty() {
+            turn = turn.additional_params(Value::Object(self.cfg.extra.clone()));
+        }
+        let reply = {
+            let _permit = self.sem.acquire().await.expect("semaphore is never closed");
+            self.send(turn).await?
+        };
+        // A call the client kept as an item it does not understand is the
+        // call it is ([`tool_call`]); the turn then goes back with it so.
+        let content: Vec<AssistantContent> = reply
+            .choice
+            .iter()
+            .map(|block| tool_call(block).unwrap_or_else(|| block.clone()))
+            .collect();
+        let calls: Vec<Value> = content
+            .iter()
+            .filter_map(|block| match block {
+                AssistantContent::ToolCall(c) => Some(
+                    json!({"id": c.id, "name": c.function.name, "arguments": c.function.arguments}),
+                ),
+                _ => None,
+            })
+            .collect();
+        let text = reply.text();
+        let stop = match reply.stop() {
+            StopReason::Error(e) | StopReason::Aborted(e) => {
+                bail!("the model failed the turn: {e}")
+            }
+            StopReason::Length if !calls.is_empty() => bail!(
+                "max_tokens ({}) cut the turn with a tool call in it, so its arguments may not be whole",
+                self.cfg.max_tokens
+            ),
+            _ if calls.is_empty() && text.trim().is_empty() => bail!(
+                "reply has no text and no call (finish: {:?}; the model may have spent its budget thinking)",
+                reply.finish_reason()
+            ),
+            StopReason::Length => "length",
+            _ if calls.is_empty() => "stop",
+            _ => "tool_use",
+        };
+        let message = if content == reply.choice {
+            reply.message()
+        } else {
+            Some(Message::Assistant(reply.continued(content)))
+        };
+        tracing::debug!(node = %self.name, stop, calls = calls.len(), "chat turn");
+        Ok(json!({
+            "message": message,
+            "text": text,
+            "calls": calls,
+            "stop": stop,
+            "usage": reply.usage,
+        })
+        .to_string())
     }
 
     pub async fn annotate_all(&self, records: Vec<Value>) -> Vec<Value> {
@@ -342,27 +434,17 @@ impl InferenceNode {
         request
     }
 
-    /// The reply as a JSON object, after `retries` more tries for a request
-    /// that got no reply.
+    /// The reply as a JSON object.
     async fn ask(&self, user: String, n: usize) -> Result<Value> {
-        let attempts = self.cfg.retries.saturating_add(1);
-        let mut attempt = 0;
-        let text = loop {
-            attempt += 1;
-            match self.call(user.clone(), n).await {
-                Ok(text) => break text,
-                Err(e) if attempt < attempts => {
-                    let wait = Duration::from_secs(1 << (attempt - 1).min(6));
-                    tracing::warn!(
-                        node = %self.name,
-                        attempt,
-                        "inference failed, retrying in {wait:?}: {e:#}"
-                    );
-                    tokio::time::sleep(wait).await;
-                }
-                Err(e) => return Err(e),
-            }
-        };
+        let reply = self.send(self.request(user, n)).await?;
+        // Reasoning comes back as its own block, so the text is the answer.
+        let text = reply.text();
+        if text.trim().is_empty() {
+            bail!(
+                "reply has no text (finish: {:?}; the model may have spent its budget thinking)",
+                reply.finish_reason()
+            );
+        }
         let value: Value = serde_json::from_str(text.trim())
             .map_err(|e| anyhow!("reply is not JSON ({e}): {}", head(&text, 200)))?;
         if !value.is_object() {
@@ -371,34 +453,95 @@ impl InferenceNode {
         Ok(value)
     }
 
-    /// One request: the reply's text, or why there is none.
-    async fn call(&self, user: String, n: usize) -> Result<String> {
-        let reply = tokio::time::timeout(
-            Duration::from_millis(self.cfg.timeout_ms),
-            self.model.call(self.request(user, n)),
-        )
-        .await
-        .map_err(|_| anyhow!("no reply within {} ms", self.cfg.timeout_ms))?
-        .map_err(|e| anyhow!("{e}"))?;
-
-        // Reasoning comes back as its own block, so the text is the answer.
-        let text: String = reply
-            .choice
-            .iter()
-            .filter_map(|c| match c {
-                AssistantContent::Text(t) => Some(t.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        if text.trim().is_empty() {
-            bail!(
-                "reply has no text (finish: {:?}; the model may have spent its budget thinking)",
-                reply.finish_reason()
+    /// One request's reply. A request that got none (nothing within
+    /// `timeout_ms`, a dropped connection, a 429, a 5xx) is sent again,
+    /// `retries` times, a longer wait before each. One the provider would
+    /// refuse the same way again (a key it rejects, a request it cannot
+    /// read) is the error at once.
+    async fn send(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let timeout = Duration::from_millis(self.cfg.timeout_ms);
+            let (e, again) =
+                match tokio::time::timeout(timeout, self.model.call(request.clone())).await {
+                    Ok(Ok(reply)) => return Ok(reply),
+                    Ok(Err(e)) => (anyhow!("{e}"), e.is_retryable()),
+                    Err(_) => (anyhow!("no reply within {} ms", self.cfg.timeout_ms), true),
+                };
+            if !again || attempt > self.cfg.retries {
+                return Err(e);
+            }
+            let wait = Duration::from_secs(1 << (attempt - 1).min(6));
+            tracing::warn!(
+                node = %self.name,
+                attempt,
+                "inference failed, retrying in {wait:?}: {e:#}"
             );
+            tokio::time::sleep(wait).await;
         }
-        Ok(text)
     }
+}
+
+/// A tool call Bedrock marks `"type": "tool_use"`, as Claude 5 does on
+/// Converse, which rig-bedrock 0.45 reads as a hosted tool's use and keeps
+/// as an item with no meaning: the call it is. None for any other block.
+fn tool_call(block: &AssistantContent) -> Option<AssistantContent> {
+    let AssistantContent::Opaque(_) = block else {
+        return None;
+    };
+    let block = serde_json::to_value(block).ok()?;
+    let call = block.get("item")?.get("toolUse")?;
+    if call.get("type").and_then(Value::as_str) != Some("tool_use") {
+        return None;
+    }
+    let id = CallId::from_wire(call.get("toolUseId")?.as_str()?);
+    serde_json::from_value(json!({
+        "type": "toolcall",
+        "id": id,
+        "function": {"name": call.get("name")?, "arguments": call.get("input")?},
+    }))
+    .ok()
+}
+
+/// A message of a plugin's conversation as the model's client holds it: the
+/// plugin's own text or tool results, or a reply's `message` as it came.
+/// Anything else is the error, rather than a guess at what was meant.
+fn chat_message(m: &Value) -> Result<Message> {
+    let text = |of: &Value| -> Result<Value> {
+        let text = of.get("text").and_then(Value::as_str);
+        Ok(json!({"type": "text", "text": text.context("`text` is not a string")?}))
+    };
+    let role = m.get("role").and_then(Value::as_str);
+    let shaped = match (role, m.get("text"), m.get("results")) {
+        (Some("system"), Some(Value::String(text)), None) => {
+            json!({"role": "system", "content": text})
+        }
+        (Some("user"), Some(_), None) => json!({"role": "user", "content": [text(m)?]}),
+        (Some("user"), None, Some(Value::Array(results))) => {
+            let content = results
+                .iter()
+                .map(|r| {
+                    // the call's id as the reply gave it, whatever its shape
+                    let id = r.get("id").filter(|id| !id.is_null());
+                    let (Some(id), Some(name)) = (id, r["name"].as_str()) else {
+                        bail!("a result has no `id` or no `name`");
+                    };
+                    Ok(json!({
+                        "type": "toolresult",
+                        "call": id,
+                        "name": name,
+                        "content": [text(r)?],
+                        "is_error": r.get("error").and_then(Value::as_bool).unwrap_or(false),
+                    }))
+                })
+                .collect::<Result<Vec<Value>>>()?;
+            json!({"role": "user", "content": content})
+        }
+        (Some("assistant"), None, None) => m.clone(),
+        _ => bail!("neither `text`, `results` nor a reply's `message`"),
+    };
+    serde_json::from_value(shaped).context("not a message the model's client reads")
 }
 
 fn attach(name: &str, v: Value, reply: Value) -> Value {
@@ -518,18 +661,18 @@ fn head(s: &str, n: usize) -> String {
 }
 
 /// Dot-path lookup into a JSON value: "a.b.c", "events.0.name".
-/// One `concurrency` limit per inference node, for every worker that runs a
-/// copy of it to share: the model sees at most that many requests from the
-/// node, however many workers there are.
-pub fn permits(cfgs: &BTreeMap<Arc<str>, InferenceConfig>) -> BTreeMap<Arc<str>, Arc<Semaphore>> {
-    cfgs.iter()
-        .map(|(name, cfg)| {
-            (
-                Arc::clone(name),
-                Arc::new(Semaphore::new(cfg.concurrency.max(1))),
-            )
-        })
-        .collect()
+/// The config's inference nodes by name: one of each for the process, so
+/// the model sees at most a node's `concurrency` requests from it, however
+/// many workers hand it records and plugins hold conversations with it.
+pub type Nodes = Arc<HashMap<Arc<str>, Arc<InferenceNode>>>;
+
+pub fn nodes(cfgs: &BTreeMap<Arc<str>, InferenceConfig>, config_dir: &Path) -> Result<Nodes> {
+    let mut nodes = HashMap::default();
+    for (name, cfg) in cfgs {
+        let node = InferenceNode::new(Arc::clone(name), cfg.clone(), config_dir)?;
+        nodes.insert(Arc::clone(name), Arc::new(node));
+    }
+    Ok(Arc::new(nodes))
 }
 
 pub fn lookup<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
@@ -558,7 +701,9 @@ pub fn lines(payload: &[u8]) -> impl Iterator<Item = &[u8]> {
 /// worker: it answers each record line, flagging one that mentions "bad",
 /// answers in prose to a request that mentions "prose", fails the first two
 /// requests that mention "flaky" with a 500, cuts off its reply to one with
-/// three "loop"s, and records every request body.
+/// three "loop"s, and records every request body. A request that offers
+/// tools gets a call to the first of them, and once a tool's result is among
+/// its messages, "done".
 #[cfg(test)]
 pub(crate) mod stub {
     use serde_json::json;
@@ -611,6 +756,12 @@ pub(crate) mod stub {
                         let _ = sock.shutdown().await;
                         return;
                     }
+                    if body.contains("refused") {
+                        let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        let _ = sock.shutdown().await;
+                        return;
+                    }
                     let verdict = |text: &str| {
                         if text.contains("bad") {
                             json!({"flag": true, "one_line": "bad thing"})
@@ -619,6 +770,39 @@ pub(crate) mod stub {
                         }
                     };
                     let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    if let Some(tool) = req["tools"][0]["function"]["name"].as_str() {
+                        let answered = req["messages"]
+                            .as_array()
+                            .is_some_and(|m| m.iter().any(|m| m["role"] == "tool"));
+                        let call = json!({"role": "assistant", "content": null, "tool_calls": [{
+                            "id": "call_1", "type": "function",
+                            "function": {"name": tool, "arguments": "{\"sql\": \"SELECT 1\"}"}}]});
+                        let silence = json!({"role": "assistant", "content": ""});
+                        let (message, finish) = if body.contains("cut short") {
+                            (call, "length")
+                        } else if body.contains("filtered") {
+                            (silence, "content_filter")
+                        } else if body.contains("say nothing") {
+                            (silence, "stop")
+                        } else if answered {
+                            (json!({"role": "assistant", "content": "done"}), "stop")
+                        } else {
+                            (call, "tool_calls")
+                        };
+                        let reply = json!({
+                            "choices": [{"message": message, "finish_reason": finish}],
+                            "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+                        })
+                        .to_string();
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            reply.len(),
+                            reply
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        let _ = sock.shutdown().await;
+                        return;
+                    }
                     let user = text(&req["messages"][1]["content"]);
                     let content = if body.contains("prose") {
                         "Looks fine to me, nothing to flag.".to_string()
@@ -807,6 +991,164 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A plugin's conversation (`model.chat`): the model calls a tool, the
+    /// plugin sends the reply's message back with the call's result, and the
+    /// model answers.
+    #[tokio::test]
+    async fn a_conversation_calls_a_tool_and_takes_its_result() {
+        let (url, seen) = stub::model().await;
+        let node = InferenceNode::new(
+            Arc::from("reviewer"),
+            stub::config(&url),
+            &stub::dir("chat"),
+        )
+        .unwrap();
+        let tools = json!([{"name": "query", "description": "Run SQL.",
+            "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}}}]);
+        let asked = json!({"role": "user", "text": "count the rows"});
+        let first = node
+            .chat(&json!({"messages": [asked], "tools": tools}).to_string())
+            .await
+            .unwrap();
+        let first: Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(first["stop"], "tool_use", "{first}");
+        assert_eq!(first["calls"][0]["name"], "query");
+        assert_eq!(first["calls"][0]["arguments"]["sql"], "SELECT 1");
+        assert_eq!(first["usage"]["input_tokens"], 7);
+
+        let results = json!({"role": "user", "results": [
+            {"id": first["calls"][0]["id"], "name": "query", "text": "| n |\n| 3 |"}]});
+        let second = node
+            .chat(
+                &json!({"messages": [asked, first["message"], results], "tools": tools})
+                    .to_string(),
+            )
+            .await
+            .unwrap();
+        let second: Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(second["text"], "done");
+        assert_eq!(second["stop"], "stop");
+        assert_eq!(second["calls"], json!([]));
+
+        // what the model was sent: the prompt as the system message, the
+        // call it made, and the result under the call's id
+        let bodies = seen.lock().await;
+        let sent: Value = serde_json::from_str(bodies.last().unwrap()).unwrap();
+        let messages = sent["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[2]["tool_calls"][0]["id"], "call_1");
+        let result = messages.iter().find(|m| m["role"] == "tool").unwrap();
+        assert_eq!(result["tool_call_id"], "call_1");
+        assert!(stub::text(&result["content"]).contains("| 3 |"), "{result}");
+    }
+
+    /// Bedrock's `"type": "tool_use"` on a call, which the client keeps as
+    /// an item it does not understand, is read as the call.
+    #[test]
+    fn a_typed_tool_use_is_a_tool_call() {
+        let kept: AssistantContent = serde_json::from_value(json!({
+            "type": "opaque", "replay": true,
+            "item": {"toolUse": {"type": "tool_use", "toolUseId": "tooluse_1", "name": "query",
+                                 "input": {"sql": "SELECT 1"}}},
+        }))
+        .unwrap();
+        let AssistantContent::ToolCall(call) = tool_call(&kept).unwrap() else {
+            panic!("not a call");
+        };
+        assert_eq!(call.function.name, "query");
+        assert_eq!(call.function.arguments["sql"], "SELECT 1");
+        assert_eq!(call.id.wire(), "tooluse_1");
+        // a hosted tool's use, and any other block, stay as they are
+        let hosted: AssistantContent = serde_json::from_value(json!({
+            "type": "opaque", "replay": true,
+            "item": {"toolUse": {"type": "server_tool_use", "toolUseId": "srv_1", "name": "web_search", "input": {}}},
+        }))
+        .unwrap();
+        assert!(tool_call(&hosted).is_none());
+        let text: AssistantContent =
+            serde_json::from_value(json!({"type": "text", "text": "hello"})).unwrap();
+        assert!(tool_call(&text).is_none());
+    }
+
+    fn reviewer(url: &str, tag: &str) -> InferenceNode {
+        InferenceNode::new(Arc::from("reviewer"), stub::config(url), &stub::dir(tag)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_request_that_is_not_a_conversation_is_an_error() {
+        let (url, seen) = stub::model().await;
+        let node = reviewer(&url, "chat-bad");
+        for (request, says) in [
+            ("not json", "not JSON"),
+            ("{}", "no `messages`"),
+            (r#"{"messages": []}"#, "empty"),
+            (r#"{"messages": [{"role": "user"}]}"#, "neither `text`"),
+            (
+                r#"{"messages": [{"role": "user", "text": 7}]}"#,
+                "not a string",
+            ),
+            (
+                r#"{"messages": [{"role": "user", "text": "a", "results": []}]}"#,
+                "neither `text`",
+            ),
+            (
+                r#"{"messages": [{"role": "user", "results": [{"id": "c", "name": "query"}]}]}"#,
+                "not a string",
+            ),
+            (
+                r#"{"messages": [{"role": "user", "results": [{"name": "query", "text": "a"}]}]}"#,
+                "no `id`",
+            ),
+            (
+                r#"{"messages": [{"role": "system", "text": "a"}]}"#,
+                "not the user's",
+            ),
+            (
+                r#"{"messages": [{"role": "user", "text": "a"}, {"role": "system", "text": "b"}, {"role": "user", "text": "c"}]}"#,
+                "ahead of the others",
+            ),
+        ] {
+            let e = node.chat(request).await.unwrap_err();
+            assert!(format!("{e:#}").contains(says), "{request}: {e:#}");
+        }
+        assert!(seen.lock().await.is_empty(), "none of them was sent");
+    }
+
+    /// A turn the model did not finish is the call's error, whatever came
+    /// with it: a call `max_tokens` cut, a refusal, a reply with nothing in it.
+    #[tokio::test]
+    async fn a_turn_the_model_did_not_finish_is_an_error() {
+        let (url, _) = stub::model().await;
+        let node = reviewer(&url, "chat-unfinished");
+        let tools = json!([{"name": "query", "description": "Run SQL.",
+            "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}}}]);
+        for (asked, says) in [
+            ("cut short", "cut the turn with a tool call in it"),
+            ("filtered", "failed the turn"),
+            ("say nothing", "no text and no call"),
+        ] {
+            let request =
+                json!({"messages": [{"role": "user", "text": asked}], "tools": tools}).to_string();
+            let e = node.chat(&request).await.unwrap_err();
+            assert!(format!("{e:#}").contains(says), "{asked}: {e:#}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_the_model_refuses_is_not_sent_again() {
+        let (url, seen) = stub::model().await;
+        let dir = stub::dir("refused");
+        let mut cfg = stub::config(&url);
+        cfg.retries = 2;
+        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        let out = node
+            .annotate_all(vec![json!({"id": 1, "msg": "refused"})])
+            .await;
+        assert!(out[0]["judge"]["error"].is_string(), "{out:?}");
+        assert_eq!(seen.lock().await.len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn logfmt_records_reach_the_model_and_read_back() {
         let (url, seen) = stub::model().await;
@@ -927,22 +1269,15 @@ mod tests {
     /// Two workers' copies of a node with `concurrency: 1` send one request
     /// at a time between them, not one each.
     #[tokio::test]
-    async fn copies_of_a_node_share_its_concurrency() {
+    async fn a_node_s_callers_share_its_concurrency() {
         let (url, taken) = stub::silent().await;
         let dir = stub::dir("shared-permits");
         let mut cfg = stub::config(&url);
         cfg.concurrency = 1;
-        let permits = permits(&BTreeMap::from([(Arc::from("judge"), cfg.clone())]));
-        let copies: Vec<_> = (0..2)
+        let nodes = nodes(&BTreeMap::from([(Arc::from("judge"), cfg)]), &dir).unwrap();
+        let calls: Vec<_> = (0..2)
             .map(|_| {
-                InferenceNode::new(Arc::from("judge"), cfg.clone(), &dir)
-                    .unwrap()
-                    .sharing(Arc::clone(&permits["judge"]))
-            })
-            .collect();
-        let calls: Vec<_> = copies
-            .into_iter()
-            .map(|node| {
+                let node = Arc::clone(&nodes["judge"]);
                 tokio::spawn(async move { node.annotate_all(vec![json!({"id": 1})]).await })
             })
             .collect();
@@ -950,7 +1285,7 @@ mod tests {
         assert_eq!(
             taken.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "one request between the two copies"
+            "one request between the two callers"
         );
         for c in calls {
             c.abort();

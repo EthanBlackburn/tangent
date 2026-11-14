@@ -11,9 +11,11 @@ use wasmtime::{Engine, Store};
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
 use crate::enrichment::Tables;
+use crate::inference::Nodes;
 use crate::state::{StateStore, PLUGIN_NS};
-use crate::wasm::host::tangent::logs::{config, enrichment, lake, log, remote, state};
+use crate::wasm::host::tangent::logs::{config, enrichment, lake, log, model, remote, state};
 use crate::wasm::host::{HostEngine, Processor};
+use tokio_util::sync::CancellationToken;
 pub struct WasmEngine {
     engine: Engine,
     linker: Linker<HostEngine>,
@@ -29,6 +31,12 @@ pub struct WasmEngine {
     /// Each plugin's Parquet tables (`plugins.<name>.tables`), as
     /// `NAME=PATH`, for its `lake.query`.
     lake: HashMap<Arc<str>, Arc<[String]>>,
+    /// The inference nodes plugins hold conversations with, and each
+    /// plugin's own of them (`plugins.<name>.models`).
+    models: Nodes,
+    plugin_models: HashMap<Arc<str>, Nodes>,
+    /// Cancelled when the pipeline stops: it ends a model's turn under way.
+    stop: CancellationToken,
     /// The enrichment tables, loaded once for the process: every engine and
     /// every plugin instance holds the same ones.
     tables: Arc<Tables>,
@@ -43,6 +51,8 @@ impl WasmEngine {
         state: Arc<dyn StateStore>,
         max_ttl_ms: u64,
         tables: Arc<Tables>,
+        models: Nodes,
+        stop: CancellationToken,
         disable_remote_calls: bool,
     ) -> Result<Self> {
         let engine = tangent_shared::wasm_engine::build()?;
@@ -57,6 +67,7 @@ impl WasmEngine {
             |host: &mut HostEngine| host,
         )?;
         lake::add_to_linker::<HostEngine, HostEngine>(&mut linker, |host: &mut HostEngine| host)?;
+        model::add_to_linker::<HostEngine, HostEngine>(&mut linker, |host: &mut HostEngine| host)?;
 
         Ok(Self {
             engine,
@@ -69,6 +80,9 @@ impl WasmEngine {
             state_ns: HashMap::new(),
             data: HashMap::new(),
             lake: HashMap::new(),
+            models,
+            plugin_models: HashMap::new(),
+            stop,
             pass_on_error: HashSet::new(),
         })
     }
@@ -86,6 +100,7 @@ impl WasmEngine {
         state_ns: Option<&str>,
         data: Option<&Path>,
         tables: &BTreeMap<String, PathBuf>,
+        models: &[Arc<str>],
         drop_on_error: bool,
     ) -> Result<Component> {
         let comp = unsafe { Component::deserialize_file(&self.engine, &loc)? };
@@ -101,6 +116,14 @@ impl WasmEngine {
                 .map(|(table, path)| format!("{table}={}", path.display()))
                 .collect();
             self.lake.insert(Arc::clone(&name), named);
+        }
+        if !models.is_empty() {
+            let own = models
+                .iter()
+                .filter_map(|m| self.models.get_key_value(m))
+                .map(|(m, node)| (Arc::clone(m), Arc::clone(node)))
+                .collect();
+            self.plugin_models.insert(Arc::clone(&name), Arc::new(own));
         }
         if !drop_on_error {
             self.pass_on_error.insert(Arc::clone(&name));
@@ -140,6 +163,11 @@ impl WasmEngine {
                 self.config.get(component_name).unwrap().clone(),
                 Arc::clone(&self.tables),
                 self.lake.get(component_name).cloned(),
+                self.plugin_models
+                    .get(component_name)
+                    .cloned()
+                    .unwrap_or_default(),
+                self.stop.clone(),
                 self.disable_remote_calls,
             ),
         ))

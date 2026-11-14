@@ -202,6 +202,17 @@ impl Config {
             anyhow::bail!("DAG edges that cannot be:\n  - {}", cannot.join("\n  - "));
         }
 
+        // a plugin's `models` are inference nodes
+        for (name, plugin) in &self.plugins {
+            for model in &plugin.models {
+                if !self.inference.contains_key(model) {
+                    anyhow::bail!(
+                        "plugin {name}: models names `{model}`, which is no inference node"
+                    );
+                }
+            }
+        }
+
         // a file sink appends each write's encoding to one file, which only
         // NDJSON survives: a Parquet, Avro or JSON file after another is not one
         for (name, sink) in &self.sinks {
@@ -238,8 +249,13 @@ impl Config {
             ("inference node", self.inference.keys().collect()),
             ("sink", self.sinks.keys().collect()),
         ];
+        // an inference node a plugin calls runs without an edge
+        let called = |name: &Arc<str>| self.plugins.values().any(|p| p.models.contains(name));
         for (kind, names) in fed {
             for name in names {
+                if kind == "inference node" && called(name) {
+                    continue;
+                }
                 if !self.dag.iter().any(|e| e.to.contains(name)) {
                     warnings.push(format!("{kind} {name}: no edge reaches it; it never runs"));
                 }
@@ -472,6 +488,29 @@ mod tests {
                 "inference node lonely: no edge reaches it; it never runs",
                 "sink never: no edge reaches it; it never runs",
             ]
+        );
+    }
+
+    /// An inference node a plugin holds a conversation with (`models`) runs
+    /// without an edge, so it draws no warning; a name that is no node is an
+    /// error.
+    #[test]
+    fn a_plugin_s_models_are_inference_nodes_and_need_no_edge() {
+        let with = |models: &str| {
+            config(&format!(
+                "{LINES}plugins:\n  agent: {{ module_type: rust, models: [{models}] }}\n\
+                 inference:\n  reviewer: {{ model: m, prompt_file: p.txt }}\n\
+                 sinks:\n  out: {{ type: blackhole }}\n\
+                 dag:\n  - from: lines\n    to: [agent]\n  - from: agent\n    to: [out]\n"
+            ))
+        };
+        let cfg = with("reviewer");
+        cfg.validate().unwrap();
+        assert_eq!(cfg.warnings(), [] as [&str; 0]);
+        let e = with("revewer").validate().unwrap_err().to_string();
+        assert_eq!(
+            e,
+            "plugin agent: models names `revewer`, which is no inference node"
         );
     }
 
