@@ -81,7 +81,7 @@ tangent run --config tangent.yaml                # the other sources, from an ho
 
 Replay reads a past range of CloudTrail from the account's Event history, up to 90 days back, and no other source. `tangent run` reads the others as they happen, and CloudTrail too once `queue_url` in tangent.yaml names the SQS queue your trail's bucket notifies.
 
-The models' calls are billed to your model account: replay prints about how many records the range holds before it judges any, and Ctrl-C stops it. The README's [Volume and cost](../README.md#volume-and-cost) prices a day.
+The models' calls are billed to your model account: replay prints about how many records the range holds before it judges any, and Ctrl-C stops it. The reference manual's [Volume and cost](reference.md#volume-and-cost) prices a day.
 
 What the judge flagged is in alerts.ndjson and every verdict in verdicts.ndjson. Each alert is in reviews.ndjson too, with `review`: a verdict (`malicious`, `benign` or `unresolved`), a finding and what to check first; those are the ones to read. Tangent warns that four enrichment files are missing and runs without them; tangent.yaml says where they come from.
 
