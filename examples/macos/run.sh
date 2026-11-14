@@ -7,7 +7,8 @@
 #   ./run.sh /path/to/a/config.yaml    # sockets, lake and verdicts beside it
 #   SAVE=1 ./run.sh          # also keep the sensor's and net.py's lines, to replay
 #   SENSOR=/path/to/tangent-sensor ./run.sh   # a sensor from elsewhere than packs/macos/sensor/build: a release's
-#   REVIEW=1 ./run.sh        # review.yaml: each alert also reviewed by a stronger model, the lake to query: reviews.ndjson
+#   REVIEW=1 ./run.sh        # review.yaml: each alert also reviewed by a stronger model, the lake to query: reviews.ndjson;
+#                            # and you are asked about each one that stands, in a dialog: feedback.ndjson (ASK=0: don't)
 #
 # The order: a snapshot of what is running goes first, so the first events
 # have someone above them; the sensor starts; the snapshot goes again, for what
@@ -76,16 +77,41 @@ feeds+=($!)
 python3 "$pack/agent/transcripts.py" > >(nc -U es.sock) &
 feeds+=($!)
 
+# The second reviewer is a stage of the pipeline (review.yaml: plugin
+# macos_review). Each review that stands is put to you in a dialog, and your
+# answer is kept. It is no feed: it outlives tangent, to ask about the
+# reviews tangent writes as it stops.
+ask_pid=
+if [ -n "${REVIEW:-}" ] && [ "${ASK:-1}" != 0 ]; then
+  python3 -I "$pack/review/ask.py" --follow reviews.ndjson >> feedback.ndjson 2>> review.log &
+  ask_pid=$!
+fi
+
+# Tangent has ended, by a stop or on its own: the feeds go, and ask.py once
+# it has asked about every review written. Told a second time, it ends at
+# once and closes its dialog.
+finish() {
+  kill "${feeds[@]}" 2>/dev/null || true
+  [ -n "$ask_pid" ] || return 0
+  trap 'kill -TERM "$ask_pid" 2>/dev/null || true' INT TERM
+  kill -TERM "$ask_pid" 2>/dev/null || true
+  wait "$ask_pid" 2>/dev/null || wait "$ask_pid" 2>/dev/null || true
+}
+
 stop() {
   trap - INT TERM
   echo
-  echo "stopping: tangent is finishing the sessions it holds"
+  echo "stopping: tangent is finishing the sessions it holds${ask_pid:+; then any review left to ask you about (Ctrl-C again to skip)}"
   kill "${feeds[@]}" 2>/dev/null || true
   kill -TERM "$tangent_pid" 2>/dev/null || true
   wait "$tangent_pid" 2>/dev/null || true
+  finish
   exit 0
 }
 trap stop INT TERM
 
-echo "capturing into $(pwd): alerts.ndjson and verdicts.ndjson${REVIEW:+ and reviews.ndjson}. Ctrl-C to stop."
-wait "$tangent_pid"
+echo "capturing into $(pwd): alerts.ndjson and verdicts.ndjson${REVIEW:+, reviews.ndjson and feedback.ndjson}. Ctrl-C to stop."
+wait "$tangent_pid" || true
+echo "tangent stopped on its own: see $(pwd)/tangent.log" >&2
+finish
+exit 1
