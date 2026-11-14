@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::sinks::{blackhole, file, rolling_file, s3, slack, sqlite};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SinkConfig {
     #[serde(flatten)]
     pub common: CommonSinkOptions,
@@ -11,7 +11,39 @@ pub struct SinkConfig {
     pub kind: SinkKind,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+impl SinkConfig {
+    /// Where a statement reads this sink's records back, for a plugin's
+    /// `tables`: what the sink is decides how they are read. A
+    /// `rolling_file` sink of Parquet is the directory its files are under,
+    /// and every `.parquet` file below it. No other sink's records are read
+    /// yet: each that comes to be (an `s3` sink's Parquet, a `sqlite` sink's
+    /// table) is an arm here, and the plugin and its config stay as they
+    /// are. Err is why this sink has nothing to read.
+    pub fn table(&self) -> Result<std::path::PathBuf, String> {
+        match (&self.kind, &self.common.encoding) {
+            (SinkKind::RollingFile(c), Encoding::Parquet { .. }) => {
+                match rolling_file::split(&c.path) {
+                    Ok((root, _)) if root.as_os_str().is_empty() => Err(format!(
+                        "its path {:?} starts with a strftime specifier, so its files have no directory of their own to read",
+                        c.path
+                    )),
+                    Ok((root, _)) => Ok(root),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            (SinkKind::RollingFile(_), other) => Err(format!(
+                "it writes {}, and of a rolling_file sink's files only Parquet is read",
+                other.extension()
+            )),
+            (kind, _) => Err(format!(
+                "the records of a sink of type {} are not read yet, only a rolling_file sink's Parquet",
+                kind.name()
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum SinkKind {
     #[serde(rename = "s3")]
@@ -28,7 +60,21 @@ pub enum SinkKind {
     Slack(slack::SlackConfig),
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+impl SinkKind {
+    /// The sink's `type` in a config.
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::S3(_) => "s3",
+            Self::File(_) => "file",
+            Self::RollingFile(_) => "rolling_file",
+            Self::Blackhole(_) => "blackhole",
+            Self::Sqlite(_) => "sqlite",
+            Self::Slack(_) => "slack",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommonSinkOptions {
     #[serde(default)]
     pub compression: Compression,

@@ -423,10 +423,17 @@ fn load(
             )
         })
         .collect::<Result<_, _>>()?;
+    // where each plugin's `tables` are read, the same for every worker
+    let tables = cfg
+        .plugins
+        .iter()
+        .map(|(name, plugin)| cfg.tables_of(name, plugin))
+        .collect::<Result<Vec<_>>>()?;
     let mut components: Vec<Vec<(Arc<str>, Component)>> = Vec::with_capacity(workers);
     for i in 0..workers {
         components.push(Vec::<(Arc<str>, Component)>::new());
-        for ((name, plugin_cfg), plugin_path) in cfg.plugins.iter().zip(plugins) {
+        let plugins = cfg.plugins.iter().zip(plugins).zip(&tables);
+        for (((name, plugin_cfg), plugin_path), tables) in plugins {
             let data_dir = match &plugin_cfg.data {
                 Some(dir) => Some(config_dir.join(dir).canonicalize().with_context(|| {
                     format!(
@@ -446,7 +453,7 @@ fn load(
                         plugin_cfg.config.clone(),
                         plugin_cfg.state_namespace.as_deref(),
                         data_dir.as_deref(),
-                        &plugin_cfg.tables,
+                        tables,
                         &plugin_cfg.models,
                         plugin_cfg.drop_on_error,
                     )

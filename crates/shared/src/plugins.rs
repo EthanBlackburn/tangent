@@ -43,13 +43,13 @@ pub struct PluginConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<PathBuf>,
 
-    /// Parquet the plugin may read with SQL (`lake.query`), by the name its
-    /// statements use: a file, or a directory and every `.parquet` file
-    /// under it. Relative to the working directory, as a sink's path is, so
-    /// the lake a `rolling_file` sink keeps is named as the sink names it,
-    /// up to its first `%`.
+    /// What the plugin may read with SQL (`lake.query`): the name its
+    /// statements use, and the sink whose records that table is. How the
+    /// records are read follows from the sink (`SinkConfig::table`), so a
+    /// plugin names no path and no format, and a sink that keeps nothing a
+    /// statement can read is an error when the config loads.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tables: BTreeMap<String, PathBuf>,
+    pub tables: BTreeMap<String, String>,
 
     /// The inference nodes the plugin may hold a conversation with
     /// (`model.chat`), by name. A node named here needs no edge.

@@ -1202,7 +1202,7 @@ fn every_path_field_is_rebased() {
         config: _,
         state_namespace: _,
         data: _,   // PATHS
-        tables: _, // not rebased: relative to the working directory, as the sink that writes them is
+        tables: _, // sinks' names
         models: _,
         drop_on_error: _,
         group_by: _,

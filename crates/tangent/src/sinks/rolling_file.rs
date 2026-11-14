@@ -2,9 +2,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::fs::File;
 use std::io::ErrorKind;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use tangent_shared::sinks::common::{Compression, Encoding};
-use tangent_shared::sinks::rolling_file::subdir;
+use tangent_shared::sinks::rolling_file::{split, subdir};
 use tokio::task::spawn_blocking;
 
 use crate::sinks::s3::S3SinkItem;
@@ -22,19 +22,8 @@ pub struct PathTemplate {
 
 impl PathTemplate {
     pub fn parse(path: &str) -> Result<Self> {
-        let mut root = PathBuf::new();
-        let mut rest = Vec::new();
-        for c in Path::new(path).components() {
-            let s = c.as_os_str().to_string_lossy();
-            if rest.is_empty() && !s.contains('%') {
-                root.push(c);
-            } else if matches!(c, Component::Normal(_)) {
-                rest.push(s.into_owned());
-            } else {
-                anyhow::bail!("path {path:?}: no `.` or `..` after the first strftime specifier");
-            }
-        }
-        let rest = match rest.join("/") {
+        let (root, rest) = split(path)?;
+        let rest = match rest {
             r if r.is_empty() => None,
             r => match Template::parse(&r) {
                 None => anyhow::bail!("path {path:?}: {r:?} is not a strftime template"),

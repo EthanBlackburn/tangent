@@ -150,7 +150,15 @@ pub async fn run(opts: TestOptions) -> Result<()> {
                 to: vec![Arc::clone(&sink)],
             };
 
-            let mut sinks = BTreeMap::new();
+            // The sinks the plugin's `tables` name, as the config has them,
+            // so its statements read what the pipeline wrote. No edge
+            // reaches them here: the test writes them nothing.
+            let mut sinks: BTreeMap<_, _> = cfg
+                .sinks
+                .iter()
+                .filter(|(kept, _)| plugin_cfg.tables.values().any(|t| **t == ***kept))
+                .map(|(kept, sink)| (Arc::clone(kept), sink.clone()))
+                .collect();
             sinks.insert(sink, file_sink);
 
             let mut sources = BTreeMap::new();

@@ -28,8 +28,8 @@ pub struct WasmEngine {
     /// Each plugin's data directory (`plugins.<name>.data`), seen by the
     /// guest read-only at `/data`.
     data: HashMap<Arc<str>, PathBuf>,
-    /// Each plugin's Parquet tables (`plugins.<name>.tables`), as
-    /// `NAME=PATH`, for its `lake.query`.
+    /// Each plugin's tables for its `lake.query` (`plugins.<name>.tables`),
+    /// as `NAME=PATH`: where the sink each names keeps its records.
     lake: HashMap<Arc<str>, Arc<[String]>>,
     /// The inference nodes plugins hold conversations with, and each
     /// plugin's own of them (`plugins.<name>.models`).
