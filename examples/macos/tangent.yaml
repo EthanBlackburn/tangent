@@ -1,4 +1,4 @@
-# macos: this Mac's eslogger events through packs/macos, each record kept in
+# macos: this Mac's Endpoint Security events through packs/macos, each record kept in
 # the lake, and each session (a terminal tab, an app, an agent, with all it
 # ran) summarized five minutes at a time and judged, with packs/macos's brief
 # in place of the judge's, which is written for a company's cloud. One
@@ -6,15 +6,15 @@
 #
 #   tangent plugin compile --config tangent.yaml
 #   tangent run --config tangent.yaml &     # a local model: JUDGE_URL, JUDGE_MODEL (packs/judge/README.md); haiku.yaml for Claude Haiku
-#   sudo eslogger exec fork exit open close create rename unlink btm_launch_item_add tcc_modify \
-#     | nc -U es.sock
+#   sudo ../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor \
+#     | nc -U es.sock                       # packs/macos/sensor, built and signed (its README)
 #   python3 ../../packs/macos/ps/ps.py | nc -U es.sock     # once: what was already running
 #   python3 ../../packs/macos/agent/transcripts.py | nc -U es.sock   # what you asked Claude Code
 #   sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
 #     | python3 ../../packs/macos/net/net.py | nc -U net.sock
 #   tail -f alerts.ndjson
 #
-# eslogger needs root, and the terminal it runs in Full Disk Access (System
+# The sensor needs root, and the terminal it runs in Full Disk Access (System
 # Settings, Privacy & Security), restarted after the grant. It writes to
 # stdout only, so nc joins it to the socket: root writes it, you own it, and
 # nothing listens on a port. Endpoint Security sees no network: tcpdump does,

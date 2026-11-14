@@ -1,6 +1,6 @@
 """ps.py: the processes already running, one JSON line each, for packs/macos.
 
-eslogger shows a process when it forks, execs or does something the pack
+The sensor shows a process when it forks, execs or does something the pack
 subscribes to. What was running before the capture began (the terminal, the
 apps, an agent left open) never forks into view, so the programs it started
 have no one above them and no name for the app macOS holds responsible. This
@@ -9,7 +9,7 @@ script lists what is running now:
   {"time": "...Z", "ps": {"pid": 412, "ppid": 1, "start": "2026-03-02T09:00:00Z",
    "path": "/Applications/Ghostty.app/Contents/MacOS/ghostty"}}
 
-Run it once, as yourself, right after eslogger starts:
+Run it once, as yourself, right after the sensor starts:
 
   python3 ps.py | nc -U es.sock
 

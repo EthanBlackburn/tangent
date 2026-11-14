@@ -1,16 +1,13 @@
-use ahash::AHashMap as HashMap;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use std::collections::{BTreeMap, VecDeque};
-use std::path::Path;
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
 use tangent_shared::dag::NodeRef;
-use tangent_shared::inference::InferenceConfig;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
@@ -19,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use wasmtime::component::{Component, Resource};
 
 use crate::group::{Dispatch, Group};
-use crate::inference::{lines, InferenceNode};
+use crate::inference::{lines, Nodes};
 use crate::router::{RefCountAck, Router};
 use crate::wasm::host::JsonLogView;
 use crate::wasm::{
@@ -111,7 +108,7 @@ fn deliver(deliveries: &mut Vec<Delivery>, sinks: Vec<Arc<str>>, frame: BytesMut
     }
 }
 
-/// A worker hosts every plugin and every inference node, and walks the DAG
+/// A worker hosts every plugin, reaches every inference node, and walks the DAG
 /// for each batch it is handed: a record enters at its source and goes to
 /// each of the node's outputs in turn, a plugin's or a model's output being
 /// the next node's input, until the sinks.
@@ -126,7 +123,7 @@ pub struct Worker {
     /// after it traps.
     engine: wasm::engine::WasmEngine,
     components: Vec<(Arc<str>, Component)>,
-    inference: HashMap<Arc<str>, InferenceNode>,
+    inference: Nodes,
     batch_max_size: usize,
     batch_max_age: Duration,
     router: Arc<Router>,
@@ -554,7 +551,7 @@ fn by_probe(
 /// stores are not `Sync`, so a `&Worker` cannot be held across the model's
 /// await.
 async fn run_inference(
-    nodes: &HashMap<Arc<str>, InferenceNode>,
+    nodes: &Nodes,
     name: &Arc<str>,
     views: &Views,
     stop: &CancellationToken,
@@ -593,9 +590,7 @@ impl WorkerPool {
         size: usize,
         engines: Vec<wasm::engine::WasmEngine>,
         components: Vec<Vec<(Arc<str>, Component)>>,
-        inference: &BTreeMap<Arc<str>, InferenceConfig>,
-        permits: &BTreeMap<Arc<str>, Arc<tokio::sync::Semaphore>>,
-        config_dir: &Path,
+        inference: Nodes,
         batch_max_size: usize,
         batch_max_age: Duration,
         router: Arc<Router>,
@@ -636,15 +631,6 @@ impl WorkerPool {
                 }
             }
 
-            let mut nodes = HashMap::default();
-            for (name, cfg) in inference {
-                nodes.insert(
-                    Arc::clone(name),
-                    InferenceNode::new(Arc::clone(name), cfg.clone(), config_dir)?
-                        .sharing(Arc::clone(&permits[name])),
-                );
-            }
-
             let worker = Worker {
                 id: i,
                 rx,
@@ -652,7 +638,7 @@ impl WorkerPool {
                 mappers,
                 engine,
                 components: comps,
-                inference: nodes,
+                inference: Arc::clone(&inference),
                 batch_max_size,
                 batch_max_age,
                 router: Arc::clone(&router),
@@ -772,7 +758,9 @@ mod tests {
     use crate::sinks::manager::{Sink, SinkManager, SinkWrite};
     use crate::state::StateStore;
     use crate::wasm::engine::WasmEngine;
+    use ahash::AHashMap as HashMap;
     use serde_json::Value;
+    use std::collections::BTreeMap;
     use tangent_shared::runtime::StateConfig;
     use tokio::sync::Mutex;
 
@@ -874,11 +862,9 @@ mod tests {
         );
         let router = Arc::new(Router::new(outs, Arc::clone(&sink_manager)));
         let in_flight = router.in_flight_counter();
-        let mut inference = HashMap::default();
-        inference.insert(
-            judge.clone(),
-            InferenceNode::new(judge.clone(), stub::config(&url), &dir).unwrap(),
-        );
+        let inference =
+            crate::inference::nodes(&BTreeMap::from([(judge.clone(), stub::config(&url))]), &dir)
+                .unwrap();
         let (tx, rx) = mpsc::channel(16);
         let store: Arc<dyn StateStore> =
             Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
@@ -892,6 +878,7 @@ mod tests {
             engine: WasmEngine::new(
                 Arc::clone(&store),
                 0,
+                Default::default(),
                 Default::default(),
                 Default::default(),
                 true,
@@ -976,11 +963,7 @@ mod tests {
         let judge: Arc<str> = Arc::from("judge");
         let mut cfg = stub::config(&url);
         cfg.timeout_ms = 600_000;
-        let mut nodes = HashMap::default();
-        nodes.insert(
-            judge.clone(),
-            InferenceNode::new(judge.clone(), cfg, &dir).unwrap(),
-        );
+        let nodes = crate::inference::nodes(&BTreeMap::from([(judge.clone(), cfg)]), &dir).unwrap();
         let views: Views = vec![JsonLogView::from_bytes(BytesMut::from("{\"id\":1}")).unwrap()];
         let stop = CancellationToken::new();
         tokio::spawn({
@@ -1052,11 +1035,8 @@ mod tests {
         let in_flight = router.in_flight_counter();
         let mut cfg = stub::config(&url);
         cfg.timeout_ms = 600_000;
-        let mut inference = HashMap::default();
-        inference.insert(
-            judge.clone(),
-            InferenceNode::new(judge.clone(), cfg, &dir).unwrap(),
-        );
+        let inference =
+            crate::inference::nodes(&BTreeMap::from([(judge.clone(), cfg)]), &dir).unwrap();
         let (tx, rx) = mpsc::channel(16);
         let store: Arc<dyn StateStore> =
             Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
@@ -1071,6 +1051,7 @@ mod tests {
             engine: WasmEngine::new(
                 Arc::clone(&store),
                 0,
+                Default::default(),
                 Default::default(),
                 Default::default(),
                 true,
@@ -1211,6 +1192,7 @@ mod tests {
             0,
             Default::default(),
             Default::default(),
+            Default::default(),
             true,
         )
         .unwrap();
@@ -1266,7 +1248,7 @@ mod tests {
             mappers: Mappers::load_all(&engine, &components).await.unwrap(),
             engine,
             components,
-            inference: HashMap::default(),
+            inference: Default::default(),
             batch_max_size: 1 << 20,
             batch_max_age: Duration::from_millis(20),
             router: Arc::clone(&router),

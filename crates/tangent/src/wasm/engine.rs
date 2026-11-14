@@ -10,9 +10,11 @@ use wasmtime::{Engine, Store};
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
 use crate::enrichment::Tables;
+use crate::inference::Nodes;
 use crate::state::{StateStore, PLUGIN_NS};
 use crate::wasm::host::tangent::logs::{config, enrichment, lake, log, model, remote, state};
-use crate::wasm::host::{HostEngine, Models, Processor};
+use crate::wasm::host::{HostEngine, Processor};
+use tokio_util::sync::CancellationToken;
 pub struct WasmEngine {
     engine: Engine,
     linker: Linker<HostEngine>,
@@ -30,8 +32,10 @@ pub struct WasmEngine {
     lake: HashMap<Arc<str>, Arc<[String]>>,
     /// The inference nodes plugins hold conversations with, and each
     /// plugin's own of them (`plugins.<name>.models`).
-    models: Models,
-    plugin_models: HashMap<Arc<str>, Models>,
+    models: Nodes,
+    plugin_models: HashMap<Arc<str>, Nodes>,
+    /// Cancelled when the pipeline stops: it ends a model's turn under way.
+    stop: CancellationToken,
     /// The enrichment tables, loaded once for the process: every engine and
     /// every plugin instance holds the same ones.
     tables: Arc<Tables>,
@@ -46,7 +50,8 @@ impl WasmEngine {
         state: Arc<dyn StateStore>,
         max_ttl_ms: u64,
         tables: Arc<Tables>,
-        models: Models,
+        models: Nodes,
+        stop: CancellationToken,
         disable_remote_calls: bool,
     ) -> Result<Self> {
         let engine = tangent_shared::wasm_engine::build()?;
@@ -76,6 +81,7 @@ impl WasmEngine {
             lake: HashMap::new(),
             models,
             plugin_models: HashMap::new(),
+            stop,
             pass_on_error: HashSet::new(),
         })
     }
@@ -156,6 +162,7 @@ impl WasmEngine {
                     .get(component_name)
                     .cloned()
                     .unwrap_or_default(),
+                self.stop.clone(),
                 self.disable_remote_calls,
             ),
         ))
