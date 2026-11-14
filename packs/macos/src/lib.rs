@@ -1,4 +1,4 @@
-//! `eslogger`'s events, from a Mac, into the few records a model should read:
+//! Endpoint Security's events, from a Mac, into the few records a model should read:
 //! every program run, with its environment cut to the names that steer an AI
 //! agent; every write, and the reads that matter, on the files an agent is
 //! steered, extended and read through, on credentials and on what runs at
@@ -920,7 +920,7 @@ fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
 const MONITOR: &str = "monitor";
 
 /// A line from the capture's start script, `{"monitor": {"pid": N}}`: the
-/// script that runs tangent, eslogger and tcpdump names its own pid, and what
+/// script that runs tangent, the sensor and tcpdump names its own pid, and what
 /// it and everything under it does is left out from here on. A packet capture
 /// piped to a socket is what a sniffer looks like, so the judge flagged the
 /// capture itself in every run; a name or a command line could not exempt
@@ -1309,7 +1309,7 @@ impl Guest for Component {
         }
     }
 
-    /// An eslogger line: an `event` from a `process`; or a connection from
+    /// A line from the sensor: an `event` from a `process`; or a connection from
     /// net/net.py.
     fn probe() -> Vec<Selector> {
         vec![
@@ -1362,7 +1362,7 @@ impl Guest for Component {
                 finished(&read)
             };
             if let Some((rec, n)) = made {
-                // eslogger's `time`, and no `source`: the stamp is built, not read
+                // the sensor's `time`, and no `source`: the stamp is built, not read
                 let mut stamp = Stamp::of(&read);
                 if let Some(t) = read.get("time").and_then(Value::as_str) {
                     stamp.ts = t.to_string();

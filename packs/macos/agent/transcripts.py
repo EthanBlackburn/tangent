@@ -13,7 +13,7 @@ transcripts and writes each prompt as it is typed:
 
 `pids` is the agent's process, which is how the plugin places the prompt in
 a session; a prompt of a session no running agent claims has none. Run it as
-yourself beside eslogger:
+yourself beside the sensor:
 
   python3 transcripts.py | nc -U es.sock
 

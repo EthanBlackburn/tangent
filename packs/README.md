@@ -16,7 +16,7 @@ says about it in `_facts`. How to use them is in the main
 | [okta](okta) | `okta` |
 | [google_workspace](google_workspace) | `google_workspace` |
 | [supabase](supabase) | `supabase` |
-| [macos](macos) | `macos`: this Mac's `eslogger` events, the few a model should read, and `macos_sessions`, each session summed up for the judge; examples/macos runs it |
+| [macos](macos) | `macos`: this Mac's Endpoint Security events, from the pack's own sensor, the few a model should read, and `macos_sessions`, each session summed up for the judge; examples/macos runs it |
 | [shared](shared) | not a pack: `normkit`, `enrichkit`, `identitykit` and `factskit`, the Rust libraries every pack's plugin links |
 
 A config includes a pack by name, the copy built into tangent
