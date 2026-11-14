@@ -20,13 +20,12 @@ use wasmtime::component::Component;
 use crate::{
     enrichment::Tables,
     group::{self, Dispatch, GroupConfig, Grouper},
-    inference::InferenceNode,
+    inference::Nodes,
     router::Router,
     sinks::manager::SinkManager,
     sources, state,
     state::StateStore,
     wasm::engine::WasmEngine,
-    wasm::host::Models,
     worker::WorkerPool,
 };
 
@@ -108,12 +107,18 @@ impl DagRuntime {
                 anyhow::bail!("plugin {name}: max_age_ms must be at least 1");
             }
         }
-        // One concurrency limit per inference node, whichever pool runs it,
-        // and whichever plugin holds a conversation with it.
-        let permits = crate::inference::permits(&cfg.inference);
-        let models = models(&cfg, &permits, config_dir)?;
+        // One of each inference node, whichever pool runs it and whichever
+        // plugin holds a conversation with it.
+        let models = crate::inference::nodes(&cfg.inference, config_dir)?;
         let (engines, components) = load(
-            &cfg, &plugins, config_dir, &store, &tables, &models, workers,
+            &cfg,
+            &plugins,
+            config_dir,
+            &store,
+            &tables,
+            &models,
+            &stop_models,
+            workers,
         )?;
         let mut outs: HashMap<NodeRef, Vec<NodeRef>> = HashMap::default();
         // `validate` has checked every name, so each resolves
@@ -131,16 +136,14 @@ impl DagRuntime {
         let router =
             Arc::new(Router::new(outs, Arc::clone(&sink_manager)).with_sink_batch(batch_size));
 
-        // Every worker hosts every plugin and every inference node, and walks
+        // Every worker hosts every plugin, reaches every inference node, and walks
         // the DAG for the records it is handed.
         let pool = Arc::new(
             WorkerPool::new(
                 workers,
                 engines,
                 components,
-                &cfg.inference,
-                &permits,
-                config_dir,
+                Arc::clone(&models),
                 batch_size,
                 batch_age,
                 Arc::clone(&router),
@@ -157,16 +160,21 @@ impl DagRuntime {
         let mut groupers = std::collections::HashMap::new();
         for (name, p) in cfg.plugins.iter().filter(|(_, p)| !p.group_by.is_empty()) {
             let (engines, components) = load(
-                &cfg, &plugins, config_dir, &store, &tables, &models, workers,
+                &cfg,
+                &plugins,
+                config_dir,
+                &store,
+                &tables,
+                &models,
+                &stop_models,
+                workers,
             )?;
             let pool = Arc::new(
                 WorkerPool::new(
                     workers,
                     engines,
                     components,
-                    &cfg.inference,
-                    &permits,
-                    config_dir,
+                    Arc::clone(&models),
                     batch_size,
                     batch_age,
                     Arc::clone(&router),
@@ -393,36 +401,14 @@ fn compiled_plugins(
     Ok(paths)
 }
 
-/// The inference nodes some plugin's `models` names, one copy of each for
-/// every plugin instance, counted against the node's permits like the
-/// workers' copies.
-fn models(
-    cfg: &Config,
-    permits: &BTreeMap<Arc<str>, Arc<tokio::sync::Semaphore>>,
-    config_dir: &Path,
-) -> Result<Models> {
-    let mut nodes = ahash::HashMap::default();
-    for name in cfg.plugins.values().flat_map(|p| &p.models) {
-        if nodes.contains_key(name) {
-            continue;
-        }
-        let Some(node) = cfg.inference.get(name) else {
-            continue; // `validate` refuses it
-        };
-        let node = InferenceNode::new(Arc::clone(name), node.clone(), config_dir)?
-            .sharing(Arc::clone(&permits[name]));
-        nodes.insert(Arc::clone(name), Arc::new(node));
-    }
-    Ok(Arc::new(nodes))
-}
-
 fn load(
     cfg: &Config,
     plugins: &[PathBuf],
     config_dir: &Path,
     store: &Arc<dyn StateStore>,
     tables: &Arc<Tables>,
-    models: &Models,
+    models: &Nodes,
+    stop: &CancellationToken,
     workers: usize,
 ) -> Result<Loaded> {
     let mut engines: Vec<WasmEngine> = (0..workers)
@@ -432,6 +418,7 @@ fn load(
                 cfg.runtime.state.max_ttl_ms,
                 Arc::clone(tables),
                 Arc::clone(models),
+                stop.clone(),
                 cfg.runtime.disable_remote_calls,
             )
         })
@@ -952,6 +939,7 @@ mod tests {
             root,
             &store,
             &tables,
+            &Default::default(),
             &Default::default(),
             2,
         )

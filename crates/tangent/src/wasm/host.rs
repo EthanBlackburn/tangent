@@ -14,11 +14,12 @@ use wasmtime::component::{bindgen, HasData, Resource, ResourceTable};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use crate::enrichment::Tables;
-use crate::inference::InferenceNode;
+use crate::inference::Nodes;
 use crate::state::{StateStore, StateValue, Txn};
 use crate::wasm::host::tangent::logs::log;
 use crate::wasm::host::tangent::logs::remote;
 use log::Scalar;
+use tokio_util::sync::CancellationToken;
 
 bindgen!({
     world: "processor",
@@ -41,10 +42,6 @@ bindgen!({
     }
 });
 
-/// Inference nodes by name, for the plugins that hold conversations with
-/// them: one copy for the process.
-pub type Models = Arc<HashMap<Arc<str>, Arc<InferenceNode>>>;
-
 pub struct HostEngine {
     pub ctx: WasiCtx,
     pub table: ResourceTable,
@@ -66,8 +63,11 @@ pub struct HostEngine {
     lake: Option<Arc<[String]>>,
     /// The inference nodes this plugin may hold a conversation with
     /// (`plugins.<name>.models`).
-    models: Models,
-    /// If true, short-circuit remote calls with successful empty responses.
+    models: Nodes,
+    /// Cancelled when the pipeline stops: it ends a model's turn under way.
+    stop: CancellationToken,
+    /// If true, short-circuit remote calls with successful empty responses,
+    /// and fail a model's turn rather than ask for it.
     pub disable_remote_calls: bool,
 }
 
@@ -81,7 +81,8 @@ impl HostEngine {
         config: Arc<HashMap<String, JSONValue>>,
         tables: Arc<Tables>,
         lake: Option<Arc<[String]>>,
-        models: Models,
+        models: Nodes,
+        stop: CancellationToken,
         disable_remote_calls: bool,
     ) -> Self {
         Self {
@@ -96,6 +97,7 @@ impl HostEngine {
             tables,
             lake,
             models,
+            stop,
             disable_remote_calls,
         }
     }
@@ -275,7 +277,8 @@ impl tangent::logs::enrichment::Host for HostEngine {
 }
 
 /// A turn of a conversation with one of the plugin's `models`: the node's
-/// own request, under its concurrency, timeout and retries.
+/// own request, under its concurrency, timeout and retries. A stop ends the
+/// turn, as it ends an inference node's calls.
 impl tangent::logs::model::Host for HostEngine {
     async fn chat(&mut self, node: String, request: String) -> Result<String, String> {
         if self.txn.is_some() {
@@ -286,7 +289,13 @@ impl tangent::logs::model::Host for HostEngine {
                 "inference node `{node}` is not among this plugin's `models` in the config"
             ));
         };
-        model.chat(&request).await.map_err(|e| format!("{e:#}"))
+        if self.disable_remote_calls {
+            return Err("the model was not asked: `runtime.disable_remote_calls` is set, as `tangent plugin test` sets it without --enable-http".into());
+        }
+        match self.stop.run_until_cancelled(model.chat(&request)).await {
+            Some(reply) => reply.map_err(|e| format!("{e:#}")),
+            None => Err("stopped before the model answered".into()),
+        }
     }
 }
 
@@ -596,7 +605,8 @@ mod tests {
             Arc::new(HashMap::default()),
             Arc::new(Tables::default()),
             None,
-            Models::default(),
+            Nodes::default(),
+            Default::default(),
             true,
         )
     }
@@ -656,6 +666,35 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.contains("not among this plugin's `models`"), "{e}");
+    }
+
+    /// A stop ends a turn the model has not answered, and a runtime told to
+    /// call nothing outside does not ask the model.
+    #[tokio::test]
+    async fn a_turn_ends_at_a_stop_and_is_not_asked_with_remote_calls_off() {
+        use crate::inference::stub;
+        use tangent::logs::model::Host as _;
+        let (url, taken) = stub::silent().await;
+        let dir = stub::dir("chat-stop");
+        let nodes = [(Arc::from("reviewer"), stub::config(&url))];
+        let nodes = crate::inference::nodes(&nodes.into(), &dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = sqlite(tmp.path());
+        let request = r#"{"messages": [{"role": "user", "text": "hello"}]}"#;
+
+        let mut off = guest(&store);
+        off.models = Arc::clone(&nodes);
+        let e = off.chat("reviewer".into(), request.into()).await;
+        assert!(e.unwrap_err().contains("disable_remote_calls"));
+        assert_eq!(taken.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let mut on = guest(&store);
+        on.models = nodes;
+        on.disable_remote_calls = false;
+        on.stop.cancel();
+        let e = on.chat("reviewer".into(), request.into()).await;
+        assert_eq!(e.unwrap_err(), "stopped before the model answered");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn sqlite(dir: &std::path::Path) -> Arc<dyn StateStore> {

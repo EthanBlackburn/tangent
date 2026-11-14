@@ -118,9 +118,12 @@ interface model {
   ///    "output_tokens", ...}}
   ///
   /// `message` is the model's turn, to append to `messages` whole; `stop` is
-  /// `stop`, `length` or `tool_use`. An error is a request the model did not
-  /// answer after the node's retries: no reply in time, a refusal, a
-  /// provider's failure.
+  /// `stop`, `tool_use` when there are `calls` to run, or `length` when
+  /// `max_tokens` cut the text short. An error is a request that is not as
+  /// above, or a turn the model did not finish: no reply after the node's
+  /// retries, a refusal, a provider's failure, a reply with neither text nor
+  /// a call, a call `max_tokens` cut. A stop of the pipeline ends the turn
+  /// with an error too.
   chat: func(node: string, request: string) -> result<string, string>;
 }
 
