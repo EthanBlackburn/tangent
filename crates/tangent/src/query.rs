@@ -76,10 +76,7 @@ fn named<'a>(arg: &'a str, what: &str) -> Result<(&'a str, &'a str)> {
     let (name, rest) = arg
         .split_once('=')
         .with_context(|| format!("{what} {arg:?}: expected NAME={what}"))?;
-    let ok = !name.is_empty()
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !name.starts_with(|c: char| c.is_ascii_digit());
-    if !ok || rest.is_empty() {
+    if !tangent_shared::is_table_name(name) || rest.is_empty() {
         bail!("{what} {arg:?}: expected NAME={what}, the name of letters, digits and _");
     }
     Ok((name, rest))

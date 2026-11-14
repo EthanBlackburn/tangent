@@ -58,8 +58,9 @@ pub struct HostEngine {
     plugin_cfg: Arc<HashMap<String, JSONValue>>,
     /// The process's enrichment tables, shared with every other instance.
     tables: Arc<Tables>,
-    /// The Parquet this plugin may query, as `NAME=PATH`; None when its
-    /// config names none.
+    /// What this plugin may query, as `NAME=PATH`: each of its `tables`, and
+    /// where the sink it names keeps its records. None when its config
+    /// names none.
     lake: Option<Arc<[String]>>,
     /// The inference nodes this plugin may hold a conversation with
     /// (`plugins.<name>.models`).

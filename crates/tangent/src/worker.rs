@@ -1207,7 +1207,7 @@ mod tests {
                     Default::default(),
                     None,
                     None,
-                    &[],
+                    &Default::default(),
                     &[],
                     drop_on_error,
                 )

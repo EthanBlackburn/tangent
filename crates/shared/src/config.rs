@@ -228,34 +228,38 @@ impl Config {
         }
 
         // a plugin's `tables` are sinks whose records a statement can read
-        for name in self.plugins.keys() {
-            self.tables_of(name)?;
+        for (name, plugin) in &self.plugins {
+            self.tables_of(name, plugin)?;
         }
 
         Ok(())
     }
 
-    /// A plugin's `tables` for `lake.query`, each as `NAME=PATH`: the name
-    /// its statements use and where the sink it names keeps its records
-    /// (`SinkConfig::table`).
-    pub fn tables_of(&self, plugin: &str) -> Result<Vec<String>> {
-        let Some(cfg) = self.plugins.get(plugin) else {
-            return Ok(Vec::new());
-        };
-        cfg.tables
-            .iter()
-            .map(|(table, sink)| match self.sinks.get(sink.as_str()) {
-                None => anyhow::bail!(
-                    "plugin {plugin}: table `{table}` names `{sink}`, which is no sink"
-                ),
-                Some(s) => match s.table() {
-                    Ok(at) => Ok(format!("{table}={at}")),
-                    Err(why) => {
-                        anyhow::bail!("plugin {plugin}: table `{table}` is sink `{sink}`: {why}")
-                    }
-                },
-            })
-            .collect()
+    /// The `tables` of plugin `name` for its `lake.query`: the name its
+    /// statements use for each, and where the sink it names keeps its
+    /// records (`SinkConfig::table`).
+    pub fn tables_of(
+        &self,
+        name: &str,
+        plugin: &plugins::PluginConfig,
+    ) -> Result<BTreeMap<String, PathBuf>> {
+        let mut tables = BTreeMap::new();
+        for (table, sink) in &plugin.tables {
+            if !is_table_name(table) {
+                anyhow::bail!(
+                    "plugin {name}: table `{table}`: a statement names a table with letters, \
+                     digits and _, and no digit first"
+                );
+            }
+            let Some(kept) = self.sinks.get(sink.as_str()) else {
+                anyhow::bail!("plugin {name}: table `{table}` names `{sink}`, which is no sink");
+            };
+            let at = kept.table().map_err(|why| {
+                anyhow::anyhow!("plugin {name}: table `{table}` is sink `{sink}`: {why}")
+            })?;
+            tables.insert(table.clone(), at);
+        }
+        Ok(tables)
     }
 
     /// What loads and runs but likely is not meant, for the caller to print
@@ -326,6 +330,14 @@ pub fn is_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Whether a statement can name a table or a view `name`: letters, digits
+/// and `_`, one at least, and no digit first.
+pub fn is_table_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit())
 }
 
 /// A depth-first walk from `node`, `path` the nodes it came through: an
@@ -566,25 +578,42 @@ mod tests {
     /// refused with why.
     #[test]
     fn a_plugin_s_tables_are_sinks_a_statement_can_read() {
-        let with = |table: &str| {
+        let named = |name: &str, table: &str| {
             config(&format!(
-                "{LINES}plugins:\n  agent: {{ module_type: rust, tables: {{ records: {table} }} }}\n\
+                "{LINES}plugins:\n  agent: {{ module_type: rust, tables: {{ {name}: {table} }} }}\n\
                  sinks:\n  \
                  lake: {{ type: rolling_file, path: lake/logs/%Y/%m/%d, wal_path: lake/wal, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n  \
                  lines_kept: {{ type: rolling_file, path: kept, wal_path: kept-wal }}\n  \
-                 bucket: {{ type: s3, bucket_name: b, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n\
+                 bucket: {{ type: s3, bucket_name: b, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n  \
+                 dated: {{ type: rolling_file, path: \"%Y/%m\", wal_path: dated-wal, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n\
                  dag:\n  - from: lines\n    to: [agent]\n  - from: agent\n    to: [lake, lines_kept, bucket]\n"
             ))
         };
+        let with = |table: &str| named("records", table);
         let cfg = with("lake");
         cfg.validate().unwrap();
-        assert_eq!(cfg.tables_of("agent").unwrap(), ["records=lake/logs"]);
-        assert_eq!(cfg.tables_of("no_such_plugin").unwrap(), [] as [&str; 0]);
+        assert_eq!(
+            cfg.tables_of("agent", &cfg.plugins["agent"]).unwrap(),
+            BTreeMap::from([("records".to_string(), PathBuf::from("lake/logs"))])
+        );
 
         let refused = |table: &str| with(table).validate().unwrap_err().to_string();
         assert_eq!(
             refused("lakes"),
             "plugin agent: table `records` names `lakes`, which is no sink"
+        );
+        assert_eq!(
+            refused("dated"),
+            "plugin agent: table `records` is sink `dated`: its path \"%Y/%m\" starts with a \
+             strftime specifier, so its files have no directory of their own to read"
+        );
+        assert_eq!(
+            named("the-records", "lake")
+                .validate()
+                .unwrap_err()
+                .to_string(),
+            "plugin agent: table `the-records`: a statement names a table with letters, digits \
+             and _, and no digit first"
         );
         assert_eq!(
             refused("lines_kept"),

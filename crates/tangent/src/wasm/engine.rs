@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -98,7 +99,7 @@ impl WasmEngine {
         cfg: HashMap<String, Value>,
         state_ns: Option<&str>,
         data: Option<&Path>,
-        tables: &[String],
+        tables: &BTreeMap<String, PathBuf>,
         models: &[Arc<str>],
         drop_on_error: bool,
     ) -> Result<Component> {
@@ -110,7 +111,11 @@ impl WasmEngine {
             self.data.insert(Arc::clone(&name), dir.to_path_buf());
         }
         if !tables.is_empty() {
-            self.lake.insert(Arc::clone(&name), tables.into());
+            let named = tables
+                .iter()
+                .map(|(table, path)| format!("{table}={}", path.display()))
+                .collect();
+            self.lake.insert(Arc::clone(&name), named);
         }
         if !models.is_empty() {
             let own = models

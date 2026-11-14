@@ -354,10 +354,18 @@ fn keep_local(cfg: &mut Config) {
             sink.kind = SinkKind::Blackhole(BlackholeConfig {});
         }
     }
-    for (name, plugin) in &cfg.plugins {
-        if !plugin.tables.is_empty() {
-            tracing::warn!(plugin = %name, "this plugin queries a lake, and replay writes none of the range to one: what it reads there is the live pipeline's, today's records and not the range's");
-        }
+    // A table is a sink's records, and replay writes none to the sinks it
+    // left out: the plugin would read the live pipeline's, today's records
+    // and not the range's.
+    let sinks = &cfg.sinks;
+    for (name, plugin) in &mut cfg.plugins {
+        plugin.tables.retain(|table, sink| {
+            let kept = sinks.get(sink.as_str()).is_none_or(|s| s.table().is_ok());
+            if !kept {
+                tracing::warn!(plugin = %name, %table, %sink, "replay writes nothing to this sink, so the plugin has no such table: a statement that names it fails");
+            }
+            kept
+        });
     }
 }
 

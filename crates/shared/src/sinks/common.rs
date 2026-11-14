@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::sinks::{blackhole, file, rolling_file, s3, slack, sqlite};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SinkConfig {
     #[serde(flatten)]
     pub common: CommonSinkOptions,
@@ -19,10 +19,17 @@ impl SinkConfig {
     /// yet: each that comes to be (an `s3` sink's Parquet, a `sqlite` sink's
     /// table) is an arm here, and the plugin and its config stay as they
     /// are. Err is why this sink has nothing to read.
-    pub fn table(&self) -> Result<String, String> {
+    pub fn table(&self) -> Result<std::path::PathBuf, String> {
         match (&self.kind, &self.common.encoding) {
             (SinkKind::RollingFile(c), Encoding::Parquet { .. }) => {
-                Ok(rolling_file::root(&c.path).display().to_string())
+                match rolling_file::split(&c.path) {
+                    Ok((root, _)) if root.as_os_str().is_empty() => Err(format!(
+                        "its path {:?} starts with a strftime specifier, so its files have no directory of their own to read",
+                        c.path
+                    )),
+                    Ok((root, _)) => Ok(root),
+                    Err(e) => Err(e.to_string()),
+                }
             }
             (SinkKind::RollingFile(_), other) => Err(format!(
                 "it writes {}, and of a rolling_file sink's files only Parquet is read",
@@ -36,7 +43,7 @@ impl SinkConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum SinkKind {
     #[serde(rename = "s3")]
@@ -67,7 +74,7 @@ impl SinkKind {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommonSinkOptions {
     #[serde(default)]
     pub compression: Compression,

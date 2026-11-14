@@ -38,13 +38,24 @@ const fn max_file_age_seconds() -> u64 {
     60
 }
 
-/// The directory every file of the sink is under: `path` up to its first
-/// strftime specifier.
-pub fn root(path: &str) -> PathBuf {
-    Path::new(path)
-        .components()
-        .take_while(|c| !c.as_os_str().to_string_lossy().contains('%'))
-        .collect()
+/// A sink's `path` in two: the directory every file of the sink is under,
+/// which is `path` up to its first strftime specifier, and the rest, which
+/// renders to a record's directory below it (empty for a `path` without a
+/// specifier). The sink writes by it and a plugin's `tables` read by it.
+pub fn split(path: &str) -> anyhow::Result<(PathBuf, String)> {
+    let mut root = PathBuf::new();
+    let mut rest = Vec::new();
+    for c in Path::new(path).components() {
+        let s = c.as_os_str().to_string_lossy();
+        if rest.is_empty() && !s.contains('%') {
+            root.push(c);
+        } else if matches!(c, Component::Normal(_)) {
+            rest.push(s.into_owned());
+        } else {
+            anyhow::bail!("path {path:?}: no `.` or `..` after the first strftime specifier");
+        }
+    }
+    Ok((root, rest.join("/")))
 }
 
 /// The directory below the sink's root that `path`'s specifiers rendered
