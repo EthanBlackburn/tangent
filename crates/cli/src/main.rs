@@ -9,6 +9,7 @@ use tangent_bench::BenchOptions;
 use tangent_runtime::RuntimeOptions;
 
 mod fetch;
+mod init;
 use tangent_runtime::query;
 mod scaffold;
 mod state;
@@ -90,6 +91,10 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         config: PathBuf,
     },
+
+    /// Write tangent.yaml here: your AWS account's CloudTrail, replayed and
+    /// judged by Claude Haiku 5.5 on Bedrock. Refuses to overwrite one
+    Init,
 
     /// Read a past range of the config's sources through it, as fast as it
     /// is read, then close every group and wait for the judge. Each source
@@ -257,6 +262,8 @@ async fn main() -> Result<()> {
         }
 
         Commands::Config { config } => print!("{}", show_config(&config)?),
+
+        Commands::Init => init::run_in(Path::new("."))?,
 
         Commands::Replay { config, from, to } => {
             let config = config.canonicalize().unwrap_or(config);
