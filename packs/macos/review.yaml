@@ -13,8 +13,11 @@ inference:
       region: ${AWS_REGION:-us-west-2}
     prompt_file: review.md
     max_tokens: 8000               # a turn: its thinking, and a query or the report
-    timeout_ms: 600000
-    retries: 4
+    # Reviews go one at a time, so a turn that hangs holds up every alert
+    # behind it: two minutes a try and three tries, then the review is an
+    # error and the alert stands.
+    timeout_ms: 120000
+    retries: 2
     concurrency: 1
     extra:
       thinking: { type: adaptive }

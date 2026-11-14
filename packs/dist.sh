@@ -18,7 +18,8 @@ OUT=target/packs
 CARGO_COMPONENT_VERSION=0.21.1
 
 # Each plugin as the configs name it, and its source. The configs with a
-# `prebuilt:` are the ingest.yaml of each pack.
+# `prebuilt:` are a pack's ingest.yaml and the configs beside it, as macos's
+# review.yaml is.
 PLUGINS=(
   "cloudtrail packs/cloudtrail"
   "github packs/github"

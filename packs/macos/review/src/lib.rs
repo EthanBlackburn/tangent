@@ -19,13 +19,16 @@
 //! unresolved, with `finding` and `check`), the SQL the model ran and what
 //! the review took. A review that fails (the model's content filter stops
 //! it, which what an attack leaves in a log can set off; no report within
-//! the queries allowed) is an `error` in `review`, and the alert stands.
+//! the queries allowed; tangent stopping) is an `error` in `review`, and the
+//! alert stands.
 //!
 //! The lake has an alert's own records once their file is sealed, minutes
 //! after the alert. The config holds each alert back that long by grouping:
 //! `group_by` an alert's session and window, `expire_after_ms` the wait. A
 //! grouped plugin has workers of its own, so a review that takes minutes
-//! holds up neither the capture nor the judge.
+//! holds up neither the capture nor the judge. A group that closes sooner
+//! (the input ended) is reviewed before the lake has the alert's last
+//! records: the model is told, and the record is marked `early`.
 
 wit_bindgen::generate!({
     path: ".tangent/wit",
@@ -44,27 +47,48 @@ export!(Component);
 
 /// Characters of one query's result the model is shown.
 const RESULT_LIMIT: usize = 12_000;
-/// Rows of one query's result, and characters of one cell.
+/// Rows of one query's result, and characters of one cell: a record whole
+/// or a long command line is cut there, and the `query` tool says so.
 const ROWS: u32 = 500;
-const CELL: u32 = 500;
+const CELL: u32 = 2000;
 const QUERY_MS: u32 = 30_000;
+
+/// The SQL that writes path column `$col` as an alert does, a home as `~`
+/// and /Users/Shared as it is (the pack's `paths::home`), so a path copied
+/// from the alert finds its records.
+macro_rules! tilde {
+    ($col:literal) => {
+        concat!(
+            "CASE WHEN ",
+            $col,
+            " LIKE '/Users/Shared/%' THEN ",
+            $col,
+            " ELSE regexp_replace(",
+            $col,
+            ", '^/Users/[^/]+/', '~/') END"
+        )
+    };
+}
 
 /// The table: a column's name, the SQL that makes it from the lake's columns
 /// (../lake.yaml), and what the model is told it holds.
 const COLUMNS: &[(&str, &str, &str)] = &[
-    ("ts", "ts", "when, in UTC"),
+    ("ts", "ts",
+     "when, in UTC; null for the rare record the lake could not read into columns, which has only `record` and is in \
+      the table whatever its time"),
     ("event", "event",
      "`exec` (a program started), `open`, `close`, `create`, `rename`, `unlink` (a file), `connect` (a network \
       connection opened), `prompt` (what the person typed to an AI coding agent), or a rarer Endpoint Security \
       event as it came (`btm_launch_item_add`, a login item added; `tcc_modify`, a privacy permission changed)"),
     ("session", "\"session\"['id']", "the session the record belongs to: `session.id` in the alert"),
-    ("entry", "\"session\"['entry']", "the session's entry point"),
+    ("entry", tilde!("\"session\"['entry']"),
+     "the session's entry point, a home written `~` as in the alert's `session.entry`"),
     ("turn", "\"session\"['turn']", "in an agent's session, when the turn the record is part of began"),
     ("piece", "\"session\"['window']",
      "the few minutes of the session the record was summed up with: `session.window` in the alert"),
     ("pid", "process['pid']", "the process that acted"),
     ("ppid", "process['ppid']", "its parent"),
-    ("program", "process['path']", "its program's path"),
+    ("program", tilde!("process['path']"), "its program's path, a home written `~` as in the alert"),
     ("script", "process['name']",
      "for an interpreter (a shell, node, Python, bun) running a file, its name and the file, written from `~`: \
       `python ~/tools/sync.py`"),
@@ -83,7 +107,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("cwd", "exec['cwd']", "`exec`: the working directory"),
     ("env", "json_get_json(record, 'exec', 'env')",
      "`exec`: the few environment variables kept, those that steer a program, as JSON text; the rest are never stored"),
-    ("file", "file", "file events: the file"),
+    ("file", "file", "file events: the file, its path in full where the alert writes a home as `~`"),
     ("renamed_from", "\"from\"", "`rename`: the name it had"),
     ("access", "access", "`open`: `read` or `write`"),
     ("modified", "modified", "`close`: whether it was written"),
@@ -107,7 +131,8 @@ fn tools() -> Value {
         {
             "name": "query",
             "description": "Run one SQL statement (Apache DataFusion's SQL) on the `records` table and get the result as a \
-                            table. A large result is cut, so select the columns you need and filter, group or limit. \
+                            table. A large result is cut, and so is a cell over 2000 characters (read on into one with `substr`), \
+                            so select the columns you need and filter, group or limit. \
                             A list is indexed from 1 (`args[1]`), tested with `array_has(args, 'x')`, and does not cast \
                             to text: use `array_to_string`. Write a time whole, `'2026-03-02T10:05:00Z'`, and name \
                             each GROUP BY column. `->` and `->>` read JSON text and bind loosely: put them in \
@@ -132,38 +157,48 @@ fn tools() -> Value {
     ])
 }
 
-/// A time as the alert gives it (`2026-03-02T10:05:00.123Z`), to the second,
-/// as SQL can cast it; None when it is not one. Only digits and the marks of
-/// a time pass, so it is safe inside a statement.
+/// A time as the alert gives it, in UTC (`2026-03-02T10:05:00.123Z`), to the
+/// second, as SQL can cast it; None when it is not one, a time with another
+/// offset included. Only digits and the marks of a time pass, so it is safe
+/// inside a statement.
 fn sql_time(t: &str) -> Option<String> {
-    let s = t.get(..19)?;
+    let (s, rest) = (t.get(..19)?, t.get(19..)?);
     let shaped = s.bytes().enumerate().all(|(i, b)| match i {
         4 | 7 => b == b'-',
         10 => b == b'T',
         13 | 16 => b == b':',
         _ => b.is_ascii_digit(),
     });
-    shaped.then(|| format!("{s}+00:00"))
+    let fraction = rest.strip_suffix('Z')?;
+    let utc = fraction.is_empty()
+        || fraction
+            .strip_prefix('.')
+            .is_some_and(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()));
+    (shaped && utc).then(|| format!("{s}+00:00"))
+}
+
+/// `at` (from [`sql_time`]) as a timestamp in a statement.
+fn sql_timestamp(at: &str) -> String {
+    format!("arrow_cast('{at}', 'Timestamp(Millisecond, Some(\"+00:00\"))')")
 }
 
 /// The `records` view over table `table`: the columns, for the `days` up to
-/// `until` and `settle` seconds past it.
-fn view(table: &str, until: Option<&str>, days: u64, settle: u64) -> String {
+/// `until` (from [`sql_time`]) and `settle` seconds past it. A record whose
+/// time the lake could not read has none to be left out by, and stays.
+fn view(table: &str, until: &str, days: u64, settle: u64) -> String {
     let cols: Vec<String> = COLUMNS
         .iter()
         .map(|(name, sql, _)| format!("{sql} AS {name}"))
         .collect();
-    let mut select = format!("SELECT {} FROM {table}", cols.join(", "));
-    if let Some(at) = until.and_then(sql_time) {
-        let end = format!(
-            "arrow_cast('{at}', 'Timestamp(Millisecond, Some(\"+00:00\"))') + INTERVAL '{} seconds'",
-            settle + 1 // the alert's last second whole
-        );
-        select.push_str(&format!(
-            " WHERE ts <= {end} AND ts >= {end} - INTERVAL '{days} days'"
-        ));
-    }
-    select
+    let end = format!(
+        "{} + INTERVAL '{} seconds'",
+        sql_timestamp(until),
+        settle + 1 // the alert's last second whole
+    );
+    format!(
+        "SELECT {} FROM {table} WHERE ts IS NULL OR (ts <= {end} AND ts >= {end} - INTERVAL '{days} days')",
+        cols.join(", ")
+    )
 }
 
 /// The first message: what the table holds, its columns, and the alert.
@@ -177,8 +212,16 @@ fn first_message(alert: &Value, held: &Value) -> String {
             .map(Value::to_string)
             .unwrap_or_else(|| "null".into())
     };
+    // the lake seals a file minutes after its records: a review that began
+    // before then (tangent stopping, a replay ending) has not the alert's last
+    let early = if held["whole"] == true {
+        ""
+    } else {
+        " It does not yet hold the alert's last records, which were not written when this review began: \
+         if the answer turns on them, the verdict is `unresolved`."
+    };
     format!(
-        "The `records` table holds {} records, from {} to {}. Its columns:\n\n{}\n\nThe alert:\n\n{alert}",
+        "The `records` table holds {} records, from {} to {}.{early} Its columns:\n\n{}\n\nThe alert:\n\n{alert}",
         at("n"),
         at("first").trim_matches('"'),
         at("last").trim_matches('"'),
@@ -285,25 +328,37 @@ fn review(
         let mut results = Vec::new();
         for call in &calls {
             let given = &call["arguments"];
-            let (text, ok) = if call["name"] == "report" {
-                match checked(given) {
+            let (text, ok) = match call["name"].as_str() {
+                // a report beside queries was written before their results
+                Some("report") if calls.len() > 1 => (
+                    "Call `report` on its own, once you have read your queries' results."
+                        .to_string(),
+                    false,
+                ),
+                Some("report") => match checked(given) {
                     None => return (given.clone(), ran, took),
                     Some(wrong) => (wrong.to_string(), false),
-                }
-            } else if ran.len() >= max_queries {
-                (
+                },
+                Some("query") if ran.len() >= max_queries => (
                     "No queries are left. Call `report` with what you have.".to_string(),
                     false,
-                )
-            } else {
-                let sql = given.get("sql").and_then(Value::as_str).unwrap_or("");
-                ran.push(sql.to_string());
-                let (mut text, ok) = run_query(sql);
-                took.failed_queries += u64::from(!ok);
-                if ran.len() == max_queries {
-                    text.push_str("\n\nThat was the last query. Call `report` with what you have.");
+                ),
+                Some("query") => {
+                    let sql = given.get("sql").and_then(Value::as_str).unwrap_or("");
+                    ran.push(sql.to_string());
+                    let (mut text, ok) = run_query(sql);
+                    took.failed_queries += u64::from(!ok);
+                    if ran.len() == max_queries {
+                        text.push_str(
+                            "\n\nThat was the last query. Call `report` with what you have.",
+                        );
+                    }
+                    (text, ok)
                 }
-                (text, ok)
+                _ => (
+                    "There is no such tool: `query` and `report` are the two.".to_string(),
+                    false,
+                ),
             };
             results
                 .push(json!({"id": call["id"], "name": call["name"], "text": text, "error": !ok}));
@@ -360,16 +415,22 @@ fn reviewed(alert: &Value) -> Value {
     let began = now();
     let node = config::get("model").unwrap_or_else(|| "reviewer".into());
     let table = config::get("table").unwrap_or_else(|| "lake".into());
-    let session = alert.get("session").cloned().unwrap_or(Value::Null);
-    let until = session
-        .get("to")
+    let until = alert
+        .pointer("/session/to")
+        .or_else(|| alert.get("ts"))
         .and_then(Value::as_str)
-        .or_else(|| alert.get("ts").and_then(Value::as_str));
+        .and_then(sql_time);
+    // Without the alert's end the table would have none: every record the
+    // lake holds, the days after the alert among them.
+    let Some(until) = until else {
+        let error = json!({"error": "the alert has no time in UTC (`session.to`, `ts`) to end the table at"});
+        return record(alert, &node, error, &[], &Took::default(), began, false);
+    };
     let views = vec![(
         "records".to_string(),
         view(
             &table,
-            until,
+            &until,
             setting("days", 7),
             setting("settle_seconds", 0),
         ),
@@ -384,8 +445,13 @@ fn reviewed(alert: &Value) -> Value {
             timeout_ms: Some(QUERY_MS),
         })
     };
+    // `whole`: the lake has records as late as the alert's last
     let held = ask(
-        "SELECT count(*) AS n, min(ts) AS first, max(ts) AS last FROM records",
+        &format!(
+            "SELECT count(*) AS n, min(ts) AS first, max(ts) AS last, \
+             coalesce(max(ts) >= {}, false) AS whole FROM records",
+            sql_timestamp(&until)
+        ),
         true,
         1,
     )
@@ -393,7 +459,7 @@ fn reviewed(alert: &Value) -> Value {
         serde_json::from_str::<Value>(rows.lines().next().unwrap_or("{}"))
             .map_err(|e| e.to_string())
     });
-    let (answer, ran, took) = match held {
+    let (answer, ran, took) = match &held {
         Err(e) => (
             json!({"error": format!("reading the lake: {e}")}),
             Vec::new(),
@@ -401,7 +467,7 @@ fn reviewed(alert: &Value) -> Value {
         ),
         Ok(held) => review(
             alert,
-            &held,
+            held,
             setting("queries", 20) as usize,
             config::get("alert_with_prompt").is_some_and(|v| v.trim() == "true"),
             |sql| {
@@ -419,6 +485,22 @@ fn reviewed(alert: &Value) -> Value {
             },
         ),
     };
+    let early = held.is_ok_and(|held| held["whole"] != true);
+    record(alert, &node, answer, &ran, &took, began, early)
+}
+
+/// The record that goes on: the alert's session and verdict with its
+/// review, the SQL the model ran and what the review took. `early` marks a
+/// review that began before the lake had the alert's last records.
+fn record(
+    alert: &Value,
+    node: &str,
+    review: Value,
+    ran: &[String],
+    took: &Took,
+    began: u64,
+    early: bool,
+) -> Value {
     let mut took = took.json();
     took["seconds"] = json!(now().saturating_sub(began));
     let mut judge = alert.get("judge").cloned().unwrap_or(Value::Null);
@@ -428,9 +510,15 @@ fn reviewed(alert: &Value) -> Value {
     let mut out = Map::new();
     out.insert("ts".into(), json!(rfc3339(now())));
     out.insert("source".into(), json!("macos_review"));
-    out.insert("session".into(), session);
+    out.insert(
+        "session".into(),
+        alert.get("session").cloned().unwrap_or(Value::Null),
+    );
     out.insert("judge".into(), judge);
-    out.insert("review".into(), answer);
+    out.insert("review".into(), review);
+    if early {
+        out.insert("early".into(), json!(true));
+    }
     out.insert("queries".into(), json!(ran));
     out.insert("took".into(), took);
     out.insert("model".into(), json!(node));
@@ -508,7 +596,7 @@ mod tests {
     }
 
     fn held() -> Value {
-        json!({"n": 3, "first": "2026-03-01T00:00:00Z", "last": "2026-03-02T10:05:00Z"})
+        json!({"n": 3, "first": "2026-03-01T00:00:00Z", "last": "2026-03-02T10:05:00Z", "whole": true})
     }
 
     fn report(verdict: &str) -> (&'static str, Value) {
@@ -596,6 +684,62 @@ mod tests {
         assert_eq!(took.calls, 2);
     }
 
+    /// A report in a turn with queries was written before their results: the
+    /// queries run, the report is sent back, and the next one stands.
+    #[test]
+    fn a_report_beside_a_query_waits_for_the_result() {
+        let mut seen = Vec::new();
+        let mut answers = model(vec![
+            vec![("query", json!({"sql": "SELECT 1"})), report("benign")],
+            vec![report("malicious")],
+        ]);
+        let (answer, ran, _) = review(
+            &alert(),
+            &held(),
+            20,
+            false,
+            |_| ("| n |\n| 1 |".into(), true),
+            |request| {
+                seen.push(request.clone());
+                answers(request)
+            },
+        );
+        assert_eq!(answer["verdict"], "malicious");
+        assert_eq!(ran, ["SELECT 1"]);
+        let results = &seen[1]["messages"][2]["results"];
+        assert_eq!(results[0]["error"], false);
+        assert!(results[1]["text"].as_str().unwrap().contains("on its own"));
+    }
+
+    /// A tool the model made up is not a query: nothing runs, and none of
+    /// the queries allowed is spent.
+    #[test]
+    fn a_tool_that_is_not_one_is_not_run() {
+        let (answer, ran, _) = review(
+            &alert(),
+            &held(),
+            1,
+            false,
+            |_| unreachable!(),
+            model(vec![
+                vec![("read_memory", json!({"sql": "SELECT 1"}))],
+                vec![report("benign")],
+            ]),
+        );
+        assert_eq!(answer["verdict"], "benign");
+        assert!(ran.is_empty());
+    }
+
+    #[test]
+    fn a_review_before_the_lake_has_the_alert_s_records_is_told_so() {
+        let mut behind = held();
+        behind["whole"] = json!(false);
+        assert!(
+            first_message(&alert(), &behind).contains("does not yet hold the alert's last records")
+        );
+        assert!(!first_message(&alert(), &held()).contains("does not yet hold"));
+    }
+
     #[test]
     fn queries_past_the_limit_are_not_run() {
         let mut run = 0;
@@ -660,20 +804,32 @@ mod tests {
 
     #[test]
     fn the_view_ends_where_the_alert_does() {
-        let v = view("lake", Some("2026-03-02T10:05:00.250Z"), 7, 400);
+        let until = sql_time("2026-03-02T10:05:00.250Z").unwrap();
+        let v = view("lake", &until, 7, 400);
         assert!(v.starts_with("SELECT ts AS ts, event AS event, \"session\"['id'] AS session, "));
+        // a record with no time the lake could read is kept, not lost to the bounds
         assert!(v.contains(
-            "WHERE ts <= arrow_cast('2026-03-02T10:05:00+00:00', 'Timestamp(Millisecond, Some(\"+00:00\"))') + INTERVAL '401 seconds'"
+            "WHERE ts IS NULL OR (ts <= arrow_cast('2026-03-02T10:05:00+00:00', 'Timestamp(Millisecond, Some(\"+00:00\"))') + INTERVAL '401 seconds'"
         ));
-        assert!(v.ends_with("- INTERVAL '7 days'"));
-        // a time that is not one bounds nothing, and is never put in the SQL
-        assert!(!view("lake", Some("x' OR 1=1 --........"), 7, 0).contains("WHERE"));
-        assert!(!view("lake", None, 7, 0).contains("WHERE"));
+        assert!(v.ends_with("- INTERVAL '7 days')"));
+        // a home is written as the alert writes it
+        assert!(
+            v.contains("regexp_replace(process['path'], '^/Users/[^/]+/', '~/') END AS program")
+        );
         assert_eq!(
             sql_time("2026-03-02T10:05:00Z").as_deref(),
             Some("2026-03-02T10:05:00+00:00")
         );
-        assert_eq!(sql_time("2026-03-02 10:05:00Z"), None);
+        // what is not a time in UTC is none, and is never put in the SQL
+        for not in [
+            "2026-03-02 10:05:00Z",
+            "2026-03-02T10:05:00+02:00",
+            "2026-03-02T10:05:00",
+            "2026-03-02T10:05:00.Z",
+            "x' OR 1=1 --........",
+        ] {
+            assert_eq!(sql_time(not), None, "{not}");
+        }
     }
 
     #[test]

@@ -314,8 +314,12 @@ waits that long before its review, and the table ends that long after the
 alert's last event, so a replay's review sees what a live one would. A
 grouped plugin has workers of its own, so a review that takes a minute
 holds up neither the capture nor the judge; reviews themselves go one at a
-time (`concurrency: 1`). An alert still waiting when tangent stops is
-reviewed early or not at all.
+time (`concurrency: 1`), a turn given two minutes and three tries before
+the review is an error. An alert still waiting when tangent stops is not
+reviewed: its record says `review.error`, and the alert stands. One still
+waiting when the input ends (a saved capture read through) is reviewed
+before the lake has its last records: the model is told so, and the record
+is marked `early: true`.
 
 The columns are the lake's own. `lake.yaml` is the lake sink, which your
 config includes (examples/macos does): Parquet with those fields typed, a
@@ -359,7 +363,7 @@ cents and 23 seconds an alert. Of 40 attacks that had an alert, 34 still
 stood and six were cleared, each a `look` it read as the owner's own doing:
 a cloned repository's hook or rule, a script from Downloads. Nothing the
 judge had flagged was cleared. So a `benign` is a reason to read an alert last, not to drop it,
-least of all one the judge flagged. The plugin has run on five saved alerts
+least of all one the judge flagged. The plugin has run on three saved alerts
 of that kind, with the script's verdicts on each; the suite has not been run
 through it.
 
