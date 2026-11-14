@@ -227,7 +227,35 @@ impl Config {
             }
         }
 
+        // a plugin's `tables` are sinks whose records a statement can read
+        for name in self.plugins.keys() {
+            self.tables_of(name)?;
+        }
+
         Ok(())
+    }
+
+    /// A plugin's `tables` for `lake.query`, each as `NAME=PATH`: the name
+    /// its statements use and where the sink it names keeps its records
+    /// (`SinkConfig::table`).
+    pub fn tables_of(&self, plugin: &str) -> Result<Vec<String>> {
+        let Some(cfg) = self.plugins.get(plugin) else {
+            return Ok(Vec::new());
+        };
+        cfg.tables
+            .iter()
+            .map(|(table, sink)| match self.sinks.get(sink.as_str()) {
+                None => anyhow::bail!(
+                    "plugin {plugin}: table `{table}` names `{sink}`, which is no sink"
+                ),
+                Some(s) => match s.table() {
+                    Ok(at) => Ok(format!("{table}={at}")),
+                    Err(why) => {
+                        anyhow::bail!("plugin {plugin}: table `{table}` is sink `{sink}`: {why}")
+                    }
+                },
+            })
+            .collect()
     }
 
     /// What loads and runs but likely is not meant, for the caller to print
@@ -531,5 +559,42 @@ mod tests {
             let e = file(enc).validate().unwrap_err();
             assert!(e.to_string().contains("rolling_file"), "{enc}: {e}");
         }
+    }
+
+    /// A plugin's table is a sink's records, read as that sink keeps them:
+    /// the plugin names the sink, and a sink a statement cannot read is
+    /// refused with why.
+    #[test]
+    fn a_plugin_s_tables_are_sinks_a_statement_can_read() {
+        let with = |table: &str| {
+            config(&format!(
+                "{LINES}plugins:\n  agent: {{ module_type: rust, tables: {{ records: {table} }} }}\n\
+                 sinks:\n  \
+                 lake: {{ type: rolling_file, path: lake/logs/%Y/%m/%d, wal_path: lake/wal, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n  \
+                 lines_kept: {{ type: rolling_file, path: kept, wal_path: kept-wal }}\n  \
+                 bucket: {{ type: s3, bucket_name: b, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n\
+                 dag:\n  - from: lines\n    to: [agent]\n  - from: agent\n    to: [lake, lines_kept, bucket]\n"
+            ))
+        };
+        let cfg = with("lake");
+        cfg.validate().unwrap();
+        assert_eq!(cfg.tables_of("agent").unwrap(), ["records=lake/logs"]);
+        assert_eq!(cfg.tables_of("no_such_plugin").unwrap(), [] as [&str; 0]);
+
+        let refused = |table: &str| with(table).validate().unwrap_err().to_string();
+        assert_eq!(
+            refused("lakes"),
+            "plugin agent: table `records` names `lakes`, which is no sink"
+        );
+        assert_eq!(
+            refused("lines_kept"),
+            "plugin agent: table `records` is sink `lines_kept`: it writes ndjson, \
+             and of a rolling_file sink's files only Parquet is read"
+        );
+        assert_eq!(
+            refused("bucket"),
+            "plugin agent: table `records` is sink `bucket`: the records of a sink of type s3 are \
+             not read yet, only a rolling_file sink's Parquet"
+        );
     }
 }

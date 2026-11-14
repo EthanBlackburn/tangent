@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,8 +25,8 @@ pub struct WasmEngine {
     /// Each plugin's data directory (`plugins.<name>.data`), seen by the
     /// guest read-only at `/data`.
     data: HashMap<Arc<str>, PathBuf>,
-    /// Each plugin's Parquet tables (`plugins.<name>.tables`), as
-    /// `NAME=PATH`, for its `lake.query`.
+    /// Each plugin's tables for its `lake.query` (`plugins.<name>.tables`),
+    /// as `NAME=PATH`: where the sink each names keeps its records.
     lake: HashMap<Arc<str>, Arc<[String]>>,
     /// The inference nodes plugins hold conversations with, and each
     /// plugin's own of them (`plugins.<name>.models`).
@@ -93,7 +92,7 @@ impl WasmEngine {
         cfg: HashMap<String, Value>,
         state_ns: Option<&str>,
         data: Option<&Path>,
-        tables: &BTreeMap<String, PathBuf>,
+        tables: &[String],
         models: &[Arc<str>],
         drop_on_error: bool,
     ) -> Result<Component> {
@@ -105,11 +104,7 @@ impl WasmEngine {
             self.data.insert(Arc::clone(&name), dir.to_path_buf());
         }
         if !tables.is_empty() {
-            let named = tables
-                .iter()
-                .map(|(table, path)| format!("{table}={}", path.display()))
-                .collect();
-            self.lake.insert(Arc::clone(&name), named);
+            self.lake.insert(Arc::clone(&name), tables.into());
         }
         if !models.is_empty() {
             let own = models

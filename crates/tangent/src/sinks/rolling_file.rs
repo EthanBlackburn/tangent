@@ -528,6 +528,14 @@ mod tests {
         let fixed = PathTemplate::parse("/var/lake").unwrap();
         assert_eq!(fixed.root(), Path::new("/var/lake"));
         assert!(fixed.into_rest().is_none());
+        // a reader of the sink's files (a plugin's `tables`) finds the same root
+        for path in ["lake/logs/%Y/%m/%d/%H", "/var/lake", "lake-%Y/x"] {
+            assert_eq!(
+                tangent_shared::sinks::rolling_file::root(path),
+                PathTemplate::parse(path).unwrap().root(),
+                "{path}"
+            );
+        }
         assert!(PathTemplate::parse("lake/%Y/../x").is_err());
         assert!(PathTemplate::parse("lake/%Q").is_err());
         // chrono parses `%#z` but cannot write it

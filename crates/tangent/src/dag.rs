@@ -396,7 +396,7 @@ fn load(
                         plugin_cfg.config.clone(),
                         plugin_cfg.state_namespace.as_deref(),
                         data_dir.as_deref(),
-                        &plugin_cfg.tables,
+                        &cfg.tables_of(name)?,
                         &plugin_cfg.models,
                         plugin_cfg.drop_on_error,
                     )

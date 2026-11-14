@@ -170,7 +170,8 @@ pub async fn run(opts: TestOptions) -> Result<()> {
                 state_namespace: plugin_cfg.state_namespace.clone(),
                 // Relative to the test config, which sits next to the original.
                 data: plugin_cfg.data.clone(),
-                tables: plugin_cfg.tables.clone(),
+                // No `tables`: they name the pipeline's sinks, and a test
+                // has its own.
                 // A test sees a failed call as a failure, not a pass-through.
                 drop_on_error: true,
                 // A test hands the plugin its input as it is, ungrouped.
