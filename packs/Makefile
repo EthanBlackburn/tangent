@@ -9,7 +9,7 @@ PACKS := $(filter $(PACKS),$(patsubst %/ingest.yaml,%,$(wildcard */ingest.yaml))
 # Each pack alone: its plugin compiled and its fixtures run from its own
 # ingest.yaml, against the tables in its tests/, so a pack that leans on
 # another file fails here.
-test: $(addprefix test-,$(PACKS)) test-macos-unit test-macos-net test-macos-ps test-macos-agent test-baseline test-shared
+test: $(addprefix test-,$(PACKS)) test-macos-unit test-macos-net test-macos-ps test-macos-agent test-macos-ask test-baseline test-shared
 
 # packs/macos's plugins' own tests: the summary and the verdicts have no
 # fixture (`tangent plugin test` runs a plugin a record at a time), and the
@@ -31,6 +31,10 @@ test-macos-ps:
 # packs/macos's reader of Claude Code's transcripts.
 test-macos-agent:
 	cd macos/agent && python3 -m unittest transcripts_test
+
+# packs/macos's dialog that asks the owner about a review.
+test-macos-ask:
+	cd macos/review && python3 -m unittest ask_test
 
 test-%:
 	cd $* && $(TANGENT) plugin compile --config ingest.yaml && $(TANGENT) plugin test --config ingest.yaml
@@ -61,4 +65,4 @@ fixtures-%:
 fixtures-baseline:
 	behavior-baseline/story.sh write
 
-.PHONY: test test-macos-unit test-macos-net test-macos-ps test-macos-agent test-baseline test-shared dist fixtures-baseline
+.PHONY: test test-macos-unit test-macos-net test-macos-ps test-macos-agent test-macos-ask test-baseline test-shared dist fixtures-baseline

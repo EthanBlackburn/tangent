@@ -353,12 +353,15 @@ called `benign`, or of something the judge flagged, since no look-alike
 drew a `flag`. It is a dialog (`osascript`'s `display dialog`) with the
 session, the verdict, the finding and what to check, a field for a note,
 and three buttons: "Not me", "Not sure", "That was me". The answer is a
-line of `feedback.ndjson`: the session, both verdicts, `answer` and `note`.
-The dialog waits, the next review behind it, so nothing is told to an empty
-room; `--give-up` closes it after a while, and `--all` asks about the
-`benign` ones too. Its text is the reviewer's, written about records an
-attacker can write into, so it reaches the script as an argument and is
-never part of the AppleScript that runs. Nothing reads the answers yet:
+line of `feedback.ndjson`: the session, both verdicts, the review's time
+(`reviewed`, which with the session says which review it answers), `answer`
+and `note`. The dialog waits, the next review behind it, so nothing is told
+to an empty room; `--give-up` closes it after a while, and `--all` asks
+about the `benign` ones too. When tangent stops, ask.py first asks about
+the reviews written as it stopped. Its text is the reviewer's, written
+about records an attacker can write into, so it reaches the script as an
+argument and is never part of the AppleScript that runs, and each value is
+cut and kept to its own line, so none can pass for another. Nothing reads the answers yet:
 they are the record of what you said each alert was.
 
 A review that fails is an `error` in the alert's `review` and the alert

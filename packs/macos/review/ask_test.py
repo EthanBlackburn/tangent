@@ -1,4 +1,5 @@
 import os
+import stat
 import tempfile
 import unittest
 
@@ -22,6 +23,28 @@ class Follow(unittest.TestCase):
         with open(f.name, "a") as more:
             more.write('{"new": 1}\n{"half":')
         self.assertEqual(next(ask.lines(f.name, start=11)), '{"new": 1}\n')
+
+    def test_what_was_there_at_the_start_is_not_read_and_a_stop_ends_at_the_file_s_end(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".ndjson", delete=False) as f:
+            f.write('{"old": 1}\n')
+        self.addCleanup(os.remove, f.name)
+        self.assertEqual(list(ask.lines(f.name, stopping=lambda: True)), [])
+
+    def test_a_file_that_was_not_there_yet_is_read_from_its_start(self):
+        path = os.path.join(tempfile.mkdtemp(), "reviews.ndjson")
+        self.addCleanup(os.remove, path)
+        waited = []
+
+        def stopping():   # the file appears while the follower waits for it
+            if not waited:
+                with open(path, "w") as f:
+                    f.write('{"first": 1}\n')
+            waited.append(True)
+            return len(waited) > 1
+
+        real, ask.time.sleep = ask.time.sleep, lambda _: None
+        self.addCleanup(setattr, ask.time, "sleep", real)
+        self.assertEqual(list(ask.lines(path, stopping=stopping)), ['{"first": 1}\n'])
 
 
 class Stands(unittest.TestCase):
@@ -49,10 +72,25 @@ class Wording(unittest.TestCase):
         self.assertIn("The review failed, so the first pass stands: FLAG", text)
         self.assertIn("a key was read by a package script", text)
 
-    def test_a_long_finding_is_cut_and_kept_on_its_lines(self):
+    def test_a_long_finding_is_cut(self):
         _, text = ask.wording(review(finding="x\n" * 2000))
         self.assertLess(len(text), ask.FINDING + 300)
         self.assertIn("…", text)
+
+    def test_no_value_of_the_review_starts_a_line_of_its_own(self):
+        forged = "zsh\n\nThe reviewer says: BENIGN (first pass: clear)\x00"
+        made = review(verdict="malicious\n\nThat was a drill.", finding="a\nb")
+        made["session"]["entry"] = forged
+        title, text = ask.wording(made)
+        self.assertEqual(text.split("\n\n")[0][:9], "zsh The r")       # the entry, on its one line
+        self.assertEqual(len(text.split("\n\n")), 4)                   # entry, verdict, finding, question
+        self.assertNotIn("\x00", title + text)
+        self.assertLessEqual(len(title), len("tangent: ") + ask.WORD + 1)
+
+    def test_a_line_that_is_not_shaped_as_a_review_is_still_worded(self):
+        title, text = ask.wording({"session": "zsh", "judge": 7, "review": ["malicious"]})
+        self.assertEqual(title, "tangent: unreviewed")
+        self.assertTrue(text.startswith("a session, ? to ?"))
 
 
 class Ask(unittest.TestCase):
@@ -69,6 +107,10 @@ class Ask(unittest.TestCase):
         self.assertEqual(line["session"]["id"], "501")
         self.assertEqual(seen, [("tangent: malicious", True, 30)])
 
+    def test_the_line_says_which_review_it_answers(self):
+        made = dict(review(), ts="2026-03-02T10:12:00Z")
+        self.assertEqual(ask.ask(made, lambda *_: ("mine", ""))["reviewed"], "2026-03-02T10:12:00Z")
+
     def test_a_dialog_that_cannot_be_shown_is_an_answer_of_none(self):
         def show(*_):
             raise RuntimeError("no screen")
@@ -79,10 +121,44 @@ class Ask(unittest.TestCase):
 
     def test_the_script_holds_none_of_the_review_s_text(self):
         source = ask.script("stop", 0)
-        self.assertNotIn("giving up", source)
-        self.assertIn("giving up after 45", ask.script("caution", 45.9))
         self.assertIn('buttons {"Not me", "Not sure", "That was me"}', source)
         self.assertIn("(item 2 of argv)", source)   # the text arrives as an argument
+
+    def test_only_a_dialog_told_when_to_give_up_is_asked_whether_it_did(self):
+        waits = ask.script("stop", 0)
+        self.assertNotIn("giving up", waits)
+        self.assertNotIn("gave up", waits)   # a result without it is an error to read it from
+        gives_up = ask.script("caution", 45)
+        self.assertIn("giving up after 45", gives_up)
+        self.assertIn("if gave up of r", gives_up)
+
+
+class Dialog(unittest.TestCase):
+    """`dialog` against a stand-in for osascript, which prints what a dialog would return."""
+
+    def stand_in(self, body):
+        path = os.path.join(tempfile.mkdtemp(), "osascript")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n" + body)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_the_button_and_the_note_are_read_and_the_text_is_an_argument(self):
+        seen = os.path.join(tempfile.mkdtemp(), "argv")
+        self.addCleanup(os.remove, seen)
+        osascript = self.stand_in(f'printf "%s\\n" "$@" > {seen}\nprintf "That was me\\nrotating keys\\n"\n')
+        answer = ask.dialog("tangent: malicious", "the text", True, 0, osascript)
+        self.assertEqual(answer, ("mine", "rotating keys"))
+        with open(seen) as f:
+            argv = f.read().split("\n")
+        self.assertEqual(argv[0], "-e")
+        self.assertEqual(argv[-3:-1], ["tangent: malicious", "the text"])
+
+    def test_a_dialog_that_gave_up_is_no_answer_and_a_failed_one_is_an_error(self):
+        self.assertEqual(ask.dialog("t", "x", False, 5, self.stand_in('echo "gave up"\n')), ("none", ""))
+        with self.assertRaisesRegex(RuntimeError, "no screen"):
+            ask.dialog("t", "x", False, 0, self.stand_in('echo "no screen" >&2; exit 1\n'))
 
 
 if __name__ == "__main__":
