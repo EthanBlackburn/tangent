@@ -294,7 +294,7 @@ The judge reads a summary, marks freely, and cannot look anything up, so
 most of what it marks is ordinary work. Plugin `macos_review` (`review/`,
 `review.yaml`) is a stage after `macos_verdicts` that gives each alert to a
 stronger model with the lake to query. It holds a conversation with
-inference node `reviewer` (tangent's `model.chat`): Claude Opus 5.5 on
+inference node `reviewer` (tangent's `model.chat`): Claude Sonnet 5.5 on
 Bedrock unless REVIEW_MODEL names another, `review.md` as its brief, the
 alert, and two tools. `query` runs the model's SQL (tangent's `lake.query`,
 DataFusion) on one table, `records`: a view over the lake's Parquet files

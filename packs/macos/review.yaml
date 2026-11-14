@@ -8,7 +8,7 @@
 inference:
   reviewer:                        # no edge reaches it: the plugin calls it
     backend: bedrock
-    model: ${REVIEW_MODEL:-us.anthropic.claude-opus-5-5}
+    model: ${REVIEW_MODEL:-us.anthropic.claude-sonnet-5-5}
     aws:
       region: ${AWS_REGION:-us-west-2}
     prompt_file: review.md
