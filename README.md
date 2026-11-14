@@ -27,10 +27,9 @@ project. The poisoned editor extensions. Each one landed on developers'
 machines, and at most companies nothing was watching when it did: no SIEM,
 no detection rules, no one whose job it is to read the logs.
 
-Tangent has a model read them as they arrive: your AWS, GitHub, Okta and
-Google Workspace audit logs, and what runs on your developers' Macs. When
-something is wrong it tells you what happened and what to do, in a
-paragraph.
+Tangent pulls logs from your Macs and your cloud (AWS, GitHub, Okta, Google
+Workspace), feeds them to a model, and lets you know when something is
+wrong.
 
 ## What it catches
 
