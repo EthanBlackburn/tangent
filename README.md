@@ -258,6 +258,44 @@ A request holds the records the node is handed, or with `group_by: [_norm.actor]
 
 `encoding: {type: logfmt, keep: [...], sources: {<source>: {principal, time, keep, ids}}}` writes the records as logfmt lines in about half the tokens of JSON, and the text decodes back to the records: a principal's records are grouped, the fields they share written once above their rows, the `keep` fields on every row, a day's timestamps as times of day; `sidecar: true` swaps a source's `ids` for references the model never sees. The judge pack has a row for each pack's sources ([packs/judge/ingest.yaml](/packs/judge/ingest.yaml)).
 
+A plugin can hold a conversation with a node instead, with `model.chat`: it sends what has been said so far and the tools the model may call, runs the calls the model asks for, and sends their results with the next turn, until the model answers. The node gives the model, its credentials, `prompt_file` as the system prompt, `max_tokens` (here a turn's), `timeout_ms`, `retries`, `concurrency` and `extra`; the plugin's `models` names the nodes it may call, and a node named there needs no edge:
+
+```yaml
+inference:
+  investigator:
+    backend: bedrock
+    model: us.anthropic.claude-sonnet-5-5
+    prompt_file: investigate.md
+    max_tokens: 8000
+plugins:
+  investigate:
+    module_type: rust
+    path: ./investigate
+    models: [investigator]
+```
+
+```rust
+use tangent::logs::model::chat;
+
+let mut messages = vec![json!({"role": "user", "text": question})];
+let tools = json!([{"name": "query", "description": "Run one SQL statement.",
+                    "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}}}]);
+loop {
+    let reply: Value = serde_json::from_str(&chat("investigator", &json!({"messages": messages, "tools": tools}).to_string())?)?;
+    messages.push(reply["message"].clone());       // the model's turn, sent back as it came
+    let calls = reply["calls"].as_array().cloned().unwrap_or_default();
+    if calls.is_empty() {
+        break;                                      // reply["text"] is the answer
+    }
+    let results: Vec<Value> = calls.iter()
+        .map(|c| json!({"id": c["id"], "name": c["name"], "text": run(&c["name"], &c["arguments"])}))
+        .collect();
+    messages.push(json!({"role": "user", "results": results}));
+}
+```
+
+The request and the reply are JSON, described with the call in [assets/wit/processor.wit](/assets/wit/processor.wit). A turn that fails after the node's retries (no reply in time, a refusal, a provider's error) is the call's error, and the plugin decides what its record says then. `"cache": true` asks the provider to keep the conversation so far for the next turn; one that cannot at that point answers uncached. On Bedrock that is every turn after a model's first with thinking in it, so what should be kept goes in a `{"role": "system", "text": ...}` message ahead of the others, which is cached with the prompt.
+
 Inference nodes run inside the workers, in DAG order with the plugins: a worker hands a model the records that reached the node, waits for the replies, and carries them on, so a batch's records stay in order and nothing else moves while the model thinks. `concurrency` bounds requests in flight to the node, every worker's together (1 for a laptop GPU, 8 or more for a hosted model); `timeout_ms` (30 s) frees a slot a hung request would otherwise hold; `retries` (2) tries again, backing off, when a request got no reply at all. `temperature` is sent only when set. A signal (SIGINT or SIGTERM) ends the calls under way rather than wait out `timeout_ms` and `retries`: records waiting on one go to no sink and are not acked, so a `sqlite` source sends them again at its next start. Another signal, a second or more after the first, exits at once. See [examples/inference-local](/examples/inference-local) and [examples/inference-bedrock](/examples/inference-bedrock).
 
 ## Including files

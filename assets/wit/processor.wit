@@ -60,7 +60,6 @@ interface enrichment {
   lookup: func(table: string, key: string) -> option<string>;
 }
 
-
 /// Parquet files read with SQL: the `tables` the plugin's config names, each
 /// a file or a directory with every `.parquet` file under it, as a
 /// `rolling_file` sink keeps a lake. The plugin reads those and nothing else.
@@ -88,6 +87,41 @@ interface lake {
   /// The statement's rows, or why there are none: the SQL is wrong, a table
   /// has no file yet, the time ran out.
   query: func(s: statement) -> result<string, string>;
+}
+
+/// A model under `inference` in the config, for a plugin that holds a
+/// conversation with it: the plugin sends what has been said and the tools
+/// the model may call, runs the calls it asks for, and sends their results
+/// with the next turn. The config's node gives the model, its credentials,
+/// its system prompt (`prompt_file`), `max_tokens`, `timeout_ms`, `retries`,
+/// `concurrency` and `extra`; the plugin's `models` in the config names the
+/// nodes it may call.
+interface model {
+  /// One turn with inference node `node`. `request` is JSON:
+  ///
+  ///   {"messages": [...], "tools": [{"name", "description", "parameters"}],
+  ///    "cache": true}
+  ///
+  /// A message is `{"role": "user", "text": "..."}`; or, ahead of the
+  /// others, `{"role": "system", "text": "..."}`, which is added to the
+  /// node's prompt; or the results of the
+  /// calls the model made, `{"role": "user", "results": [{"id", "name",
+  /// "text", "error": false}]}` with each call's `id` and `name` as the reply
+  /// gave them, or a reply's `message` sent back as it came. `parameters` is
+  /// a JSON Schema. `cache` asks the provider to keep the prompt so far for
+  /// the next turn, where it can.
+  ///
+  /// The reply is JSON:
+  ///
+  ///   {"message": {...}, "text": "...", "calls": [{"id", "name",
+  ///    "arguments": {...}}], "stop": "tool_use", "usage": {"input_tokens",
+  ///    "output_tokens", ...}}
+  ///
+  /// `message` is the model's turn, to append to `messages` whole; `stop` is
+  /// `stop`, `length` or `tool_use`. An error is a request the model did not
+  /// answer after the node's retries: no reply in time, a refusal, a
+  /// provider's failure.
+  chat: func(node: string, request: string) -> result<string, string>;
 }
 
 /// Keyed state in the pipeline's state store, shared by every worker and
@@ -181,5 +215,6 @@ world processor {
   import config;
   import enrichment;
   import lake;
+  import model;
   export mapper;
 }
