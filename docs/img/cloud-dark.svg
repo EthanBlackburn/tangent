@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 444" width="760" height="444" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Cloud and SaaS logs: attacks caught, and what it costs in noise">
+<rect width="760" height="444" rx="10" fill="#1a1a19"/>
+<text x="32" y="54" font-size="20" font-weight="600" fill="#f2f1ee">Cloud and SaaS logs: attacks caught, and what it costs in noise</text>
+<text x="32" y="76" font-size="13" fill="#a3a19a">71 attacks in six months of a startup&#x27;s AWS, Okta, GitHub, Google Workspace and CI logs</text>
+<text x="32" y="120" font-size="14" font-weight="600" fill="#f2f1ee">Attacks caught<tspan font-weight="400" fill="#a3a19a">  ·  higher is better</tspan></text>
+<text x="138" y="146.5" font-size="13" text-anchor="end" font-weight="600" fill="#f2f1ee">tangent</text>
+<rect x="150" y="132" width="482" height="20" rx="4" fill="#34332f" opacity="0.55"/>
+<path d="M150,132h471.2a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-471.2z" fill="#3987e5"/>
+<text x="642" y="146.5" font-size="13" font-weight="600" fill="#f2f1ee">70<tspan fill="#a3a19a" font-weight="400"> of 71</tspan></text>
+<text x="138" y="176.5" font-size="13" text-anchor="end" font-weight="400" fill="#f2f1ee">Elastic rules</text>
+<rect x="150" y="162" width="482" height="20" rx="4" fill="#34332f" opacity="0.55"/>
+<path d="M150,162h342.2a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-342.2z" fill="#6f6d67"/>
+<text x="642" y="176.5" font-size="13" font-weight="600" fill="#f2f1ee">51<tspan fill="#a3a19a" font-weight="400"> of 71</tspan></text>
+<text x="138" y="206.5" font-size="13" text-anchor="end" font-weight="400" fill="#f2f1ee">Sigma rules</text>
+<rect x="150" y="192" width="482" height="20" rx="4" fill="#34332f" opacity="0.55"/>
+<path d="M150,192h84.3a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-84.3z" fill="#6f6d67"/>
+<text x="642" y="206.5" font-size="13" font-weight="600" fill="#f2f1ee">13<tspan fill="#a3a19a" font-weight="400"> of 71</tspan></text>
+<text x="32" y="254" font-size="14" font-weight="600" fill="#f2f1ee">Ordinary records flagged<tspan font-weight="400" fill="#a3a19a">  ·  lower is better</tspan></text>
+<text x="138" y="280.5" font-size="13" text-anchor="end" font-weight="600" fill="#f2f1ee">tangent</text>
+<rect x="150" y="266" width="482" height="20" rx="4" fill="#34332f" opacity="0.55"/>
+<path d="M150,266h134.6a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-134.6z" fill="#3987e5"/>
+<text x="642" y="280.5" font-size="13" font-weight="600" fill="#f2f1ee">40<tspan fill="#a3a19a" font-weight="400"> of 5,304</tspan></text>
+<text x="138" y="310.5" font-size="13" text-anchor="end" font-weight="400" fill="#f2f1ee">Elastic rules</text>
+<rect x="150" y="296" width="482" height="20" rx="4" fill="#34332f" opacity="0.55"/>
+<path d="M150,296h144.9a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-144.9z" fill="#6f6d67"/>
+<text x="642" y="310.5" font-size="13" font-weight="600" fill="#f2f1ee">43<tspan fill="#a3a19a" font-weight="400"> of 5,304</tspan></text>
+<text x="138" y="340.5" font-size="13" text-anchor="end" font-weight="400" fill="#f2f1ee">Sigma rules</text>
+<rect x="150" y="326" width="482" height="20" rx="4" fill="#34332f" opacity="0.55"/>
+<path d="M150,326h415.1a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-415.1z" fill="#6f6d67"/>
+<text x="642" y="340.5" font-size="13" font-weight="600" fill="#f2f1ee">121<tspan fill="#a3a19a" font-weight="400"> of 5,304</tspan></text>
+<text x="32" y="376" font-size="11.5" fill="#a3a19a">tangent: Claude Haiku 5.5 first pass, Claude Sonnet 5.5 reviewer.</text>
+<text x="32" y="394" font-size="11.5" fill="#a3a19a">Elastic: 350 of its public detection rules for AWS, Okta, GitHub and Google Workspace, run by Elasticsearch 9.5.</text>
+<text x="32" y="412" font-size="11.5" fill="#a3a19a">Sigma: its 102 public rules for the same sources. Rules count at medium severity or higher.</text>
+</svg>
