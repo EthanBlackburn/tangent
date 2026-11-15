@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 426" width="760" height="426" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="A developer&#x27;s Mac: seven recent supply-chain attacks, replayed">
+<rect width="760" height="426" rx="10" fill="#fcfcfb"/>
+<text x="32" y="54" font-size="20" font-weight="600" fill="#1a1a19">A developer&#x27;s Mac: seven recent supply-chain attacks, replayed</text>
+<text x="32" y="76" font-size="13" fill="#6b6964">Each recorded in a VM beside a look-alike: the same tools doing ordinary work</text>
+<text x="32" y="120" font-size="14" font-weight="600" fill="#1a1a19">Attacks caught<tspan font-weight="400" fill="#6b6964">  ·  higher is better</tspan></text>
+<text x="138" y="146.5" font-size="13" text-anchor="end" font-weight="600" fill="#1a1a19">tangent</text>
+<rect x="150" y="132" width="482" height="20" rx="4" fill="#e6e4df" opacity="0.55"/>
+<path d="M150,132h478.0a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-478.0z" fill="#2a78d6"/>
+<text x="642" y="146.5" font-size="13" font-weight="600" fill="#1a1a19">7<tspan fill="#6b6964" font-weight="400"> of 7</tspan></text>
+<text x="138" y="176.5" font-size="13" text-anchor="end" font-weight="400" fill="#1a1a19">Elastic rules</text>
+<rect x="150" y="162" width="482" height="20" rx="4" fill="#e6e4df" opacity="0.55"/>
+<path d="M150,162h478.0a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-478.0z" fill="#b4b2ab"/>
+<text x="642" y="176.5" font-size="13" font-weight="600" fill="#1a1a19">7<tspan fill="#6b6964" font-weight="400"> of 7</tspan></text>
+<text x="138" y="206.5" font-size="13" text-anchor="end" font-weight="400" fill="#1a1a19">Sigma rules</text>
+<rect x="150" y="192" width="482" height="20" rx="4" fill="#e6e4df" opacity="0.55"/>
+<path d="M150,192h133.7a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-133.7z" fill="#b4b2ab"/>
+<text x="642" y="206.5" font-size="13" font-weight="600" fill="#1a1a19">2<tspan fill="#6b6964" font-weight="400"> of 7</tspan></text>
+<text x="32" y="254" font-size="14" font-weight="600" fill="#1a1a19">Look-alikes flagged<tspan font-weight="400" fill="#6b6964">  ·  lower is better</tspan></text>
+<text x="138" y="280.5" font-size="13" text-anchor="end" font-weight="600" fill="#1a1a19">tangent</text>
+<rect x="150" y="266" width="482" height="20" rx="4" fill="#e6e4df" opacity="0.55"/>
+<text x="642" y="280.5" font-size="13" font-weight="600" fill="#1a1a19">0<tspan fill="#6b6964" font-weight="400"> of 7</tspan></text>
+<text x="138" y="310.5" font-size="13" text-anchor="end" font-weight="400" fill="#1a1a19">Elastic rules</text>
+<rect x="150" y="296" width="482" height="20" rx="4" fill="#e6e4df" opacity="0.55"/>
+<text x="642" y="310.5" font-size="13" font-weight="600" fill="#1a1a19">0<tspan fill="#6b6964" font-weight="400"> of 7</tspan></text>
+<text x="138" y="340.5" font-size="13" text-anchor="end" font-weight="400" fill="#1a1a19">Sigma rules</text>
+<rect x="150" y="326" width="482" height="20" rx="4" fill="#e6e4df" opacity="0.55"/>
+<path d="M150,326h415.1a4,4 0 0 1 4,4v12a4,4 0 0 1 -4,4h-415.1z" fill="#b4b2ab"/>
+<text x="642" y="340.5" font-size="13" font-weight="600" fill="#1a1a19">4<tspan fill="#6b6964" font-weight="400"> of 7</tspan></text>
+<text x="32" y="376" font-size="11.5" fill="#6b6964">Shai-Hulud, axios, LiteLLM, GlassWorm, Contagious Interview (two variants) and a malicious editor extension.</text>
+<text x="32" y="394" font-size="11.5" fill="#6b6964">Elastic: 158 of its public macOS rules. Sigma: 75. Rules count at medium severity or higher.</text>
+</svg>

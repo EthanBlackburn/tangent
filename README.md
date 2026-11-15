@@ -100,16 +100,71 @@ login:
 > service setup. `ssh -T git@github.com` checked GitHub access.
 
 No alert. Both wrote `authorized_keys`, ran `ssh` and made a launch item. A
-rule on any of those fires on both or on neither, which is why nobody at a
-company of 50 keeps rules. A model can tell them apart.
+rule on any one of those fires on both or on neither. Rule sets that tell
+them apart exist (Elastic's did, below) and are the work of a detection
+team; nobody at a company of 50 writes or keeps them. A model can tell them
+apart with no rules at all.
+
+## Against detection rules
+
+The usual way to watch logs is a SIEM and its detection rules. We ran the
+two public rule sets, Elastic's and Sigma's, over the same logs as tangent.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/cloud-dark.svg">
+  <img src="docs/img/cloud-light.svg" alt="Cloud and SaaS logs. Attacks caught of 71: tangent 70, Elastic rules 51, Sigma rules 13. Ordinary records flagged of 5,304: tangent 40, Elastic rules 43, Sigma rules 121.">
+</picture>
+
+Six months of a made-up startup's AWS, Okta, GitHub, Google Workspace and CI
+logs, with 71 attacks placed in them: 35 AWS techniques from Stratus Red
+Team, and 36 cases we wrote. Tangent caught 70, Elastic's rules 51 and
+Sigma's 13, and tangent flagged about as few ordinary records as Elastic's
+rules did.
+
+The gap is in the cases we wrote: tangent caught 36 of 36 and Elastic's
+rules 16. Eight of them are in CI job logs and runner egress, which no
+public rule reads. On the Stratus techniques Elastic's rules caught 35 of 35
+and tangent 34.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/mac-dark.svg">
+  <img src="docs/img/mac-light.svg" alt="A developer's Mac. Attacks caught of 7: tangent 7, Elastic rules 7, Sigma rules 2. Look-alikes flagged of 7: tangent 0, Elastic rules 0, Sigma rules 4.">
+</picture>
+
+On the seven Mac attacks above, Elastic's rules did as well as tangent: all
+seven caught and no look-alike flagged. Sigma's caught two and flagged four
+of the look-alikes.
+
+So good rules get there on the Mac, and most of the way in the cloud.
+Elastic's are written and kept by a detection team and run in Elastic's
+stack, with its agent on every machine. Tangent gets there with a model and
+no rules.
+
+How it was measured:
+
+- A rule counts at medium severity or higher.
+- Elastic's cloud rules were run by Elasticsearch 9.5 itself: 350 of them,
+  leaving out the machine-learning rules and those that read logs the corpus
+  does not have. Its Mac rules were run by Elastic's `eql` package, with 13
+  rules in other languages translated by hand; one of those is the only rule
+  that caught GlassWorm.
+- The mapping from each provider's records to the fields Elastic's rules
+  read is ours, not Elastic's ingest pipelines.
+- Tangent in the cloud is Claude Haiku 5.5 reading first and Claude Sonnet
+  5.5 investigating each alert. That second step is not in a release yet for
+  the cloud. Haiku alone caught the same 70 and flagged 462 of the 5,304
+  ordinary records.
+- The startup, its logs and the 36 cases are ours, and the look-alikes on
+  the Mac were built to test tangent, not rules.
 
 ## What it has not shown
 
 How often it cries wolf on a real working day. The look-alikes above were
 left alone, but false alarms over real days are a separate measurement, and
-it is not done. Nor are there published numbers yet for the cloud packs;
-their cases are in [tangent-eval](https://github.com/EthanBlackburn/tangent-eval)
-with what has and has not been measured.
+it is not done. The cloud numbers above are from logs we made, and the run
+behind them, with the rule comparison, is not yet in
+[tangent-eval](https://github.com/EthanBlackburn/tangent-eval) for you to
+repeat.
 
 ## Try it on your own AWS account
 
