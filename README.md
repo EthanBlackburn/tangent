@@ -150,10 +150,9 @@ How it was measured:
   that caught GlassWorm.
 - The mapping from each provider's records to the fields Elastic's rules
   read is ours, not Elastic's ingest pipelines.
-- Tangent in the cloud is Claude Haiku 5.5 reading first and Claude Sonnet
-  5.5 investigating each alert. That second step is not in a release yet for
-  the cloud. Haiku alone caught the same 70 and flagged 462 of the 5,304
-  ordinary records.
+- Tangent is Claude Haiku 5.5 reading first and Claude Sonnet 5.5
+  investigating each alert. Haiku alone caught the same 70 in the cloud and
+  flagged 462 of the 5,304 ordinary records.
 - The startup, its logs and the 36 cases are ours, and the look-alikes on
   the Mac were built to test tangent, not rules.
 
@@ -219,9 +218,9 @@ says who did what, from where, to what.
 4. **The model decides.** There are no rules to write and none to tune. You
    tell it about your company in a few lines of YAML (who works there, which
    countries, what your office's addresses are) and the rest it reads.
-5. **You hear about what is left.** On the Mac, a second model investigates
-   each alert with the machine's history to query before you see it, and
-   clears what turns out to be the owner's own work.
+5. **You hear about what is left.** A second model investigates each alert
+   with the history to query before you see it, and clears what turns out
+   to be ordinary work.
 
 It runs as one process, on a laptop or a small server. Your logs stay on
 that machine, as Parquet files you can query with SQL. What the model is
