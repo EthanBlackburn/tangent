@@ -1,0 +1,48 @@
+# A model on OpenRouter reads every record; a plugin keeps what it flagged.
+#
+#   export OPENROUTER_API_KEY=...               (a key from openrouter.ai/keys)
+#   tangent plugin compile --config tangent.yaml
+#   tangent run --config tangent.yaml
+#   nc -w 1 localhost 9000 < events.ndjson
+#   cat flagged.ndjson
+runtime:
+  workers: 1
+  plugins_path: plugins/
+
+sources:
+  events:
+    type: tcp
+    bind_address: 0.0.0.0:9000
+
+inference:
+  judge:
+    url: https://openrouter.ai/api/v1   # OpenAI-compatible, so the default backend
+    api_key: "${OPENROUTER_API_KEY}"
+    model: deepseek/deepseek-v4-flash-0731   # open weights; any model OpenRouter lists
+    prompt_file: judge.md           # the reply lands on the record as judge
+    batch_bytes: 4000               # ~20 of these events to a request
+    max_tokens: 300                 # per record; a verdict is ~100 tokens
+    concurrency: 8                  # a hosted model takes many requests at once
+    timeout_ms: 60000               # time to write ~20 verdicts
+    extra:
+      reasoning: { enabled: false } # no thinking: the reply is the answer
+
+plugins:
+  flagged:                          # the same plugin as inference-local: keeps judge.flag == true
+    module_type: rust
+    path: ../inference-local/flagged
+
+sinks:
+  flagged_out:
+    type: file
+    path: flagged.ndjson
+    compression:
+      type: none
+
+dag:
+  - from: events
+    to: [judge]
+  - from: judge
+    to: [flagged]
+  - from: flagged
+    to: [flagged_out]

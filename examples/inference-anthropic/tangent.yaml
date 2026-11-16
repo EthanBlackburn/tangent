@@ -1,0 +1,48 @@
+# Claude through Anthropic's API reads every record; a plugin keeps what it flagged.
+#
+#   export ANTHROPIC_API_KEY=...                (a key from console.anthropic.com)
+#   tangent plugin compile --config tangent.yaml
+#   tangent run --config tangent.yaml
+#   nc -w 1 localhost 9000 < events.ndjson
+#   cat flagged.ndjson
+runtime:
+  workers: 1
+  plugins_path: plugins/
+
+sources:
+  events:
+    type: tcp
+    bind_address: 0.0.0.0:9000
+
+inference:
+  judge:
+    backend: anthropic              # Anthropic's Messages API
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: claude-haiku-5-5
+    prompt_file: judge.md           # the reply lands on the record as judge
+    batch_bytes: 4000               # ~20 of these events to a request
+    max_tokens: 300                 # per record; a verdict is ~100 tokens
+    concurrency: 8                  # a hosted model takes many requests at once
+    timeout_ms: 60000               # time to write ~20 verdicts
+    extra:
+      thinking: { type: disabled }  # no thinking: the reply is the answer
+
+plugins:
+  flagged:                          # the same plugin as inference-local: keeps judge.flag == true
+    module_type: rust
+    path: ../inference-local/flagged
+
+sinks:
+  flagged_out:
+    type: file
+    path: flagged.ndjson
+    compression:
+      type: none
+
+dag:
+  - from: events
+    to: [judge]
+  - from: judge
+    to: [flagged]
+  - from: flagged
+    to: [flagged_out]
