@@ -21,8 +21,9 @@ pub struct InferenceConfig {
     pub backend: Backend,
 
     /// Base URL of the chat completions API (`openai` backend);
-    /// [`DEFAULT_URL`] when unset. The `bedrock` backend reads none, so it
-    /// gets no default.
+    /// [`DEFAULT_URL`] when unset. The `anthropic` backend takes one only to
+    /// reach its API at another address (a gateway), and the `bedrock`
+    /// backend reads none, so neither gets a default.
     #[serde(
         default,
         deserialize_with = "some_string",
@@ -30,12 +31,14 @@ pub struct InferenceConfig {
     )]
     pub url: Option<String>,
 
-    /// Bearer token for the `openai` backend, e.g. "${OPENAI_API_KEY}".
+    /// The key: the `openai` backend's bearer token, e.g.
+    /// "${OPENAI_API_KEY}", or the `anthropic` backend's, which needs one,
+    /// e.g. "${ANTHROPIC_API_KEY}".
     #[serde(default, skip_serializing)]
     pub api_key: Option<SecretString>,
 
-    /// Model id as the backend knows it, e.g. `mlx-community/GLM-4.7-Flash-4bit`
-    /// or `us.anthropic.claude-haiku-4-5-20251001-v1:0`.
+    /// Model id as the backend knows it, e.g. `mlx-community/GLM-4.7-Flash-4bit`,
+    /// `claude-haiku-5-5` or `us.anthropic.claude-haiku-5-5`.
     pub model: String,
 
     /// AWS settings for the `bedrock` backend.
@@ -47,9 +50,9 @@ pub struct InferenceConfig {
 
     /// A JSON Schema (relative to the file that names it) the reply must satisfy,
     /// enforced by the backend: `response_format` on an OpenAI-compatible
-    /// server, structured output on Bedrock. Without one, an `openai` server
-    /// is asked for JSON mode (any object) and a `bedrock` model is held to
-    /// the prompt alone. Either way the node reads the reply as JSON and
+    /// server, structured output on Anthropic and Bedrock. Without one, an
+    /// `openai` server is asked for JSON mode (any object) and an `anthropic`
+    /// or `bedrock` model is held to the prompt alone. Either way the node reads the reply as JSON and
     /// nothing else: a reply that is not a JSON object lands as the error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_file: Option<PathBuf>,
@@ -116,6 +119,8 @@ pub enum Backend {
     /// mlx_lm.server, llama-server, vLLM, Bedrock's OpenAI endpoint, ...
     #[default]
     Openai,
+    /// Anthropic's own Messages API, with `api_key`.
+    Anthropic,
     /// Amazon Bedrock through the Converse API, with the AWS credential chain.
     Bedrock,
 }
@@ -137,7 +142,7 @@ pub const DEFAULT_URL: &str = "http://localhost:8080/v1";
 
 impl InferenceConfig {
     /// Gives an `openai` node without a `url` the default, as the config
-    /// shows it. A `bedrock` node keeps what it was given.
+    /// shows it. An `anthropic` or `bedrock` node keeps what it was given.
     pub fn default_url(&mut self) {
         if self.backend == Backend::Openai && self.url.is_none() {
             self.url = Some(DEFAULT_URL.into());

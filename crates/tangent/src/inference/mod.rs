@@ -22,6 +22,7 @@ use rig_core::completion::{
     AssistantContent, CacheRetention, CompletionResponse, Message, OnUnsupported,
 };
 use rig_core::operation::Completion;
+use rig_core::providers::anthropic::AnthropicConfig;
 use rig_core::providers::openai::{OpenAIConfig, Route};
 use rig_core::{schemars, DynModel};
 use secrecy::ExposeSecret;
@@ -70,6 +71,21 @@ fn model(cfg: &InferenceConfig) -> Result<DynModel<Completion>> {
                 .client()
                 .chat(&cfg.model)
                 .erase()
+        }
+        Backend::Anthropic => {
+            // `${ANTHROPIC_API_KEY}` unset is the empty string: said here,
+            // not by a 401 on the first request.
+            let key = cfg
+                .api_key
+                .as_ref()
+                .map(|k| k.expose_secret())
+                .filter(|k| !k.trim().is_empty())
+                .context("backend anthropic needs `api_key`, e.g. \"${ANTHROPIC_API_KEY}\" with that variable set")?;
+            let mut provider = AnthropicConfig::new(key);
+            if let Some(url) = &cfg.url {
+                provider = provider.with_base_url(url);
+            }
+            provider.client().completion(&cfg.model).erase()
         }
         Backend::Bedrock => {
             let mut runtime = rig_bedrock::client::BedrockRuntime::builder();
@@ -471,11 +487,12 @@ impl InferenceNode {
             (Some(schema), _) => {
                 request = request.output_schema(answers_schema(schema));
             }
-            // JSON mode: any object. Converse has no such mode without a schema.
+            // JSON mode: any object. Messages and Converse have no such
+            // mode without a schema.
             (None, Backend::Openai) => {
                 params.insert("response_format".into(), json!({"type": "json_object"}));
             }
-            (None, Backend::Bedrock) => {}
+            (None, Backend::Anthropic | Backend::Bedrock) => {}
         }
         for (k, v) in &self.cfg.extra {
             params.insert(k.clone(), v.clone());
@@ -1003,6 +1020,119 @@ pub(crate) mod stub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One request to a stand-in for Anthropic's Messages API: answers it
+    /// with a flag on record 0, and gives back the request as it came, head
+    /// and body.
+    async fn messages_api() -> (String, tokio::task::JoinHandle<(String, Value)>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let served = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let (mut buf, mut tmp) = (Vec::new(), [0u8; 4096]);
+            let (head, body) = loop {
+                let n = sock.read(&mut tmp).await.unwrap();
+                assert!(n > 0, "the request ended early");
+                buf.extend_from_slice(&tmp[..n]);
+                let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .map_or(0, |v| v.trim().parse().unwrap());
+                if buf.len() >= end + 4 + len {
+                    break (head, serde_json::from_slice(&buf[end + 4..]).unwrap());
+                }
+            };
+            let reply = json!({
+                "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
+                "content": [{"type": "text",
+                    "text": "{\"answers\": [{\"i\": 0, \"flag\": true, \"one_line\": \"bad thing\"}]}"}],
+                "stop_reason": "end_turn", "stop_sequence": null,
+                "usage": {"input_tokens": 7, "output_tokens": 3}
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            let _ = sock.shutdown().await;
+            (head, body)
+        });
+        (url, served)
+    }
+
+    /// `backend: anthropic` asks Anthropic's Messages API: the key as
+    /// `x-api-key`, the prompt as `system`, `extra` in the body, and the
+    /// schema as the format the reply must take. The reply's text is read as
+    /// any other backend's.
+    #[tokio::test]
+    async fn the_anthropic_backend_asks_the_messages_api() {
+        let (url, served) = messages_api().await;
+        let dir = stub::dir("anthropic");
+        std::fs::write(
+            dir.join("verdict.json"),
+            r#"{"type": "object", "properties": {"flag": {"type": "boolean"}, "one_line": {"type": "string"}},
+                "required": ["flag", "one_line"], "additionalProperties": false}"#,
+        )
+        .unwrap();
+        let mut cfg = stub::config(&url);
+        cfg.backend = Backend::Anthropic;
+        cfg.api_key = Some("sk-test".to_string().into());
+        cfg.model = "claude-haiku-5-5".into();
+        cfg.schema_file = Some("verdict.json".into());
+        cfg.extra = serde_json::from_value(json!({"thinking": {"type": "disabled"}})).unwrap();
+        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        let outs = node
+            .annotate_all(vec![json!({"id": 1, "msg": "bad login"})])
+            .await;
+        assert_eq!(
+            outs[0]["judge"],
+            json!({"flag": true, "one_line": "bad thing"}),
+            "{outs:?}"
+        );
+
+        let (head, body) = served.await.unwrap();
+        assert!(head.starts_with("post /v1/messages "), "{head}");
+        assert!(head.contains("x-api-key: sk-test"), "{head}");
+        assert_eq!(body["model"], "claude-haiku-5-5");
+        assert_eq!(body["max_tokens"], 50);
+        assert_eq!(body["thinking"], json!({"type": "disabled"}));
+        assert!(
+            body["system"].to_string().contains("You are a test judge."),
+            "{body}"
+        );
+        assert!(
+            body["messages"][0].to_string().contains("bad login"),
+            "{body}"
+        );
+        assert_eq!(
+            body["output_config"]["format"]["schema"]["properties"]["answers"]["type"], "array",
+            "{body}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An `anthropic` node with no key, or one from a variable that is not
+    /// set, is refused when the pipeline is built, naming what it needs.
+    #[test]
+    fn the_anthropic_backend_needs_a_key() {
+        let dir = stub::dir("anthropic-key");
+        for key in [None, Some(String::new())] {
+            let mut cfg = stub::config("http://127.0.0.1:9");
+            cfg.backend = Backend::Anthropic;
+            cfg.api_key = key.map(Into::into);
+            let err = InferenceNode::new(Arc::from("judge"), cfg, &dir)
+                .err()
+                .unwrap();
+            assert!(format!("{err:#}").contains("ANTHROPIC_API_KEY"), "{err:#}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[tokio::test]
     async fn annotates_every_record_with_the_verdict() {
