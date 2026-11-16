@@ -107,24 +107,49 @@ apart with no rules at all.
 
 ## Against detection rules
 
-The usual way to watch logs is a SIEM and its detection rules. We ran the
-two public rule sets, Elastic's and Sigma's, over the same logs as tangent.
+The usual way to watch logs is a SIEM and its detection rules. We put the
+same logs to tangent and to the two public rule sets, Elastic's and Sigma's.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/cloud-dark.svg">
-  <img src="docs/img/cloud-light.svg" alt="Cloud and SaaS logs. Attacks caught of 71: tangent 70, Elastic rules 51, Sigma rules 13. Ordinary records flagged of 5,304: tangent 40, Elastic rules 43, Sigma rules 121.">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/cards-dark.png">
+  <img src="docs/img/cards-light.png" alt="An LLM watching the logs, against detection rules. Attacks caught of 71: tangent with an open model 71, Elastic rules 51, Sigma rules 13. Ordinary records flagged of 5,304: tangent 12, Elastic rules 43, Sigma rules 121. A second look takes the model's first pass from 221 to 12. DeepSeek V4 Flash, open weights: $2.25 for the year of logs.">
 </picture>
 
-Six months of a made-up startup's AWS, Okta, GitHub, Google Workspace and CI
-logs, with 71 attacks placed in them: 35 AWS techniques from Stratus Red
-Team, and 36 cases we wrote. Tangent caught 70, Elastic's rules 51 and
-Sigma's 13, and tangent flagged about as few ordinary records as Elastic's
-rules did.
+A year of a made-up startup's AWS, Okta, GitHub, Google Workspace and CI
+logs, 59,342 records, with 71 attacks placed in them: 35 AWS techniques
+from Stratus Red Team, and 36 cases we wrote. Tangent with DeepSeek V4
+Flash, an open-weight model, caught all 71 and flagged 12 ordinary records.
+Elastic's rules caught 51 and flagged 43; Sigma's caught 13 and flagged 121.
 
-The gap is in the cases we wrote: tangent caught 36 of 36 and Elastic's
-rules 16. Eight of them are in CI job logs and runner egress, which no
-public rule reads. On the Stratus techniques Elastic's rules caught 35 of 35
-and tangent 34.
+The model reads every record once and flags freely: 221 ordinary records on
+that first pass. Then it investigates its own alerts with the whole log to
+query, and 12 are left. Both passes together cost $2.25 in hosted fees for
+the year of logs.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/board-dark.png">
+  <img src="docs/img/board-light.png" alt="Attacks caught of 71, false alarms and fees a run. Qwen3.5 122B: 71, 2, $15.50. MiniMax M3.1 Flash: 71, 5, $4.18. DeepSeek V4.1 Flash with GLM 5.3: 71, 10, $5.06. DeepSeek V4 Flash: 71, 12, $2.25. DeepSeek V4.1 Flash: 71, 13, $3.54. Claude Haiku 5.5 with Sonnet 5.5: 70, 40, about $12.85. Qwen3-Next 80B: 69 to 70, 128, $6.26. Elastic detection rules: 51, 43. Sigma rules: 13, 121.">
+</picture>
+
+Which model matters less than you would think for catching the attacks, and
+a great deal for the noise. Every open model that fits a 128 GB machine or larger
+caught all 71; what they differ in is how much ordinary work they flag, and
+that does not follow their size.
+
+Where the rules hold their own:
+
+- **The gap is in the cases we wrote.** Tangent caught 36 of 36 and
+  Elastic's rules 16; eight of them are in CI job logs and runner egress,
+  which no public rule reads. On the 35 Stratus techniques Elastic's rules
+  caught every one too.
+- **Telling an attack from the same person's harmless work.** Each Stratus
+  technique has a twin: the same member, from the office, at the same hour,
+  on the same resources, with every call a harmless read. Elastic's rules
+  flag the technique and leave its twin alone for 24 of the 35. The models
+  land on both sides of that, from 19 to 32, and two runs of one model
+  differ by up to 7.
+- **From an address never seen, nobody tells them apart.** Every model, and
+  Elastic's rules, flag the harmless twin about as often as the attack.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/mac-dark.svg">
@@ -142,6 +167,14 @@ no rules.
 
 How it was measured:
 
+- The open-weight models ran twice each on 2026-11-16, served by OpenRouter;
+  a figure is the two runs' mean. Each model judged, then reviewed its own
+  alerts, except where two are named. Run that way your records go to
+  whoever serves the model; the weights are open, so they need not.
+- Claude Haiku 5.5 with Sonnet 5.5 reviewing is one earlier run, and its
+  fee is an estimate.
+- False alarms are ordinary records flagged, of the 5,304 a model read that
+  belong to no case.
 - A rule counts at medium severity or higher.
 - Elastic's cloud rules were run by Elasticsearch 9.5 itself: 350 of them,
   leaving out the machine-learning rules and those that read logs the corpus
@@ -150,20 +183,18 @@ How it was measured:
   that caught GlassWorm.
 - The mapping from each provider's records to the fields Elastic's rules
   read is ours, not Elastic's ingest pipelines.
-- Tangent is Claude Haiku 5.5 reading first and Claude Sonnet 5.5
-  investigating each alert. Haiku alone caught the same 70 in the cloud and
-  flagged 462 of the 5,304 ordinary records.
-- The startup, its logs and the 36 cases are ours, and the look-alikes on
-  the Mac were built to test tangent, not rules.
+- The startup, its logs and the 36 cases are ours, the model's brief was
+  written while running those 36, and the look-alikes on the Mac were built
+  to test tangent, not rules.
 
 ## What it has not shown
 
 How often it cries wolf on a real working day. The look-alikes above were
 left alone, but false alarms over real days are a separate measurement, and
-it is not done. The cloud numbers above are from logs we made, and the run
-behind them, with the rule comparison, is not yet in
-[tangent-eval](https://github.com/EthanBlackburn/tangent-eval) for you to
-repeat.
+it is not done. The cloud numbers above are from logs we made. The rules'
+side of the comparison is in
+[tangent-eval/compare](https://github.com/EthanBlackburn/tangent-eval/tree/main/compare)
+for you to repeat; the open-weight runs are not there yet.
 
 ## Try it on your own AWS account
 
