@@ -129,7 +129,8 @@ impl InferenceNode {
     /// permits and with its prompt, timeout and retries, and the model's
     /// turn back, as the plugin interface describes both. A turn the model
     /// did not finish is the error: one it failed or refused, one with
-    /// neither text nor a call, one `max_tokens` cut with a call in it.
+    /// neither text nor a call after `retries` more tries, one `max_tokens`
+    /// cut with a call in it.
     pub async fn chat(&self, request: &str) -> Result<String> {
         let request: Value = serde_json::from_str(request).context("the request is not JSON")?;
         let said = request
@@ -169,26 +170,47 @@ impl InferenceNode {
         if !self.cfg.extra.is_empty() {
             turn = turn.additional_params(Value::Object(self.cfg.extra.clone()));
         }
-        let reply = {
-            let _permit = self.sem.acquire().await.expect("semaphore is never closed");
-            self.send(turn).await?
+        // A turn with neither text nor a call (a model that thought and
+        // stopped, a server that dropped what it wrote) is asked for again as
+        // one that never came is, `retries` times: the same request does not
+        // get the same turn twice. The last one is the turn, and the error
+        // below.
+        let mut attempt = 0;
+        let (reply, content, calls) = loop {
+            attempt += 1;
+            let reply = {
+                let _permit = self.sem.acquire().await.expect("semaphore is never closed");
+                self.send(turn.clone()).await?
+            };
+            // A call the client kept as an item it does not understand is the
+            // call it is ([`tool_call`]); the turn then goes back with it so.
+            let content: Vec<AssistantContent> = reply
+                .choice
+                .iter()
+                .map(|block| tool_call(block).unwrap_or_else(|| block.clone()))
+                .collect();
+            let calls: Vec<Value> = content
+                .iter()
+                .filter_map(|block| match block {
+                    AssistantContent::ToolCall(c) => Some(
+                        json!({"id": c.id, "name": c.function.name, "arguments": c.function.arguments}),
+                    ),
+                    _ => None,
+                })
+                .collect();
+            let silent = calls.is_empty()
+                && reply.text().trim().is_empty()
+                && !matches!(reply.stop(), StopReason::Error(_) | StopReason::Aborted(_));
+            if !silent || attempt > self.cfg.retries {
+                break (reply, content, calls);
+            }
+            tracing::warn!(
+                node = %self.name,
+                attempt,
+                "the turn has no text and no call (finish: {:?}), asking again",
+                reply.finish_reason()
+            );
         };
-        // A call the client kept as an item it does not understand is the
-        // call it is ([`tool_call`]); the turn then goes back with it so.
-        let content: Vec<AssistantContent> = reply
-            .choice
-            .iter()
-            .map(|block| tool_call(block).unwrap_or_else(|| block.clone()))
-            .collect();
-        let calls: Vec<Value> = content
-            .iter()
-            .filter_map(|block| match block {
-                AssistantContent::ToolCall(c) => Some(
-                    json!({"id": c.id, "name": c.function.name, "arguments": c.function.arguments}),
-                ),
-                _ => None,
-            })
-            .collect();
         let text = reply.text();
         let stop = match reply.stop() {
             StopReason::Error(e) | StopReason::Aborted(e) => {
@@ -718,10 +740,12 @@ pub(crate) mod stub {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&seen);
         let flaky_failures = Arc::new(AtomicUsize::new(0));
+        let quiet_turns = Arc::new(AtomicUsize::new(0));
         tokio::spawn(async move {
             while let Ok((mut sock, _)) = listener.accept().await {
                 let log = Arc::clone(&log);
                 let flaky_failures = Arc::clone(&flaky_failures);
+                let quiet_turns = Arc::clone(&quiet_turns);
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut tmp = [0u8; 4096];
@@ -783,6 +807,10 @@ pub(crate) mod stub {
                         } else if body.contains("filtered") {
                             (silence, "content_filter")
                         } else if body.contains("say nothing") {
+                            (silence, "stop")
+                        } else if body.contains("quiet at first")
+                            && quiet_turns.fetch_add(1, Ordering::SeqCst) < 2
+                        {
                             (silence, "stop")
                         } else if answered {
                             (json!({"role": "assistant", "content": "done"}), "stop")
@@ -1132,6 +1160,30 @@ mod tests {
             let e = node.chat(&request).await.unwrap_err();
             assert!(format!("{e:#}").contains(says), "{asked}: {e:#}");
         }
+    }
+
+    /// A turn with nothing in it is asked for again, `retries` times: the
+    /// model that says nothing twice and then calls a tool has made its call,
+    /// and the one that never says anything is the error after the last try.
+    #[tokio::test]
+    async fn a_turn_with_nothing_in_it_is_asked_for_again() {
+        let (url, seen) = stub::model().await;
+        let mut cfg = stub::config(&url);
+        cfg.retries = 2;
+        let node =
+            InferenceNode::new(Arc::from("reviewer"), cfg, &stub::dir("chat-quiet")).unwrap();
+        let tools = json!([{"name": "query", "description": "Run SQL.",
+            "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}}}]);
+        let request = |asked: &str| {
+            json!({"messages": [{"role": "user", "text": asked}], "tools": tools}).to_string()
+        };
+        let reply: Value =
+            serde_json::from_str(&node.chat(&request("quiet at first")).await.unwrap()).unwrap();
+        assert_eq!(reply["calls"][0]["name"], "query", "{reply}");
+        assert_eq!(seen.lock().await.len(), 3, "silent twice, then the call");
+        let e = node.chat(&request("say nothing")).await.unwrap_err();
+        assert!(format!("{e:#}").contains("no text and no call"), "{e:#}");
+        assert_eq!(seen.lock().await.len(), 6, "three tries, each silent");
     }
 
     #[tokio::test]
