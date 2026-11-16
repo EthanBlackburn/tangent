@@ -29,24 +29,30 @@ TANGENT ?= tangent
 # on a pack or a tangent built from a checkout:  make run PLUGINS=compile
 PLUGINS ?= fetch
 
+# REVIEW=1 adds the second reviewer (review.yaml): each actor's alerts settled
+# by Claude Sonnet 5.5 on Bedrock with the lake to query, in reviews.ndjson.
+# It signs in as AWS_PROFILE in AWS_REGION (us-west-2 when unset);
+# REVIEW_MODEL names another model.
+CONFIG := $(if $(REVIEW),review.yaml,tangent.yaml)
+
 setup:
 	./setup.sh
 
 fetch: setup
-	$(TANGENT) plugin fetch --config tangent.yaml
+	$(TANGENT) plugin fetch --config $(CONFIG)
 
 # setup.sh toolchain fetches the data too
 compile:
 	./setup.sh toolchain
-	$(TANGENT) plugin compile --config tangent.yaml
+	$(TANGENT) plugin compile --config $(CONFIG)
 
 test: $(PLUGINS)
-	$(TANGENT) plugin test --config tangent.yaml
+	$(TANGENT) plugin test --config $(CONFIG)
 
 # `tangent run` fetches the plugins it has no copy of, once per tangent
 # version, so only `compile` comes first; `make fetch` fetches them again,
 # in place of a compiled build.
 run: $(if $(filter compile,$(PLUGINS)),compile,setup)
-	$(TANGENT) run --config tangent.yaml
+	$(TANGENT) run --config $(CONFIG)
 
 .PHONY: setup fetch compile test run
