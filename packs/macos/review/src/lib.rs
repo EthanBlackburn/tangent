@@ -167,8 +167,8 @@ fn all_tools() -> Value {
                             so select the columns you need and filter, group or limit. \
                             A list is indexed from 1 (`args[1]`), tested with `array_has(args, 'x')`, and does not cast \
                             to text: use `array_to_string`. Write a time whole, `'2026-03-02T10:05:00Z'`, and name \
-                            each GROUP BY column. `->` and `->>` read JSON text and bind loosely: put them in \
-                            brackets to compare, `(env->>'HTTPS_PROXY') IS NOT NULL`.",
+                            each GROUP BY column. `->` and `->>` read JSON text: \
+                            `env->>'HTTPS_PROXY' IS NOT NULL`.",
             "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]},
         },
         {
