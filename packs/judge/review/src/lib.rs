@@ -71,8 +71,8 @@ fn tools() -> Value {
             "description": "Run one SQL statement (Apache DataFusion's SQL) on the `records` table and get the result as a \
                             table. A large result is cut, and so is a cell over 2000 characters (read on into one with `substr`), \
                             so select the fields you need and filter, group or limit. Write a time whole, \
-                            `'2026-03-02T10:05:00Z'`, and name each GROUP BY column. `->` and `->>` read JSON text and \
-                            bind loosely: put them in brackets to compare, `(record->>'errorCode') IS NOT NULL`.",
+                            `'2026-03-02T10:05:00Z'`, and name each GROUP BY column. `->` and `->>` read JSON text, a \
+                            key at a time: `record->'userIdentity'->>'type' = 'Root'`.",
             "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]},
         },
         {
