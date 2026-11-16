@@ -4,7 +4,7 @@ One directory per provider, each holding one plugin that turns that provider's
 raw records into finished ones: normalized into `_norm`, stripped of what never
 decides a verdict, its address enriched, and given what your company profile
 says about it in `_facts`. How to use them is in the main
-[README](/README.md#packs).
+[README](/docs/reference.md#packs).
 
 | directory | what it is |
 |---|---|
@@ -20,7 +20,7 @@ says about it in `_facts`. How to use them is in the main
 | [shared](shared) | not a pack: `normkit`, `enrichkit`, `identitykit` and `factskit`, the Rust libraries every pack's plugin links |
 
 A config includes a pack by name, the copy built into tangent
-([Including files](/README.md#including-files)). A new YAML file here, or a
+([Including files](/docs/reference.md#including-files)). A new YAML file here, or a
 file one names (a prompt, say), goes in `FILES` in
 [crates/shared/src/packs.rs](/crates/shared/src/packs.rs) too; its tests fail
 until it does.
@@ -198,4 +198,4 @@ make -C packs dist                # every plugin as a component in target/packs,
 
 A release carries each plugin compiled, with its build's attestation, and
 `tangent plugin fetch` takes them from there: a user needs no toolchain
-([Prebuilt plugins](/README.md#prebuilt-plugins)).
+([Prebuilt plugins](/docs/reference.md#prebuilt-plugins)).
