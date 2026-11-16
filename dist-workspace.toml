@@ -43,6 +43,7 @@ artifacts = [
   "target/packs/baseline_builder.component.wasm",
   "target/packs/baseline_renderer.component.wasm",
   "target/packs/fresh.component.wasm",
+  "target/packs/review.component.wasm",
   "target/packs/flagged.component.wasm",
 ]
 build = ["bash", "packs/dist.sh"]

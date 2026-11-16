@@ -5,3 +5,4 @@ verdicts.ndjson
 test_out.ndjson
 .test.yaml
 lake/
+reviews.ndjson

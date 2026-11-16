@@ -95,6 +95,19 @@ The judge defaults to a local model on `:8080`
 JUDGE_URL=https://api.openai.com/v1 JUDGE_MODEL=gpt-5.1 JUDGE_API_KEY=$OPENAI_API_KEY make run
 ```
 
+## The second reviewer
+
+`make run REVIEW=1` runs [review.yaml](review.yaml) instead: the same
+pipeline, and each actor's alerts settled by a stronger model that can
+query the lake ([packs/judge](/packs/judge#the-second-reviewer)): Claude
+Sonnet 5.5 on Bedrock, signed in as `AWS_PROFILE` in `AWS_REGION`
+(us-west-2 when unset), or the model `REVIEW_MODEL` names. An actor's alerts
+wait a little over an hour, until the lake has their records, and go to
+`reviews.ndjson` with `review`: a verdict (`malicious`, `benign` or
+`unresolved`), a finding and what to check first. `alerts.ndjson` is
+written as before. It costs money and sends records to a second model, so
+it is its own config.
+
 ## Try it
 
 With `make run` going, send it a few of the packs' fixtures, a JSON line a

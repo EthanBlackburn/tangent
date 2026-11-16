@@ -129,7 +129,8 @@ impl InferenceNode {
     /// permits and with its prompt, timeout and retries, and the model's
     /// turn back, as the plugin interface describes both. A turn the model
     /// did not finish is the error: one it failed or refused, one with
-    /// neither text nor a call, one `max_tokens` cut with a call in it.
+    /// neither text nor a call after `retries` more tries, one `max_tokens`
+    /// cut with a call in it.
     pub async fn chat(&self, request: &str) -> Result<String> {
         let request: Value = serde_json::from_str(request).context("the request is not JSON")?;
         let said = request
@@ -169,26 +170,47 @@ impl InferenceNode {
         if !self.cfg.extra.is_empty() {
             turn = turn.additional_params(Value::Object(self.cfg.extra.clone()));
         }
-        let reply = {
-            let _permit = self.sem.acquire().await.expect("semaphore is never closed");
-            self.send(turn).await?
+        // A turn with neither text nor a call (a model that thought and
+        // stopped, a server that dropped what it wrote) is asked for again as
+        // one that never came is, `retries` times: the same request does not
+        // get the same turn twice. The last one is the turn, and the error
+        // below.
+        let mut attempt = 0;
+        let (reply, content, calls) = loop {
+            attempt += 1;
+            let reply = {
+                let _permit = self.sem.acquire().await.expect("semaphore is never closed");
+                self.send(turn.clone()).await?
+            };
+            // A call the client kept as an item it does not understand is the
+            // call it is ([`tool_call`]); the turn then goes back with it so.
+            let content: Vec<AssistantContent> = reply
+                .choice
+                .iter()
+                .map(|block| tool_call(block).unwrap_or_else(|| block.clone()))
+                .collect();
+            let calls: Vec<Value> = content
+                .iter()
+                .filter_map(|block| match block {
+                    AssistantContent::ToolCall(c) => Some(
+                        json!({"id": c.id, "name": c.function.name, "arguments": c.function.arguments}),
+                    ),
+                    _ => None,
+                })
+                .collect();
+            let silent = calls.is_empty()
+                && reply.text().trim().is_empty()
+                && !matches!(reply.stop(), StopReason::Error(_) | StopReason::Aborted(_));
+            if !silent || attempt > self.cfg.retries {
+                break (reply, content, calls);
+            }
+            tracing::warn!(
+                node = %self.name,
+                attempt,
+                "the turn has no text and no call (finish: {:?}), asking again",
+                reply.finish_reason()
+            );
         };
-        // A call the client kept as an item it does not understand is the
-        // call it is ([`tool_call`]); the turn then goes back with it so.
-        let content: Vec<AssistantContent> = reply
-            .choice
-            .iter()
-            .map(|block| tool_call(block).unwrap_or_else(|| block.clone()))
-            .collect();
-        let calls: Vec<Value> = content
-            .iter()
-            .filter_map(|block| match block {
-                AssistantContent::ToolCall(c) => Some(
-                    json!({"id": c.id, "name": c.function.name, "arguments": c.function.arguments}),
-                ),
-                _ => None,
-            })
-            .collect();
         let text = reply.text();
         let stop = match reply.stop() {
             StopReason::Error(e) | StopReason::Aborted(e) => {
@@ -258,7 +280,9 @@ impl InferenceNode {
         slots
     }
 
-    /// Records in one request; an unreadable reply is asked again in halves.
+    /// Records in one request; an unreadable reply is asked again in halves,
+    /// and the records a readable reply skipped are asked again without the
+    /// ones it answered.
     async fn annotate(&self, records: Vec<Value>) -> Vec<Value> {
         let n = records.len();
         let start = Instant::now();
@@ -267,7 +291,35 @@ impl InferenceNode {
             Err(e) => Err(e),
         };
         let answers = match answers {
-            Ok(reply) => spread(reply, n, matches!(self.cfg.encoding, Encoding::Ndjson)),
+            Ok(reply) => {
+                let answers = spread(reply, n, matches!(self.cfg.encoding, Encoding::Ndjson));
+                // A model given several records now and then answers some and
+                // stops: the reply is whole JSON, so nothing was retried, and
+                // each skipped record went on with an error where its verdict
+                // should be. Fewer records each time, so this ends; a reply
+                // that skipped every record is left as it is.
+                let skipped: Vec<usize> = (0..n).filter(|k| unanswered(&answers[*k])).collect();
+                if !skipped.is_empty() && skipped.len() < n {
+                    tracing::warn!(
+                        node = %self.name,
+                        records = n,
+                        skipped = skipped.len(),
+                        "reply skipped records, asking for them again"
+                    );
+                    let again: Vec<Value> = skipped.iter().map(|k| records[*k].clone()).collect();
+                    let mut redone = Box::pin(self.annotate(again)).await.into_iter();
+                    return records
+                        .into_iter()
+                        .zip(answers)
+                        .enumerate()
+                        .map(|(k, (v, a))| match skipped.contains(&k) {
+                            true => redone.next().unwrap_or_else(|| attach(&self.name, v, a)),
+                            false => attach(&self.name, v, a),
+                        })
+                        .collect();
+                }
+                answers
+            }
             // a failed request would fail the same in halves
             Err(e) if n > 1 && e.to_string().starts_with("reply ") => {
                 tracing::warn!(
@@ -557,6 +609,13 @@ fn attach(name: &str, v: Value, reply: Value) -> Value {
     Value::Object(obj)
 }
 
+/// Whether [`spread`] found no answer for a record in a reply that was read.
+fn unanswered(answer: &Value) -> bool {
+    answer["error"]
+        .as_str()
+        .is_some_and(|e| e.starts_with("no answer for record"))
+}
+
 /// Answers by their `i`; by position when none is missing one and the text
 /// is in index order (`in_order`; logfmt groups its rows).
 fn spread(reply: Value, n: usize, in_order: bool) -> Vec<Value> {
@@ -718,10 +777,12 @@ pub(crate) mod stub {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&seen);
         let flaky_failures = Arc::new(AtomicUsize::new(0));
+        let quiet_turns = Arc::new(AtomicUsize::new(0));
         tokio::spawn(async move {
             while let Ok((mut sock, _)) = listener.accept().await {
                 let log = Arc::clone(&log);
                 let flaky_failures = Arc::clone(&flaky_failures);
+                let quiet_turns = Arc::clone(&quiet_turns);
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut tmp = [0u8; 4096];
@@ -784,6 +845,10 @@ pub(crate) mod stub {
                             (silence, "content_filter")
                         } else if body.contains("say nothing") {
                             (silence, "stop")
+                        } else if body.contains("quiet at first")
+                            && quiet_turns.fetch_add(1, Ordering::SeqCst) < 2
+                        {
+                            (silence, "stop")
                         } else if answered {
                             (json!({"role": "assistant", "content": "done"}), "stop")
                         } else {
@@ -821,12 +886,16 @@ pub(crate) mod stub {
                                 .map(String::from)
                                 .collect()
                         };
+                        // a `shy` record gets no answer beside others, as a
+                        // model that stops early leaves one out
+                        let skips = records.len() > 1 && records.iter().any(|r| r.contains("shy"));
                         let answers: Vec<_> = records
                             .iter()
                             .enumerate()
+                            .filter(|(_, r)| !(skips && r.contains("shy")))
                             .map(|(k, r)| {
                                 let mut a = verdict(r);
-                                if logfmt {
+                                if logfmt || skips {
                                     a["i"] = json!(k);
                                 }
                                 a
@@ -1134,6 +1203,30 @@ mod tests {
         }
     }
 
+    /// A turn with nothing in it is asked for again, `retries` times: the
+    /// model that says nothing twice and then calls a tool has made its call,
+    /// and the one that never says anything is the error after the last try.
+    #[tokio::test]
+    async fn a_turn_with_nothing_in_it_is_asked_for_again() {
+        let (url, seen) = stub::model().await;
+        let mut cfg = stub::config(&url);
+        cfg.retries = 2;
+        let node =
+            InferenceNode::new(Arc::from("reviewer"), cfg, &stub::dir("chat-quiet")).unwrap();
+        let tools = json!([{"name": "query", "description": "Run SQL.",
+            "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}}}]);
+        let request = |asked: &str| {
+            json!({"messages": [{"role": "user", "text": asked}], "tools": tools}).to_string()
+        };
+        let reply: Value =
+            serde_json::from_str(&node.chat(&request("quiet at first")).await.unwrap()).unwrap();
+        assert_eq!(reply["calls"][0]["name"], "query", "{reply}");
+        assert_eq!(seen.lock().await.len(), 3, "silent twice, then the call");
+        let e = node.chat(&request("say nothing")).await.unwrap_err();
+        assert!(format!("{e:#}").contains("no text and no call"), "{e:#}");
+        assert_eq!(seen.lock().await.len(), 6, "three tries, each silent");
+    }
+
     #[tokio::test]
     async fn a_request_the_model_refuses_is_not_sent_again() {
         let (url, seen) = stub::model().await;
@@ -1263,6 +1356,36 @@ mod tests {
             .await;
         assert!(outs.iter().all(|o| o["judge"]["flag"] == true), "{outs:?}");
         assert_eq!(seen.lock().await.len(), 3, "the whole, then two halves");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A reply that answers some records and skips one is whole JSON, so no
+    /// retry saw it: the skipped record is asked about again, alone.
+    #[tokio::test]
+    async fn a_record_the_reply_skipped_is_asked_again() {
+        let (url, seen) = stub::model().await;
+        let dir = stub::dir("skipped");
+        let node = InferenceNode::new(Arc::from("judge"), stub::config(&url), &dir).unwrap();
+        let outs = node
+            .annotate_all(vec![
+                json!({"id": 1, "msg": "fine"}),
+                json!({"id": 2, "msg": "shy and bad"}),
+                json!({"id": 3, "msg": "bad"}),
+            ])
+            .await;
+        let flags: Vec<&Value> = outs.iter().map(|o| &o["judge"]["flag"]).collect();
+        assert_eq!(
+            flags,
+            [&json!(false), &json!(true), &json!(true)],
+            "{outs:?}"
+        );
+        assert!(
+            outs.iter().all(|o| o["judge"].get("error").is_none()),
+            "{outs:?}"
+        );
+        let seen = seen.lock().await;
+        assert_eq!(seen.len(), 2, "the three, then the one it skipped");
+        assert_eq!(user_lines(&seen[1]).len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -7,6 +7,7 @@
 #   make test       the packs' plugins, then their fixtures; no model needed
 #   make run        reads CloudTrail, GitHub, Okta and Workspace for the credentials you
 #                   export (see the Makefile), NDJSON on :9400 for the rest, and judges them
+#   make run REVIEW=1   the same, with a second model settling what was flagged (review.yaml)
 #
 # Edit profile/profile.yaml first: it is everything the model knows about you.
 include:

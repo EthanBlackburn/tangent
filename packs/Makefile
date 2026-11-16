@@ -9,7 +9,14 @@ PACKS := $(filter $(PACKS),$(patsubst %/ingest.yaml,%,$(wildcard */ingest.yaml))
 # Each pack alone: its plugin compiled and its fixtures run from its own
 # ingest.yaml, against the tables in its tests/, so a pack that leans on
 # another file fails here.
-test: $(addprefix test-,$(PACKS)) test-macos-unit test-macos-net test-macos-ps test-macos-agent test-macos-ask test-baseline test-shared
+test: $(addprefix test-,$(PACKS)) test-macos-unit test-macos-net test-macos-ps test-macos-agent test-macos-ask test-judge-review test-baseline test-shared
+
+# packs/judge's reviewer, whose loop runs against a made-up model: it has no
+# fixture, since a review is a conversation. The compile writes its
+# .tangent/wit, which `cargo test` needs.
+test-judge-review:
+	cd judge && $(TANGENT) plugin compile --config review.yaml
+	cd judge/review && cargo test
 
 # packs/macos's plugins' own tests: the summary and the verdicts have no
 # fixture (`tangent plugin test` runs a plugin a record at a time), and the
@@ -65,4 +72,4 @@ fixtures-%:
 fixtures-baseline:
 	behavior-baseline/story.sh write
 
-.PHONY: test test-macos-unit test-macos-net test-macos-ps test-macos-agent test-macos-ask test-baseline test-shared dist fixtures-baseline
+.PHONY: test test-judge-review test-macos-unit test-macos-net test-macos-ps test-macos-agent test-macos-ask test-baseline test-shared dist fixtures-baseline

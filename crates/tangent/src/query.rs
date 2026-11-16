@@ -86,10 +86,17 @@ async fn context(tables: &[String], views: &[String]) -> Result<SessionContext> 
     // A plain context: no table is found by a file's path, and no function
     // reads a file. A directory is read with the directories under it, as a
     // lake of `%Y/%m/%d/%H` is laid out.
-    let config = SessionConfig::new().set_bool(
-        "datafusion.execution.listing_table_ignore_subdirectory",
-        false,
-    );
+    // Statements are read as Postgres reads them, the SQL the JSON operators
+    // are from: `->` and `->>` bind tighter than a comparison, so
+    // `record->>'eventName' = 'ConsoleLogin'` compares the text it reads. As
+    // DataFusion reads a statement otherwise, it is `record->>(… = …)`, and
+    // a planning error about a Boolean that names nothing in the statement.
+    let config = SessionConfig::new()
+        .set_bool(
+            "datafusion.execution.listing_table_ignore_subdirectory",
+            false,
+        )
+        .set_str("datafusion.sql_parser.dialect", "PostgreSQL");
     let mut ctx = SessionContext::new_with_config(config);
     datafusion_functions_json::register_all(&mut ctx)?;
     let mut paths: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -308,7 +315,7 @@ pub(crate) mod tests {
             "SELECT record->>'event' AS event, json_get_str(record, 'process', 'path') AS path, \
              json_get_int(record, 'process', 'pid') AS pid, record->'exec'->'args'->>1 AS flag, \
              json_get_json(record, 'exec', 'env') AS env \
-             FROM lake WHERE (record->'process'->>'path') LIKE '%curl'", // -> binds more loosely than LIKE or =
+             FROM lake WHERE record->'process'->>'path' LIKE '%curl'",
         ))
         .await
         .unwrap();
@@ -325,6 +332,34 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert!(out.contains("| 0 | 0 |"), "{out}");
+    }
+
+    /// `->` and `->>` bind tighter than a comparison, as in Postgres: what a
+    /// key holds is compared as it is written, with no brackets round it.
+    #[tokio::test]
+    async fn a_json_key_is_compared_without_brackets() {
+        let dir = lake();
+        for (condition, n) in [
+            ("record->>'event' = 'exec'", 3),
+            ("record->'process'->>'path' = '/usr/bin/git'", 1),
+            (
+                "record->'process'->>'path' != '/usr/bin/git' AND pid > 700",
+                1,
+            ),
+            (
+                "record->'process'->>'path' IN ('/usr/bin/git', '/usr/bin/ssh')",
+                2,
+            ),
+            ("record->'exec'->'env'->>'HTTPS_PROXY' IS NOT NULL", 3),
+            (
+                "record->>'nope' IS NULL AND record->'process'->>'path' LIKE '%ssh'",
+                1,
+            ),
+        ] {
+            let sql = format!("SELECT count(*) AS n FROM lake WHERE {condition}");
+            let out = run(&query(&dir, &sql)).await.unwrap();
+            assert!(out.contains(&format!("| {n} |")), "{condition}: {out}");
+        }
     }
 
     #[tokio::test]
