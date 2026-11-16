@@ -1,0 +1,25 @@
+# cloud-infra with the second reviewer: tangent.yaml, and each actor's
+# alerts settled by a stronger model with the lake to query
+# (packs/judge/review.yaml: Claude Sonnet 5.5 on Bedrock, REVIEW_MODEL for
+# another). An actor's alerts wait until the lake has their records, a little
+# over an hour, and go to reviews.ndjson with their review: malicious, benign
+# or unresolved. It costs money and sends records to a second model, so it is
+# its own config.
+#
+#   make run REVIEW=1        # or: tangent run --config review.yaml
+include:
+  - tangent.yaml
+  - ../../packs/judge/review.yaml  # inference node reviewer, and plugin review, which holds a conversation with it
+
+sinks:
+  reviews:
+    type: file
+    path: reviews.ndjson
+    compression:
+      type: none
+
+dag:
+  - from: flagged                  # each alert, also to the reviewer
+    to: [review]
+  - from: review
+    to: [reviews]

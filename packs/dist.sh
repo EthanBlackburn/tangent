@@ -18,8 +18,8 @@ OUT=target/packs
 CARGO_COMPONENT_VERSION=0.21.1
 
 # Each plugin as the configs name it, and its source. The configs with a
-# `prebuilt:` are a pack's ingest.yaml and the configs beside it, as macos's
-# review.yaml is.
+# `prebuilt:` are a pack's ingest.yaml and the configs beside it, as judge's
+# and macos's review.yaml are.
 PLUGINS=(
   "cloudtrail packs/cloudtrail"
   "github packs/github"
@@ -33,6 +33,7 @@ PLUGINS=(
   "baseline_builder packs/behavior-baseline/builder"
   "baseline_renderer packs/behavior-baseline/renderer"
   "fresh packs/judge/fresh"
+  "review packs/judge/review"
   "flagged examples/inference-local/flagged"
 )
 

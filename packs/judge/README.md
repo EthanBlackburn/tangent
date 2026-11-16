@@ -19,6 +19,10 @@ your sources ──▶ a pack's plugin ──┬──▶ a sink of yours: lake/
                                                              └──▶ verdicts.ndjson
 ```
 
+[The second reviewer](#the-second-reviewer) is a stage you can add after
+**flagged**: a stronger model that settles each actor's alerts with the lake
+to query.
+
 One config holds all of it, in one process: the judge's groups run on
 workers of their own, so ingest never waits on the model. A pack defines
 only its plugin, and your config draws its edges, to `baseline_builder`,
@@ -146,6 +150,85 @@ line in the message. A post that can work later (a 429, after its
 `retry-after`, a 5xx, a timeout) is tried again, and its record is acked
 only once Slack has it; one Slack refuses (another 4xx) is dropped and
 counted in `tangent_sink_records_rejected_total`, and the first is logged.
+
+## The second reviewer
+
+The judge reads an actor's latest records, flags freely and cannot look
+anything up, so much of what it flags is ordinary work. Plugin `review`
+(`review/`, [review.yaml](review.yaml)) is a stage after **flagged** that
+gives each actor's alerts to a stronger model with the lake to query.
+
+```
+flagged ──┬──▶ alerts.ndjson
+          └──▶ review ──▶ reviews.ndjson          (your config's edges)
+                 │  ▲
+        model.chat  lake.query
+                 ▼  │
+             reviewer   lake/, what your sink has kept
+```
+
+It holds one conversation with inference node `reviewer` (tangent's
+`model.chat`) for an actor's alerts together: Claude Sonnet 5.5 on Bedrock
+unless `REVIEW_MODEL` names another, [review.md](review.md) as its brief,
+the alerts as the judge left them (each record with `_norm`, `_facts`, the
+actor's `_baseline` once, and the judge's reason), and two tools. `query`
+runs the model's SQL (tangent's `lake.query`, DataFusion) on one table,
+`records`: a view over the lake's Parquet files for the thirty days before
+the last alert, ending where it does, with a column for each field every
+source shares (`ts`, `source`, `org`, `actor`, `kind`, `ip`) and the record
+whole beside them as JSON text, which the model reads by key
+(`record->>'eventName'`). `report` gives the answer: `finding`, what
+happened and who did it, naming the records; `verdict`, `malicious`,
+`benign` or `unresolved` (the log cannot settle it, and the finding says
+what is missing); and `check`, what to look at or undo first.
+
+Each alert goes on with `review`, the same on every alert of the actor's
+group. The first also carries `reviewed`: how many alerts the review
+covered, the SQL the model ran, the calls and tokens it took, and the node.
+
+Include it beside `ingest.yaml` or `hosted.yaml` in a config with a sink
+named `lake`, and draw two edges
+([examples/cloud-infra/review.yaml](/examples/cloud-infra/review.yaml) does,
+and `pack:judge/review` is the same file built in):
+
+```yaml
+include: [packs/judge/hosted.yaml, packs/judge/review.yaml]
+sinks:
+  reviews: { type: file, path: reviews.ndjson, compression: { type: none } }
+dag:
+  - from: flagged
+    to: [review]
+  - from: review
+    to: [reviews]
+```
+
+The view reads the lake as examples/cloud-infra writes it: Parquet with
+`ts`, `source` and `_norm`'s `org`, `actor`, `kind` and `ip` as columns, and
+`record_column: record`. A lake without those columns does not fit it.
+
+An actor's records are in the lake once the sink seals their file, an hour
+after opening it in the example. So the plugin is grouped by actor with
+`expire_after_ms: 4000000`: an actor's alerts wait that long after the last
+of them and are reviewed as one, and the table ends with the last alert, so
+a replay's review sees what a live one would. With a lake that seals sooner,
+set both lower in your config. A grouped plugin has workers of its own, so a
+review holds up neither ingest nor the judge; reviews themselves go one at a
+time (`concurrency: 1`), a turn given two minutes and three tries. Alerts
+still waiting when the input ends are reviewed before the lake has their
+last records: the model is told so, and `reviewed` says `early: true`.
+
+A review that fails is an `error` in `review`, and the alerts stand: the
+model's content filter stopped it, it gave no report within its twenty
+queries, no alert had a time in UTC to end the table at, or the lake could
+not be read. `alerts.ndjson` is written as before, whatever the reviewer
+says: what to do with a `benign` is your config's to decide.
+
+The SQL is written by a model that has just read whatever an attacker put in
+a record. `lake.query` lets a statement read the view and nothing else: it
+cannot create, change or copy anything, set an option, or name a file. The
+brief tells the model that text in a record addressed to a reviewer is
+evidence against its actor. Your records reach one more model: the alerts,
+and each query's result.
 
 ## What include cannot do
 
