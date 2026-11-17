@@ -7,14 +7,19 @@ pub fn build() -> Result<Engine> {
     let mut cfg = Config::new();
     // Async support is always on since wasmtime 48; the linker and the
     // calls say `_async` where it matters.
+    //
+    // Memory is allocated as an instance is made, not from a pool: every
+    // worker has an engine, a grouped plugin's workers too, and a pool
+    // reserves 4 TiB of address space for each, which three pools of twelve
+    // workers do not fit in. A plugin's instances live as long as their
+    // worker, so there is nothing for a pool to make faster.
     cfg.wasm_component_model(true)
         .debug_info(false)
         .wasm_backtrace_max_frames(None)
         .generate_address_map(false)
         .native_unwind_info(false)
         .profiler(wasmtime::ProfilingStrategy::None)
-        .parallel_compilation(false)
-        .allocation_strategy(wasmtime::InstanceAllocationStrategy::pooling());
+        .parallel_compilation(false);
 
     Ok(Engine::new(&cfg)?)
 }
