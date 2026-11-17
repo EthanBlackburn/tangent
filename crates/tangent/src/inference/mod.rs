@@ -58,8 +58,17 @@ fn resolve(config_dir: &Path, file: &Path) -> PathBuf {
 fn model(cfg: &InferenceConfig) -> Result<DynModel<Completion>> {
     Ok(match cfg.backend {
         Backend::Openai => {
-            // Local servers accept any key; a hosted one needs the real thing.
-            let key = cfg.api_key.as_ref().map_or("none", |k| k.expose_secret());
+            // Local servers accept any key, so none is "none". One that is
+            // set and empty is "${OPENAI_API_KEY}" unset: said here, not by
+            // a 401 on every record.
+            let key = match cfg.api_key.as_ref().map(|k| k.expose_secret()) {
+                None => "none",
+                Some(k) if k.trim().is_empty() => bail!(
+                    "`api_key` is empty: is the variable it names, e.g. \"${{OPENAI_API_KEY}}\", set? \
+                     A server that takes no key needs no `api_key`"
+                ),
+                Some(k) => k,
+            };
             OpenAIConfig::new(key)
                 .with_base_url(
                     cfg.url
@@ -1131,6 +1140,25 @@ mod tests {
                 .unwrap();
             assert!(format!("{err:#}").contains("ANTHROPIC_API_KEY"), "{err:#}");
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An `openai` node whose key comes from a variable that is not set is
+    /// refused when the pipeline is built; one with no `api_key` at all is a
+    /// local server's, and is built.
+    #[test]
+    fn the_openai_backend_refuses_an_empty_key() {
+        let dir = stub::dir("openai-key");
+        let mut cfg = stub::config("http://127.0.0.1:9");
+        for key in ["", "  "] {
+            cfg.api_key = Some(key.to_string().into());
+            let err = InferenceNode::new(Arc::from("judge"), cfg.clone(), &dir)
+                .err()
+                .unwrap();
+            assert!(format!("{err:#}").contains("`api_key` is empty"), "{err:#}");
+        }
+        cfg.api_key = None;
+        InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
