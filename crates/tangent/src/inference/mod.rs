@@ -54,6 +54,18 @@ fn resolve(config_dir: &Path, file: &Path) -> PathBuf {
     }
 }
 
+/// The key of a backend that needs one. `${VAR}` unset is the empty string:
+/// said when the pipeline is built, not by a 401 on the first request.
+fn key<'a>(cfg: &'a InferenceConfig, backend: &str, var: &str) -> Result<&'a str> {
+    cfg.api_key
+        .as_ref()
+        .map(|k| k.expose_secret())
+        .filter(|k| !k.trim().is_empty())
+        .with_context(|| {
+            format!("backend {backend} needs `api_key`, e.g. \"${{{var}}}\" with that variable set")
+        })
+}
+
 /// The model `cfg` points at, behind rig's erased handle.
 fn model(cfg: &InferenceConfig) -> Result<DynModel<Completion>> {
     Ok(match cfg.backend {
@@ -81,16 +93,15 @@ fn model(cfg: &InferenceConfig) -> Result<DynModel<Completion>> {
                 .chat(&cfg.model)
                 .erase()
         }
+        Backend::Responses => {
+            let mut provider = OpenAIConfig::new(key(cfg, "responses", "OPENAI_API_KEY")?);
+            if let Some(url) = &cfg.url {
+                provider = provider.with_base_url(url.trim_end_matches('/'));
+            }
+            provider.client().responses(&cfg.model).erase()
+        }
         Backend::Anthropic => {
-            // `${ANTHROPIC_API_KEY}` unset is the empty string: said here,
-            // not by a 401 on the first request.
-            let key = cfg
-                .api_key
-                .as_ref()
-                .map(|k| k.expose_secret())
-                .filter(|k| !k.trim().is_empty())
-                .context("backend anthropic needs `api_key`, e.g. \"${ANTHROPIC_API_KEY}\" with that variable set")?;
-            let mut provider = AnthropicConfig::new(key);
+            let mut provider = AnthropicConfig::new(key(cfg, "anthropic", "ANTHROPIC_API_KEY")?);
             if let Some(url) = &cfg.url {
                 provider = provider.with_base_url(url);
             }
@@ -501,7 +512,7 @@ impl InferenceNode {
             (None, Backend::Openai) => {
                 params.insert("response_format".into(), json!({"type": "json_object"}));
             }
-            (None, Backend::Anthropic | Backend::Bedrock) => {}
+            (None, Backend::Anthropic | Backend::Bedrock | Backend::Responses) => {}
         }
         for (k, v) in &self.cfg.extra {
             params.insert(k.clone(), v.clone());
@@ -1034,6 +1045,34 @@ mod tests {
     /// with a flag on record 0, and gives back the request as it came, head
     /// and body.
     async fn messages_api() -> (String, tokio::task::JoinHandle<(String, Value)>) {
+        one_request(json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
+            "content": [{"type": "text", "text": FLAGGED}],
+            "stop_reason": "end_turn", "stop_sequence": null,
+            "usage": {"input_tokens": 7, "output_tokens": 3}
+        }))
+        .await
+    }
+
+    /// The same for OpenAI's Responses API.
+    async fn responses_api() -> (String, tokio::task::JoinHandle<(String, Value)>) {
+        one_request(json!({
+            "id": "resp_1", "object": "response", "created_at": 0, "status": "completed",
+            "model": "gpt-6-luna",
+            "output": [{"type": "message", "id": "msg_1", "status": "completed", "role": "assistant",
+                "content": [{"type": "output_text", "text": FLAGGED, "annotations": []}]}],
+            "usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
+        }))
+        .await
+    }
+
+    /// A reply's text: a flag on record 0.
+    const FLAGGED: &str =
+        "{\"answers\": [{\"i\": 0, \"flag\": true, \"one_line\": \"bad thing\"}]}";
+
+    /// A server for one request: answers it with `reply`, and gives back
+    /// the request as it came, head and body.
+    async fn one_request(reply: Value) -> (String, tokio::task::JoinHandle<(String, Value)>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -1056,14 +1095,7 @@ mod tests {
                     break (head, serde_json::from_slice(&buf[end + 4..]).unwrap());
                 }
             };
-            let reply = json!({
-                "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
-                "content": [{"type": "text",
-                    "text": "{\"answers\": [{\"i\": 0, \"flag\": true, \"one_line\": \"bad thing\"}]}"}],
-                "stop_reason": "end_turn", "stop_sequence": null,
-                "usage": {"input_tokens": 7, "output_tokens": 3}
-            })
-            .to_string();
+            let reply = reply.to_string();
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                 reply.len()
@@ -1126,19 +1158,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// An `anthropic` node with no key, or one from a variable that is not
-    /// set, is refused when the pipeline is built, naming what it needs.
+    /// `backend: responses` asks OpenAI's Responses API: the key as a
+    /// bearer token, the prompt as `instructions`, `extra` in the body, and
+    /// the schema as the format the reply's text must take.
+    #[tokio::test]
+    async fn the_responses_backend_asks_the_responses_api() {
+        let (url, served) = responses_api().await;
+        let dir = stub::dir("responses");
+        std::fs::write(
+            dir.join("verdict.json"),
+            r#"{"type": "object", "properties": {"flag": {"type": "boolean"}, "one_line": {"type": "string"}},
+                "required": ["flag", "one_line"], "additionalProperties": false}"#,
+        )
+        .unwrap();
+        let mut cfg = stub::config(&url);
+        cfg.backend = Backend::Responses;
+        cfg.api_key = Some("sk-test".to_string().into());
+        cfg.model = "gpt-6-luna".into();
+        cfg.schema_file = Some("verdict.json".into());
+        cfg.extra = serde_json::from_value(json!({"reasoning": {"effort": "low"}})).unwrap();
+        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        let outs = node
+            .annotate_all(vec![json!({"id": 1, "msg": "bad login"})])
+            .await;
+        assert_eq!(
+            outs[0]["judge"],
+            json!({"flag": true, "one_line": "bad thing"}),
+            "{outs:?}"
+        );
+
+        let (head, body) = served.await.unwrap();
+        assert!(head.starts_with("post /responses "), "{head}");
+        assert!(head.contains("authorization: bearer sk-test"), "{head}");
+        assert_eq!(body["model"], "gpt-6-luna");
+        assert_eq!(body["max_output_tokens"], 50);
+        assert_eq!(body["reasoning"], json!({"effort": "low"}));
+        assert!(body.to_string().contains("You are a test judge."), "{body}");
+        assert!(body["input"].to_string().contains("bad login"), "{body}");
+        assert_eq!(
+            body["text"]["format"]["schema"]["properties"]["answers"]["type"], "array",
+            "{body}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An `anthropic` or `responses` node with no key, or one from a
+    /// variable that is not set, is refused when the pipeline is built,
+    /// naming what it needs.
     #[test]
-    fn the_anthropic_backend_needs_a_key() {
-        let dir = stub::dir("anthropic-key");
-        for key in [None, Some(String::new())] {
-            let mut cfg = stub::config("http://127.0.0.1:9");
-            cfg.backend = Backend::Anthropic;
-            cfg.api_key = key.map(Into::into);
-            let err = InferenceNode::new(Arc::from("judge"), cfg, &dir)
-                .err()
-                .unwrap();
-            assert!(format!("{err:#}").contains("ANTHROPIC_API_KEY"), "{err:#}");
+    fn a_backend_that_needs_a_key_says_so() {
+        let dir = stub::dir("needs-key");
+        for (backend, var) in [
+            (Backend::Anthropic, "ANTHROPIC_API_KEY"),
+            (Backend::Responses, "OPENAI_API_KEY"),
+        ] {
+            for key in [None, Some(String::new())] {
+                let mut cfg = stub::config("http://127.0.0.1:9");
+                cfg.backend = backend;
+                cfg.api_key = key.map(Into::into);
+                let err = InferenceNode::new(Arc::from("judge"), cfg, &dir)
+                    .err()
+                    .unwrap();
+                assert!(format!("{err:#}").contains(var), "{err:#}");
+            }
         }
         let _ = std::fs::remove_dir_all(dir);
     }

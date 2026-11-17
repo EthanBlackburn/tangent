@@ -21,9 +21,9 @@ pub struct InferenceConfig {
     pub backend: Backend,
 
     /// Base URL of the chat completions API (`openai` backend);
-    /// [`DEFAULT_URL`] when unset. The `anthropic` backend takes one only to
-    /// reach its API at another address (a gateway), and the `bedrock`
-    /// backend reads none, so neither gets a default.
+    /// [`DEFAULT_URL`] when unset. The `anthropic` and `responses` backends
+    /// take one only to reach their API at another address (a gateway), and
+    /// the `bedrock` backend reads none, so none of them gets a default.
     #[serde(
         default,
         deserialize_with = "some_string",
@@ -32,8 +32,8 @@ pub struct InferenceConfig {
     pub url: Option<String>,
 
     /// The key: the `openai` backend's bearer token, e.g.
-    /// "${OPENAI_API_KEY}", or the `anthropic` backend's, which needs one,
-    /// e.g. "${ANTHROPIC_API_KEY}".
+    /// "${OPENAI_API_KEY}", or the `anthropic` or `responses` backend's,
+    /// which need one, e.g. "${ANTHROPIC_API_KEY}".
     #[serde(default, skip_serializing)]
     pub api_key: Option<SecretString>,
 
@@ -123,6 +123,9 @@ pub enum Backend {
     Anthropic,
     /// Amazon Bedrock through the Converse API, with the AWS credential chain.
     Bedrock,
+    /// OpenAI's Responses API, with `api_key`: what its models that think
+    /// take tools through, which chat completions refuses them.
+    Responses,
 }
 
 /// The `bedrock` backend's AWS settings.
