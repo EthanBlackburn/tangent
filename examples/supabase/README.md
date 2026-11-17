@@ -23,7 +23,10 @@ back.
 | `alerts.ndjson` | the records it flagged |
 | `state.sqlite` | where the source stopped, so a restart resumes |
 
-The judge is any OpenAI-compatible model, a local one on `:8080` by default:
+The judge is any OpenAI-compatible model, a local one on `:8080` by default.
+For a hosted one, include `../../packs/judge/hosted.yaml` in place of
+`ingest.yaml` in `tangent.yaml` ([packs/judge](/packs/judge#the-model) says
+why), then name it:
 
 ```bash
 JUDGE_URL=https://api.openai.com/v1 JUDGE_MODEL=gpt-5.1 JUDGE_API_KEY=$OPENAI_API_KEY make run

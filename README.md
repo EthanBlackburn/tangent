@@ -421,7 +421,7 @@ tangent run --config tangent.yaml
 
 `tangent plugin compile` in place of `fetch` builds the packs here, from source, for a pack you are changing: it needs the Rust WASM toolchain, which `../tangent/examples/enrich/setup.sh` (without `data`) installs.
 
-The judge is any OpenAI-compatible model: `JUDGE_URL` (a local model on `:8080` by default), `JUDGE_MODEL` (`glm-4.7-flash`), `JUDGE_API_KEY`. Each pack's README has its source's block and credentials, [packs](/packs/README.md#the-profile) the profile's keys, and [packs/judge](/packs/judge#the-model) the judge's settings.
+The judge is any OpenAI-compatible model: `JUDGE_URL` (a local model on `:8080` by default), `JUDGE_MODEL` (`glm-4.7-flash`), `JUDGE_API_KEY`; a hosted one includes the judge pack's `hosted.yaml` in place of its `ingest.yaml`. Each pack's README has its source's block and credentials, [packs](/packs/README.md#the-profile) the profile's keys, and [packs/judge](/packs/judge#the-model) the judge's settings.
 
 A `tcp` source can feed several packs: route it to each, and each takes only its own `source` values. A record whose `source` no included pack takes goes no further, and `tangent run` says so. Your product's own logs have no pack: no two products' are alike, so they want a plugin of your own that fills `_norm` ([Writing a pack](#writing-a-pack) starts from packs/okta; `tangent plugin scaffold` from nothing). The judge's logfmt wants a row for each of its sources in your config, under `inference.judge.encoding.sources`, as [judge's ingest.yaml](/packs/judge/ingest.yaml) has for each pack's, for their times and the fields on every line; behavior-baseline passes their records through unlearned, with no `_baseline`.
 

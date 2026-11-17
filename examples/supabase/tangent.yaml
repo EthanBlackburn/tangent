@@ -7,7 +7,7 @@
 #
 # Without the two variables the source says so once and stays idle.
 include:
-  - ../../packs/judge/ingest.yaml      # the judge, and the enrich-ip and behavior-baseline packs it includes
+  - ../../packs/judge/ingest.yaml      # the judge, and the enrich-ip and behavior-baseline packs it includes; hosted.yaml in its place for a hosted model
   - ../../packs/supabase/ingest.yaml   # plugin supabase: supabase
 
 enrichment_tables:
