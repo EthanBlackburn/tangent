@@ -32,6 +32,7 @@ plugins:
 export OPENAI_API_KEY=...    # from platform.openai.com
 ```
 
+Without it tangent stops before it starts, saying `api_key` is empty.
 `reasoning_effort: low` keeps the model's thinking short: a verdict of a line
 does not need more, and thinking is paid for out of `max_tokens`.
 

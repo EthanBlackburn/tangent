@@ -33,6 +33,7 @@ plugins:
 export OPENROUTER_API_KEY=...    # from openrouter.ai/keys
 ```
 
+Without it tangent stops before it starts, saying `api_key` is empty.
 `extra` is merged into the request as it is, so it carries what is
 OpenRouter's own: `reasoning: { enabled: false }` has the model answer without
 thinking first, and a `provider` object picks who serves it, as in
