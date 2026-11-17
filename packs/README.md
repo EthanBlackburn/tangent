@@ -35,6 +35,7 @@ until it does.
 | `pack:judge/reviewed` | judge/reviewed.yaml |
 | `pack:judge/anthropic` | judge/anthropic.yaml |
 | `pack:judge/openrouter` | judge/openrouter.yaml |
+| `pack:judge/openai` | judge/openai.yaml |
 | `pack:cloudtrail` | cloudtrail/ingest.yaml |
 | `pack:github` | github/ingest.yaml |
 | `pack:okta` | okta/ingest.yaml |

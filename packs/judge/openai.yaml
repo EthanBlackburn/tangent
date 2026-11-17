@@ -1,0 +1,23 @@
+# judge, reviewed, on OpenAI's API: GPT-6 Luna judges every record and
+# GPT-6.1 Terra settles what it flagged, with the lake to query. Both speak
+# the Responses API, which Terra needs to think and query at once.
+# OPENAI_API_KEY is a key from platform.openai.com. README.md has what the
+# pair caught and what it cost.
+include:
+  - reviewed.yaml
+
+inference:
+  judge:
+    backend: responses
+    url: https://api.openai.com/v1
+    api_key: "${OPENAI_API_KEY}"
+    model: gpt-6-luna
+    max_tokens: 400                                 # per record, its thinking included
+    extra:
+      reasoning: { effort: low }                    # little thinking: the reply is the answer
+  reviewer:
+    backend: responses
+    api_key: "${OPENAI_API_KEY}"
+    model: gpt-6.1-terra
+    extra:
+      reasoning: { effort: low }                    # it thinks before each query and its report, briefly
