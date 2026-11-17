@@ -3,12 +3,13 @@
 #   tangent replay --config tangent.yaml --from 1d
 #
 # That reads the last day of your AWS account's CloudTrail (Event history,
-# every region, up to 90 days back), has Claude Haiku 5.5 on Bedrock judge
+# every region, up to 90 days back), has Claude Haiku 5.5 (Anthropic's API) judge
 # each actor's records, and writes what it flagged to alerts.ndjson and every
 # verdict to verdicts.ndjson. `tangent config --config tangent.yaml` prints it
-# merged with the packs.
+# merged with the packs. `tangent init --model` writes this file for another
+# model: anthropic, bedrock, openrouter, openai or local.
 
-# The AWS profile (~/.aws/config) that reads CloudTrail and calls Bedrock:
+# The AWS profile (~/.aws/config) that reads CloudTrail:
 # $AWS_PROFILE, or default when it is unset, as the aws CLI picks one.
 x-profile: &profile "${AWS_PROFILE:-default}"    # EDIT to name another profile
 
@@ -24,9 +25,10 @@ sources:
 
 inference:
   judge:
-    backend: bedrock
-    model: us.anthropic.claude-haiku-5-5
-    aws: { profile: *profile, region: us-west-2 }   # a US region: Bedrock serves this model there
+    backend: anthropic
+    url: https://api.anthropic.com
+    api_key: "${ANTHROPIC_API_KEY}"                 # a key from console.anthropic.com
+    model: claude-haiku-5-5
     max_tokens: 400                                 # per record
     extra: { thinking: { type: disabled } }         # no thinking: the reply is the answer
 
