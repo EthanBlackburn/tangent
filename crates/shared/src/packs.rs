@@ -39,6 +39,9 @@ pub const FILES: &[(&str, &str)] = files![
     "judge/judge.schema.json",
     "judge/review.yaml",
     "judge/review.md",
+    "judge/reviewed.yaml",
+    "judge/anthropic.yaml",
+    "judge/openrouter.yaml",
     "cloudtrail/ingest.yaml",
     "github/ingest.yaml",
     "okta/ingest.yaml",
@@ -358,6 +361,7 @@ mod tests {
         );
         assert_eq!(path_of("judge"), Some("judge/ingest.yaml"));
         assert_eq!(path_of("judge/hosted"), Some("judge/hosted.yaml"));
+        assert_eq!(path_of("judge/anthropic"), Some("judge/anthropic.yaml"));
         assert_eq!(path_of("cloudtrail"), Some("cloudtrail/ingest.yaml"));
         assert_eq!(
             path_of("google_workspace"),
@@ -382,8 +386,11 @@ mod tests {
             "pack:github",
             "pack:google_workspace",
             "pack:judge",
+            "pack:judge/anthropic",
             "pack:judge/hosted",
+            "pack:judge/openrouter",
             "pack:judge/review",
+            "pack:judge/reviewed",
             "pack:macos",
             "pack:macos/judge",
             "pack:macos/lake",
