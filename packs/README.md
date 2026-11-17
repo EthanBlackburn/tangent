@@ -31,6 +31,10 @@ until it does.
 | `pack:behavior-baseline` | behavior-baseline/ingest.yaml |
 | `pack:judge` | judge/ingest.yaml |
 | `pack:judge/hosted` | judge/hosted.yaml |
+| `pack:judge/review` | judge/review.yaml |
+| `pack:judge/reviewed` | judge/reviewed.yaml |
+| `pack:judge/anthropic` | judge/anthropic.yaml |
+| `pack:judge/openrouter` | judge/openrouter.yaml |
 | `pack:cloudtrail` | cloudtrail/ingest.yaml |
 | `pack:github` | github/ingest.yaml |
 | `pack:okta` | okta/ingest.yaml |

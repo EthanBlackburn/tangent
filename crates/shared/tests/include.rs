@@ -1362,6 +1362,53 @@ dag:
     }
 }
 
+/// A provider's pack is the judge and the reviewer with its two models and
+/// nothing of another's: no local sampling settings on the judge, none of
+/// Claude on Bedrock's on the reviewer, and the lake and reviews the
+/// reviewer needs.
+#[test]
+fn a_provider_s_pack_names_the_judge_and_the_reviewer() {
+    let config = |pack: &str| {
+        let dir = tree(&[(
+            "tangent.yaml",
+            &format!(
+                "
+include: [pack:judge/{pack}, pack:cloudtrail]
+sources:
+  aws_audit: {{ type: cloudtrail, region: us-east-1 }}
+dag:
+  - from: aws_audit
+    to: [cloudtrail]
+  - from: cloudtrail
+    to: [lake, baseline_builder, baseline_renderer]
+"
+            ),
+        )]);
+        let loaded = load(&dir, "tangent.yaml").unwrap();
+        loaded.config.validate().unwrap();
+        loaded.config
+    };
+    let keys = |node: &InferenceConfig| node.extra.keys().cloned().collect::<Vec<_>>();
+
+    let claude = config("anthropic");
+    let (judge, reviewer) = (&claude.inference["judge"], &claude.inference["reviewer"]);
+    assert_eq!(judge.model, "claude-haiku-5-5");
+    assert_eq!(
+        (judge.temperature, keys(judge)),
+        (None, vec!["thinking".to_string()])
+    );
+    assert_eq!(reviewer.model, "claude-sonnet-5-5");
+    assert_eq!(reviewer.aws.region, None, "Bedrock's, gone");
+    assert!(claude.sinks.contains_key("lake") && claude.sinks.contains_key("reviews"));
+    assert_eq!(claude.plugins["review"].tables["lake"], "lake");
+
+    let open = config("openrouter");
+    let (judge, reviewer) = (&open.inference["judge"], &open.inference["reviewer"]);
+    assert_eq!(judge.model, reviewer.model);
+    assert_eq!(judge.url, reviewer.url);
+    assert_eq!(keys(reviewer), ["reasoning"], "none of Claude's settings");
+}
+
 /// A pack built in names no plugin source or fixtures, which tangent does
 /// not carry: `tangent plugin compile` says such a plugin is prebuilt, for
 /// `tangent plugin fetch`, and `tangent plugin test` has none to run. A

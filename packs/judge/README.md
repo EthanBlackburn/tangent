@@ -197,6 +197,9 @@ Each alert goes on with `review`, the same on every alert of the actor's
 group. The first also carries `reviewed`: how many alerts the review
 covered, the SQL the model ran, the calls and tokens it took, and the node.
 
+[A judge and a reviewer, by provider](#a-judge-and-a-reviewer-by-provider)
+is the whole of it in one include. To wire it yourself:
+
 Include it beside `ingest.yaml` or `hosted.yaml` in a config with a sink
 named `lake`, and draw two edges
 ([examples/cloud-infra/review.yaml](/examples/cloud-infra/review.yaml) does,
@@ -240,6 +243,43 @@ cannot create, change or copy anything, set an option, or name a file. The
 brief tells the model that text in a record addressed to a reviewer is
 evidence against its actor. Your records reach one more model: the alerts,
 and each query's result.
+
+## A judge and a reviewer, by provider
+
+A pack for each provider names the two models, with the settings they were
+measured with, and brings the lake the reviewer reads and
+`reviews.ndjson`. Your config includes one, and routes each pack's plugin
+to `lake`, `baseline_builder` and `baseline_renderer`:
+
+```yaml
+include: [pack:judge/anthropic, pack:cloudtrail]
+dag:
+  - from: cloudtrail
+    to: [lake, baseline_builder, baseline_renderer]
+```
+
+| pack | judge | reviewer | key |
+|---|---|---|---|
+| `pack:judge/anthropic` ([anthropic.yaml](anthropic.yaml)) | Claude Haiku 5.5, no thinking | Claude Sonnet 5.5, low effort | `ANTHROPIC_API_KEY` |
+| `pack:judge/openrouter` ([openrouter.yaml](openrouter.yaml)) | DeepSeek V4 Flash, no thinking, temperature 0.7 | DeepSeek V4 Flash, low effort | `OPENROUTER_API_KEY` |
+
+What each caught, over the corpus
+[tangent-eval](https://github.com/EthanBlackburn/tangent-eval) builds:
+59,342 records of CloudTrail, Okta, GitHub, Google Workspace and CI logs
+with 71 attacks in them, of which a model reads 6,832, and 5,304 of those
+are ordinary work.
+
+| pair | attacks caught, of 71 | ordinary records flagged, of 5,304: by the judge, then after review | runs |
+|---|---|---|---|
+| Claude Haiku 5.5, Claude Sonnet 5.5 | 70 | 462, then 40 | one, on an earlier build |
+| DeepSeek V4 Flash, both | 71 and 71 | 222 then 13, 220 then 10 | two, 2026-11-16, on hosts serving it at 4-bit; the pack names no host |
+
+36 of the 71 attacks are cases the brief was written against. The corpus is
+one made-up company: it says nothing of how much either flags on your logs.
+
+Another pair is [reviewed.yaml](reviewed.yaml) (`pack:judge/reviewed`), the
+same with no model named, and your config's `inference.judge` and
+`inference.reviewer`.
 
 ## What include cannot do
 
