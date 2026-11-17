@@ -262,6 +262,7 @@ dag:
 |---|---|---|---|
 | `pack:judge/anthropic` ([anthropic.yaml](anthropic.yaml)) | Claude Haiku 5.5, no thinking | Claude Sonnet 5.5, low effort | `ANTHROPIC_API_KEY` |
 | `pack:judge/openrouter` ([openrouter.yaml](openrouter.yaml)) | DeepSeek V4 Flash, no thinking, temperature 0.7 | DeepSeek V4 Flash, low effort | `OPENROUTER_API_KEY` |
+| `pack:judge/openai` ([openai.yaml](openai.yaml)) | GPT-6 Luna, low effort | GPT-6.1 Terra, low effort | `OPENAI_API_KEY` |
 
 What each caught, over the corpus
 [tangent-eval](https://github.com/EthanBlackburn/tangent-eval) builds:
@@ -269,10 +270,11 @@ What each caught, over the corpus
 with 71 attacks in them, of which a model reads 6,832, and 5,304 of those
 are ordinary work.
 
-| pair | attacks caught, of 71 | ordinary records flagged, of 5,304: by the judge, then after review | runs |
-|---|---|---|---|
-| Claude Haiku 5.5, Claude Sonnet 5.5 | 70 | 462, then 40 | one, on an earlier build |
-| DeepSeek V4 Flash, both | 71 and 71 | 222 then 13, 220 then 10 | two, 2026-11-16, on hosts serving it at 4-bit; the pack names no host |
+| pair | attacks caught, of 71 | ordinary records flagged, of 5,304: by the judge, then after review | model fees a run | runs |
+|---|---|---|---|---|
+| Claude Haiku 5.5, Claude Sonnet 5.5 | 70 | 462, then 40 | not measured | one, on an earlier build |
+| DeepSeek V4 Flash, both | 71 and 71 | 222 then 13, 220 then 10 | $2.25 | two, 2026-11-16, on hosts serving it at 4-bit; the pack names no host |
+| GPT-6 Luna, GPT-6.1 Terra | 71 | 277, then 20 | $6.18, from the tokens at list price | one, 2026-11-17 |
 
 36 of the 71 attacks are cases the brief was written against. The corpus is
 one made-up company: it says nothing of how much either flags on your logs.

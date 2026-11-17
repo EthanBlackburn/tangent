@@ -25,10 +25,10 @@ It reads CloudTrail as `$AWS_PROFILE`, or your default AWS profile when that is 
 | `anthropic` (the default) | Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews what it flags, Anthropic's API | `ANTHROPIC_API_KEY` |
 | `bedrock` | Claude Haiku 5.5 on Amazon Bedrock | the same AWS profile, with Bedrock access to the model in every US region |
 | `openrouter` | DeepSeek V4 Flash, open weights, judges and reviews what it flags | `OPENROUTER_API_KEY` |
-| `openai` | GPT-6 Luna, OpenAI's API | `OPENAI_API_KEY` |
+| `openai` | GPT-6 Luna judges and GPT-6.1 Terra reviews what it flags, OpenAI's API | `OPENAI_API_KEY` |
 | `local` | a local model: a server you run at `http://localhost:8080/v1` (llama-server, mlx_lm.server, Ollama, vLLM) | the server running; nothing leaves the machine |
 
-The first and third are a judge and a reviewer, the pair the [judge pack](../packs/judge/README.md#a-judge-and-a-reviewer-by-provider) measured: the judge flags freely, and the reviewer settles each actor's alerts with the day's records to query. The others are a judge alone.
+All but `bedrock` and `local` are a judge and a reviewer, the pair the [judge pack](../packs/judge/README.md#a-judge-and-a-reviewer-by-provider) measured: the judge flags freely, and the reviewer settles each actor's alerts with the day's records to query. Those two are a judge alone.
 
 3. Replay the last day:
 

@@ -9,13 +9,13 @@ use std::io::{ErrorKind, Write as _};
 use std::path::Path;
 
 /// The config `tangent init` writes for [`Model::Anthropic`]: a judge and a
-/// reviewer, from the provider's pack. OpenRouter's is this one with its own
-/// parts in place of Anthropic's.
+/// reviewer, from the provider's pack. OpenRouter's and OpenAI's are this
+/// one with their own parts in place of Anthropic's.
 const REVIEWED: &str = include_str!("init.yaml");
 
 /// The config for [`Model::Bedrock`]: a judge alone, its settings in the
-/// file. OpenAI's and a local model's are this one with their own parts in
-/// place of Bedrock's.
+/// file. A local model's is this one with its own parts in place of
+/// Bedrock's.
 const JUDGED: &str = include_str!("init-judge.yaml");
 
 /// Who serves the model that judges.
@@ -27,7 +27,7 @@ pub enum Model {
     Bedrock,
     /// DeepSeek V4 Flash, open weights, which also reviews, through OpenRouter, with OPENROUTER_API_KEY
     Openrouter,
-    /// GPT-6 Luna through OpenAI's API, with OPENAI_API_KEY
+    /// GPT-6 Luna, reviewed by GPT-6.1 Terra, through OpenAI's API, with OPENAI_API_KEY
     Openai,
     /// A local model: a server you run at http://localhost:8080/v1 (llama-server, mlx_lm.server, Ollama, vLLM)
     Local,
@@ -35,6 +35,7 @@ pub enum Model {
 
 const ANTHROPIC: &str = "  - pack:judge/anthropic       # Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews; the key is $ANTHROPIC_API_KEY, from console.anthropic.com";
 const OPENROUTER: &str = "  - pack:judge/openrouter      # DeepSeek V4 Flash judges and reviews; the key is $OPENROUTER_API_KEY, from openrouter.ai/keys";
+const OPENAI: &str = "  - pack:judge/openai          # GPT-6 Luna judges, GPT-6.1 Terra reviews; the key is $OPENAI_API_KEY, from platform.openai.com";
 const HOSTED: &str = "  - pack:judge/hosted          # the judge, for a hosted model, with the enrich-ip and behavior-baseline packs";
 const LOCAL: &str = "  - pack:judge                 # the judge, for a local model, with the enrich-ip and behavior-baseline packs";
 
@@ -45,7 +46,7 @@ impl Model {
             Model::Anthropic => "judged by Claude Haiku 5.5, and what it flags reviewed by Claude Sonnet 5.5 (Anthropic's API)",
             Model::Bedrock => "judged by Claude Haiku 5.5 on Bedrock",
             Model::Openrouter => "judged by DeepSeek V4 Flash, and what it flags reviewed by the same model (OpenRouter)",
-            Model::Openai => "judged by GPT-6 Luna (OpenAI's API)",
+            Model::Openai => "judged by GPT-6 Luna, and what it flags reviewed by GPT-6.1 Terra (OpenAI's API)",
             Model::Local => "judged by the local model at localhost:8080",
         }
     }
@@ -66,8 +67,9 @@ impl Model {
         match self {
             Model::Anthropic => ANTHROPIC,
             Model::Openrouter => OPENROUTER,
+            Model::Openai => OPENAI,
             Model::Local => LOCAL,
-            Model::Bedrock | Model::Openai => HOSTED,
+            Model::Bedrock => HOSTED,
         }
     }
 
@@ -75,7 +77,7 @@ impl Model {
     /// whose pack does not name it.
     fn judge(self) -> Option<&'static str> {
         Some(match self {
-            Model::Anthropic | Model::Openrouter => return None,
+            Model::Anthropic | Model::Openrouter | Model::Openai => return None,
             Model::Bedrock => {
                 r#"inference:
   judge:
@@ -84,16 +86,6 @@ impl Model {
     aws: { profile: *profile, region: us-west-2 }   # a US region: Bedrock serves this model there
     max_tokens: 400                                 # per record
     extra: { thinking: { type: disabled } }         # no thinking: the reply is the answer
-"#
-            }
-            Model::Openai => {
-                r#"inference:
-  judge:
-    url: https://api.openai.com/v1
-    api_key: "${OPENAI_API_KEY}"                    # a key from platform.openai.com
-    model: gpt-6-luna
-    max_tokens: 400                                 # per record
-    extra: { reasoning_effort: low }                # little thinking: the reply is the answer
 "#
             }
             Model::Local => {
@@ -128,8 +120,8 @@ impl Model {
     /// judge alone where it has not.
     fn base(self) -> (Model, &'static str) {
         match self {
-            Model::Anthropic | Model::Openrouter => (Model::Anthropic, REVIEWED),
-            Model::Bedrock | Model::Openai | Model::Local => (Model::Bedrock, JUDGED),
+            Model::Anthropic | Model::Openrouter | Model::Openai => (Model::Anthropic, REVIEWED),
+            Model::Bedrock | Model::Local => (Model::Bedrock, JUDGED),
         }
     }
 
@@ -250,7 +242,7 @@ mod tests {
         }
     }
 
-    /// Anthropic's and OpenRouter's configs have the provider's pair: a
+    /// Anthropic's, OpenRouter's and OpenAI's configs have the provider's pair: a
     /// reviewer, the lake it reads, which the plugin's records are routed
     /// to, and reviews.ndjson. The others have a judge alone.
     #[test]
@@ -262,7 +254,7 @@ mod tests {
                 .unwrap()
                 .config;
             cfg.validate().unwrap();
-            let reviewed = matches!(model, Model::Anthropic | Model::Openrouter);
+            let reviewed = !matches!(model, Model::Bedrock | Model::Local);
             assert_eq!(
                 cfg.inference.contains_key("reviewer"),
                 reviewed,
@@ -303,7 +295,7 @@ mod tests {
                     "deepseek/deepseek-v4-flash-0731",
                 ),
                 Model::Openai => (
-                    Backend::Openai,
+                    Backend::Responses,
                     Some("https://api.openai.com/v1"),
                     "gpt-6-luna",
                 ),

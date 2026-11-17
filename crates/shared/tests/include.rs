@@ -1402,6 +1402,15 @@ dag:
     assert!(claude.sinks.contains_key("lake") && claude.sinks.contains_key("reviews"));
     assert_eq!(claude.plugins["review"].tables["lake"], "lake");
 
+    let gpt = config("openai");
+    let (judge, reviewer) = (&gpt.inference["judge"], &gpt.inference["reviewer"]);
+    assert_eq!(
+        (judge.model.as_str(), reviewer.model.as_str()),
+        ("gpt-6-luna", "gpt-6.1-terra")
+    );
+    assert_eq!(keys(judge), ["reasoning"]);
+    assert_eq!(keys(reviewer), ["reasoning"], "none of Claude's settings");
+
     let open = config("openrouter");
     let (judge, reviewer) = (&open.inference["judge"], &open.inference["reviewer"]);
     assert_eq!(judge.model, reviewer.model);
