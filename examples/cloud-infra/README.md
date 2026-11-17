@@ -82,7 +82,10 @@ built from a checkout: `make test PLUGINS=compile`, then `make run PLUGINS=compi
 (`./setup.sh toolchain`). `make fetch` puts the release's builds back.
 
 The judge defaults to a local model on `:8080`
-([packs/judge](/packs/judge#the-model) says how to serve it). For a hosted one:
+([packs/judge](/packs/judge#the-model) says how to serve it). For a hosted one,
+include `../../packs/judge/hosted.yaml` in place of `ingest.yaml` in
+`tangent.yaml`: the same judge without the local model's sampling settings,
+which a hosted model refuses on every request. Then name it:
 
 ```bash
 JUDGE_URL=https://api.openai.com/v1 JUDGE_MODEL=gpt-5.1 JUDGE_API_KEY=$OPENAI_API_KEY make run

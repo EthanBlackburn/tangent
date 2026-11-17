@@ -97,6 +97,17 @@ These are the settings tangent-eval's
 [harness/maincfg.py](https://github.com/EthanBlackburn/tangent-eval/blob/main/harness/maincfg.py)
 runs Haiku 5.5 with.
 
+A model that thinks before it answers spends `max_tokens`, 200 a record, on
+the thinking, and a reply cut short is an error on its records. Have it
+answer without, in your config beside the include; on OpenRouter, where
+DeepSeek V4 Flash thinks unless told not to:
+
+```yaml
+inference:
+  judge:
+    extra: { reasoning: { enabled: false } }
+```
+
 The records go to the model as logfmt, a line each, each source written as
 its row under `encoding.sources` says: about half the tokens of JSON lines, and an
 actor's `_baseline` written once per request. Your config can send JSON

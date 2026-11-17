@@ -6,7 +6,8 @@ TANGENT ?= tangent
 #   SUPABASE_ACCESS_TOKEN   a Management API access token that can read its logs (analytics:read)
 #   SUPABASE_SINCE          how far back the first run reads: 1h by default, a day at most is wise
 # The judge: any OpenAI-compatible endpoint, a local model on :8080 by default
-# (packs/judge/ingest.yaml has the defaults). A hosted one:
+# (packs/judge/ingest.yaml has the defaults). A hosted one, with
+# packs/judge/hosted.yaml in place of ingest.yaml in tangent.yaml:
 #   JUDGE_URL=https://api.openai.com/v1 JUDGE_MODEL=gpt-5.1 JUDGE_API_KEY=$OPENAI_API_KEY make run
 
 # The plugins, one of two ways, as in examples/cloud-infra: `fetch`, prebuilt
