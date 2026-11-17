@@ -34,6 +34,7 @@ plugins:
   flagged:
     module_type: rust
     path: flagged
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
 ```
 
 ## A model on your machine
@@ -76,9 +77,15 @@ model.
 In this directory, with the model server up:
 
 ```bash
-tangent plugin compile --config tangent.yaml    # builds flagged/ into plugins/
 tangent run --config tangent.yaml
 ```
+
+Nothing is compiled: `tangent run` fetches the `flagged` plugin from the tangent
+release of its own version, once, and `gh attestation verify` checks that this
+repository's release workflow built it ([Prebuilt plugins](/README.md#prebuilt-plugins));
+it needs `gh`, not a login. To build it from [flagged/](flagged)
+instead, as after changing it: `tangent plugin compile --config tangent.yaml`,
+which needs the Rust WASM toolchain.
 
 In another shell, send the events, and once the model has answered (a few
 seconds for these six) read what it flagged:
