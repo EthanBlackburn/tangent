@@ -244,6 +244,7 @@ impl DagRuntime {
     /// take minutes over them, past what shutdown waits.
     pub async fn finish(&self) {
         drained(&self.router).await;
+        self.sink_manager.seal().await;
         close_groups(&self.groups, &self.router, None).await;
     }
 
@@ -258,6 +259,7 @@ impl DagRuntime {
     /// feeding the DAG faster than groups go quiet, whose open groups would
     /// otherwise only grow.
     pub async fn close_open_groups(&self) {
+        self.sink_manager.seal().await;
         for (g, _, _) in &self.groups {
             let _ = g.close_open().await;
         }

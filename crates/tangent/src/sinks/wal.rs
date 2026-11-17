@@ -490,17 +490,7 @@ impl Sink for DurableFileSink {
             let _ = h.await;
         }
 
-        let keys: Vec<RouteKey> = {
-            let routes = self.routes.lock().await;
-            routes
-                .iter()
-                .filter(|(_, rs)| rs.cur.bytes > 0)
-                .map(|(k, _)| k.clone())
-                .collect()
-        };
-        for k in keys {
-            let _ = self.rotate_route(k, None).await;
-        }
+        self.seal_open().await;
         // a route whose only write failed holds an empty file: it goes,
         // rather than wait in the WAL for the next start
         let empty: Vec<PathBuf> = {
@@ -540,6 +530,35 @@ impl Sink for DurableFileSink {
             }
         }
         Ok(())
+    }
+
+    async fn seal(&self) -> Result<()> {
+        self.seal_open().await;
+        // Each send is a task of its own, counted until it ends. The set
+        // they are in is flush's to empty: taken here, a file the rotator
+        // sealed meanwhile would lose its send. One that fails is the
+        // rotator's to try again.
+        while self.inflight.load(Ordering::Acquire) > 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        Ok(())
+    }
+}
+
+impl DurableFileSink {
+    /// Seals every route's open file that holds anything.
+    async fn seal_open(&self) {
+        let keys: Vec<RouteKey> = {
+            let routes = self.routes.lock().await;
+            routes
+                .iter()
+                .filter(|(_, rs)| rs.cur.bytes > 0)
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+        for k in keys {
+            let _ = self.rotate_route(k, None).await;
+        }
     }
 }
 
@@ -911,6 +930,42 @@ mod tests {
             Vec::<String>::new(),
             "sent, and nothing left"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A seal sends what is open and leaves the sink as it was: it takes
+    /// the next write, and seals that one by age.
+    #[tokio::test]
+    async fn seal_sends_what_is_open_and_the_sink_goes_on() {
+        let dir = wal_dir("seal");
+        let rec = Arc::new(Recorder::default());
+        let wal = DurableFileSink::new(
+            rec.clone(),
+            &dir,
+            4,
+            1 << 20,
+            Duration::from_millis(400),
+            Compression::None,
+            Encoding::NDJSON,
+        )
+        .await
+        .unwrap();
+        wal.write(write("{\"n\":1}\n")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), wal.seal())
+            .await
+            .expect("seal returns")
+            .unwrap();
+        assert_eq!(rec.got.lock().await.len(), 1, "sent by the seal");
+        wal.write(write("{\"n\":2}\n")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while rec.got.lock().await.len() < 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the next write sealed by age");
+        assert_eq!(rec.got.lock().await[1].1, b"{\"n\":2}\n");
+        wal.flush().await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 

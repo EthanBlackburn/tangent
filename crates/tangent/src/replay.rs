@@ -22,6 +22,7 @@ use serde_json::Value;
 use tangent_shared::dag::NodeRef;
 use tangent_shared::sinks::blackhole::BlackholeConfig;
 use tangent_shared::sinks::common::{Encoding, SinkKind};
+use tangent_shared::sinks::rolling_file;
 use tangent_shared::sources::common::SourceConfig;
 use tangent_shared::Config;
 use tokio::sync::oneshot;
@@ -154,7 +155,7 @@ async fn sweep(
     // into a live pipeline's, it would be neither.
     cfg.runtime.state.path = state_dir.join("state.sqlite");
     cfg.runtime.state.read_only = false;
-    keep_local(&mut cfg);
+    keep_local(&mut cfg, state_dir)?;
     let outputs = outputs(&cfg);
 
     let started = Instant::now();
@@ -335,38 +336,29 @@ impl Ack for Stored {
 
 /// Sinks that send what they are given on become blackholes: a replay of
 /// last month posts no alerts, archives nothing a second time, and puts
-/// nothing in the queue another pipeline reads. A rolling_file sink's WAL is
-/// the live pipeline's when replay runs beside it, and opening it would seal
-/// and publish the file the live process is writing. A file sink is where
-/// the replay's answers are read. A plugin that queries a lake reads the live
-/// pipeline's, which holds none of what the replay read.
-fn keep_local(cfg: &mut Config) {
+/// nothing in the queue another pipeline reads. A file sink is where the
+/// replay's answers are read. A rolling_file sink is kept, as a lake of the
+/// replay's own under `state_dir`, beside its history and gone with it: a
+/// plugin that queries the lake (a reviewer) finds the range's records
+/// there, and the live pipeline's lake and WAL, whose open file replay
+/// would otherwise seal and publish, are left as they are.
+fn keep_local(cfg: &mut Config, state_dir: &Path) -> Result<()> {
     for (name, sink) in &mut cfg.sinks {
-        let kept = match sink.kind {
-            SinkKind::File(_) | SinkKind::Blackhole(_) => true,
-            SinkKind::Slack(_)
-            | SinkKind::S3(_)
-            | SinkKind::RollingFile(_)
-            | SinkKind::Sqlite(_) => false,
-        };
-        if !kept {
-            tracing::warn!(sink = %name, "replay sends and archives nothing; this sink is left out");
-            sink.kind = SinkKind::Blackhole(BlackholeConfig {});
+        match &mut sink.kind {
+            SinkKind::File(_) | SinkKind::Blackhole(_) => {}
+            SinkKind::RollingFile(lake) => {
+                let (_, below) = rolling_file::split(&lake.path)?;
+                let dir = state_dir.join("lake").join(name.as_ref());
+                lake.path = dir.join("files").join(below).to_string_lossy().into_owned();
+                lake.wal_path = dir.join("wal");
+            }
+            SinkKind::Slack(_) | SinkKind::S3(_) | SinkKind::Sqlite(_) => {
+                tracing::warn!(sink = %name, "replay sends and archives nothing; this sink is left out");
+                sink.kind = SinkKind::Blackhole(BlackholeConfig {});
+            }
         }
     }
-    // A table is a sink's records, and replay writes none to the sinks it
-    // left out: the plugin would read the live pipeline's, today's records
-    // and not the range's.
-    let sinks = &cfg.sinks;
-    for (name, plugin) in &mut cfg.plugins {
-        plugin.tables.retain(|table, sink| {
-            let kept = sinks.get(sink.as_str()).is_none_or(|s| s.table().is_ok());
-            if !kept {
-                tracing::warn!(plugin = %name, %table, %sink, "replay writes nothing to this sink, so the plugin has no such table: a statement that names it fails");
-            }
-            kept
-        });
-    }
+    Ok(())
 }
 
 /// Each NDJSON file sink and its size now: what the replay adds comes after.
@@ -556,7 +548,7 @@ sources:
   test: {{ type: tcp, bind_address: 127.0.0.1:0 }}
 sinks:
   read: {{ type: file, path: {r}/read.ndjson, compression: {{ type: none }} }}
-  lake: {{ type: rolling_file, path: {r}/lake/logs/%H, wal_path: {r}/lake/wal, max_file_age_seconds: 3600 }}
+  lake: {{ type: rolling_file, path: {r}/lake/logs/%H, wal_path: {r}/lake/wal, max_file_age_seconds: 3600, compression: {{ type: none }} }}
 dag:
   - from: test
     to: [judge, lake]
@@ -708,10 +700,12 @@ dag:
         assert!(e.to_string().contains("has no cloudtrail source"), "{e}");
     }
 
-    /// A rolling_file sink is left out: the live pipeline's open WAL file
-    /// is where it was, unsealed, and the lake gains no files.
+    /// A rolling_file sink writes a lake of the replay's own, beside its
+    /// state: each hour's records under that hour there. The live
+    /// pipeline's open WAL file is where it was, unsealed, and its lake
+    /// gains no files.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_live_pipelines_lake_is_left_as_it_is() {
+    async fn a_lake_is_replays_own_and_the_live_one_is_left_as_it_is() {
         let (dir, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         two_hours(dir.path(), state.path(), |_| {}).await;
         assert_eq!(
@@ -719,6 +713,19 @@ dag:
             "{\"live\":1}\n"
         );
         assert!(!dir.path().join("lake/logs").exists());
+        let own = state.path().join("lake/lake");
+        let hour = |h: &str| {
+            let mut lines = 0;
+            for f in std::fs::read_dir(own.join("files").join(h)).unwrap() {
+                lines += std::fs::read_to_string(f.unwrap().path())
+                    .unwrap()
+                    .lines()
+                    .count();
+            }
+            lines
+        };
+        assert_eq!((hour("00"), hour("01")), (3, 3));
+        assert_eq!(std::fs::read_dir(own.join("wal")).unwrap().count(), 0);
     }
 
     /// A config whose state is another pipeline's, read-only, replays with a
