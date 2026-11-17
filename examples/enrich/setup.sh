@@ -38,6 +38,14 @@ install_wasm_tools() {
   cargo install wasm-tools
 }
 
+# get ARGS: curl, failing on an HTTP error and trying a failed transfer four
+# more times, whatever failed (a reset connection is not among the errors
+# curl retries on its own, and one such in a dozen downloads stopped the
+# setup). --retry-all-errors is curl 7.71's, 2020.
+get() {
+  curl -fsSL --retry 4 --retry-all-errors "$@"
+}
+
 # fetch URL DEST: download, or refresh DEST only if the server has a newer file.
 # The download lands beside DEST and is renamed over it only when complete: a
 # cut-off transfer written to DEST itself would be newer than the server's
@@ -46,14 +54,14 @@ install_wasm_tools() {
 fetch() {
   local url=$1 dest=$2 part="$2.$$.part"
   if [ -f "$dest" ]; then
-    if curl -fsSL -z "$dest" -o "$part" "$url"; then
+    if get -z "$dest" -o "$part" "$url"; then
       [ ! -f "$part" ] || mv -f "$part" "$dest"
     else
       rm -f "$part"
       echo "warning: could not refresh $dest" >&2
     fi
   else
-    curl -fsSL -o "$part" "$url" || { rm -f "$part"; return 1; }
+    get -o "$part" "$url" || { rm -f "$part"; return 1; }
     mv -f "$part" "$dest"
   fi
 }
@@ -64,7 +72,7 @@ fetch_geolite2() {
     local tmp
     tmp=$(mktemp -d)
     for edition in GeoLite2-Country GeoLite2-ASN; do
-      curl -fsSL "https://download.maxmind.com/app/geoip_download?edition_id=${edition}&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" \
+      get "https://download.maxmind.com/app/geoip_download?edition_id=${edition}&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" \
         | tar -xz -C "$tmp"
       find "$tmp" -name "${edition}.mmdb" -exec mv {} "data/${edition}.mmdb" \;
     done
