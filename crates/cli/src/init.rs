@@ -319,16 +319,22 @@ mod tests {
         }
     }
 
-    /// A hosted model gets the hosted judge's settings: none of the sampling
-    /// a local model is given, which a hosted one may refuse. The local model
-    /// keeps them.
+    /// No hosted model is sent llama.cpp's `chat_template_kwargs`, which it
+    /// would refuse; the local model keeps it. Sampling settings are the
+    /// local model's and, as its pair was measured, OpenRouter's.
     #[test]
-    fn a_hosted_model_is_sent_no_sampling_settings() {
+    fn a_hosted_model_is_sent_no_local_settings() {
         for model in Model::value_variants() {
             let (_, _, judge) = written(*model);
             let local = *model == Model::Local;
-            assert_eq!(judge.temperature.is_some(), local, "{model:?}");
-            assert_eq!(judge.extra.contains_key("top_p"), local, "{model:?}");
+            assert_eq!(
+                judge.extra.contains_key("chat_template_kwargs"),
+                local,
+                "{model:?}"
+            );
+            let sampled = matches!(model, Model::Local | Model::Openrouter);
+            assert_eq!(judge.temperature.is_some(), sampled, "{model:?}");
+            assert_eq!(judge.extra.contains_key("top_p"), sampled, "{model:?}");
         }
     }
 
