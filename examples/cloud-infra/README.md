@@ -61,10 +61,6 @@ NDJSON on :9400 ──▶ each pack ─────────┼──▶ base
 
 ## Install and run
 
-Until the release after 0.1.9, two steps come first (the paragraphs after the
-commands say why): build tangent from this checkout,
-`cargo install --path ../../crates/cli --locked`, and `export PLUGINS=compile`.
-
 ```bash
 make setup          # GeoLite2, cloud ranges, Tor exits into examples/enrich/data
 $EDITOR profile/profile.yaml
@@ -80,11 +76,8 @@ checks, before it is kept, that this repository's release workflow built it
 from that tag ([Prebuilt plugins](/README.md#prebuilt-plugins)); it needs
 `gh`, not a login.
 
-Until the release after 0.1.9 there are none to fetch (`make test` stops at
-"v0.1.9 has no baseline_builder.component.wasm"), and the packs need a tangent
-built from the checkout anyway ([Using packs](/README.md#using-packs)). Build
-the plugins here instead, as for a pack you are changing:
-`make test PLUGINS=compile`, then `make run PLUGINS=compile`, or
+To build the plugins here instead, as for a pack you are changing or a tangent
+built from a checkout: `make test PLUGINS=compile`, then `make run PLUGINS=compile`, or
 `export PLUGINS=compile` once. It installs the Rust WASM toolchain first
 (`./setup.sh toolchain`). `make fetch` puts the release's builds back.
 
