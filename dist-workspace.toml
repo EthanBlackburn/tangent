@@ -27,6 +27,12 @@ install-updater = false
 # Every binary attested with GitHub's artifact attestations
 github-attestations = true
 
+# The Macs the binaries are built on. dist 0.30.0's own choice is macos-13,
+# which GitHub no longer runs: a job that asks for it waits and never starts.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15-intel"
+
 # The packs' plugins, compiled once here and run anywhere: release artifacts
 # beside the binaries (packs/dist.sh builds them; its list and this one agree)
 [[dist.extra-artifacts]]
