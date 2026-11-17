@@ -23,6 +23,7 @@ plugins:
   flagged:
     module_type: rust
     path: ../inference-local/flagged
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
 ```
 
 ## Credentials
@@ -51,9 +52,15 @@ it was.
 In this directory:
 
 ```bash
-tangent plugin compile --config tangent.yaml    # builds ../inference-local/flagged into plugins/
 tangent run --config tangent.yaml
 ```
+
+Nothing is compiled: `tangent run` fetches the `flagged` plugin from the tangent
+release of its own version, once, and `gh attestation verify` checks that this
+repository's release workflow built it ([Prebuilt plugins](/README.md#prebuilt-plugins));
+it needs `gh`, not a login. To build it from [../inference-local/flagged](../inference-local/flagged)
+instead, as after changing it: `tangent plugin compile --config tangent.yaml`,
+which needs the Rust WASM toolchain.
 
 In another shell:
 

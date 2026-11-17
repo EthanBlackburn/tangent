@@ -1,7 +1,6 @@
 # A model on OpenAI's API reads every record; a plugin keeps what it flagged.
 #
 #   export OPENAI_API_KEY=...                   (a key from platform.openai.com)
-#   tangent plugin compile --config tangent.yaml
 #   tangent run --config tangent.yaml
 #   nc -w 1 localhost 9000 < events.ndjson
 #   cat flagged.ndjson
@@ -31,6 +30,7 @@ plugins:
   flagged:                          # the same plugin as inference-local: keeps judge.flag == true
     module_type: rust
     path: ../inference-local/flagged
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's build of it: nothing to compile (tangent plugin fetch)
 
 sinks:
   flagged_out:
