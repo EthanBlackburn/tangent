@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 use tangent_bench::BenchOptions;
 use tangent_runtime::RuntimeOptions;
 
+mod attest;
 mod fetch;
 mod init;
 use tangent_runtime::query;

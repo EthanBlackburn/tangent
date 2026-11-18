@@ -123,7 +123,7 @@ impl Default for PluginConfig {
 /// A compiled plugin on a GitHub release, with its build's attestation. The
 /// component is the release asset `asset`, its attestation bundle the asset
 /// `<asset>.sigstore.json` beside it; `tangent plugin fetch` downloads both
-/// and has `gh attestation verify` check that `repo`'s workflow built the
+/// and checks that `repo`'s workflow built the
 /// component from the release's tag before it is precompiled into tangent's
 /// cache ([`crate::cache::plugins`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

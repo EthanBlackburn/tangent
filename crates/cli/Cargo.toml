@@ -33,7 +33,15 @@ ahash = "0.8.12"
 reqwest = { version = "0.12.24", features = ["json"] }
 sha2 = "0.10.9"
 hex = "0.4.3"
+# The attestation of a fetched plugin, checked in this process (src/attest.rs):
+# the Sigstore root it carries, and aws-lc-rs for the signatures, which rustls
+# already brings.
+sigstore-verify = { version = "0.16.0", default-features = false, features = ["aws-lc-rs"] }
 
 [[bin]]
 name = "tangent"
 path = "src/main.rs"
+
+[dev-dependencies]
+# attest.rs's tests edit a bundle's statement, which is base64.
+base64 = "0.22"
