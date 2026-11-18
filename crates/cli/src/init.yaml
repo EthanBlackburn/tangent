@@ -3,18 +3,20 @@
 #   tangent replay --config tangent.yaml --from 1d
 #
 # That reads the last day of your AWS account's CloudTrail (Event history,
-# every region, up to 90 days back), has Claude Haiku 5.5 (Anthropic's API) judge
-# each actor's records, and writes what it flagged to alerts.ndjson and every
-# verdict to verdicts.ndjson. `tangent config --config tangent.yaml` prints it
-# merged with the packs. `tangent init --model` writes this file for another
-# model: anthropic, bedrock, openrouter, openai or local.
+# every region, up to 90 days back) and has each actor's records
+# judged by Claude Haiku 5.5, and what it flags reviewed by Claude Sonnet 5.5 (Anthropic's API).
+# What was flagged is in alerts.ndjson, each alert with its review in
+# reviews.ndjson, and every verdict in verdicts.ndjson. `tangent config
+# --config tangent.yaml` prints it merged with the packs. `tangent init
+# --model` writes this file for another model: anthropic, bedrock,
+# openrouter, openai or local.
 
 # The AWS profile (~/.aws/config) that reads CloudTrail:
 # $AWS_PROFILE, or default when it is unset, as the aws CLI picks one.
 x-profile: &profile "${AWS_PROFILE:-default}"    # EDIT to name another profile
 
 include:
-  - pack:judge/hosted          # the judge, for a hosted model, with the enrich-ip and behavior-baseline packs
+  - pack:judge/anthropic       # Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews; the key is $ANTHROPIC_API_KEY, from console.anthropic.com
   - pack:cloudtrail            # plugin cloudtrail: CloudTrail into finished records
 
 sources:
@@ -22,15 +24,6 @@ sources:
     type: cloudtrail
     profile: *profile
     region: us-east-1          # for looking up its credentials; replay reads every region
-
-inference:
-  judge:
-    backend: anthropic
-    url: https://api.anthropic.com
-    api_key: "${ANTHROPIC_API_KEY}"                 # a key from console.anthropic.com
-    model: claude-haiku-5-5
-    max_tokens: 400                                 # per record
-    extra: { thinking: { type: disabled } }         # no thinking: the reply is the answer
 
 # Files beside this one, none shipped. Without one, its facts are left out,
 # with a warning. profile.yaml is your company, what no log says:
@@ -44,10 +37,11 @@ enrichment_tables:
   networks: { type: cidr, path: data/networks.csv }
 
 # The two edges that are this file's: the source to its plugin, and the
-# plugin's records to the judge pack, which goes on from there (each actor's
-# history, the model, then alerts.ndjson and verdicts.ndjson).
+# plugin's records to the judge pack, which goes on from there (the lake the
+# reviewer reads, each actor's history, the judge, the reviewer, then
+# alerts.ndjson, reviews.ndjson and verdicts.ndjson).
 dag:
   - from: aws_audit
     to: [cloudtrail]
-  - from: cloudtrail           # each record learned and judged
-    to: [baseline_builder, baseline_renderer]
+  - from: cloudtrail           # each record kept, learned and judged
+    to: [lake, baseline_builder, baseline_renderer]
