@@ -71,10 +71,9 @@ make run            # one process: the sources, the packs and the judge; listens
 Nothing is compiled: `make test` and `make run` take the packs' plugins
 prebuilt (`make test` with `tangent plugin fetch`; `tangent run` fetches the
 ones it has no copy of, once per tangent version). Each comes from the
-tangent release of this tangent's version, and `gh attestation verify`
-checks, before it is kept, that this repository's release workflow built it
-from that tag ([Prebuilt plugins](/README.md#prebuilt-plugins)); it needs
-`gh`, not a login.
+tangent release of this tangent's version, and tangent checks, before it is
+kept, that this repository's release workflow built it from that tag
+([Prebuilt plugins](/README.md#prebuilt-plugins)).
 
 To build the plugins here instead, as for a pack you are changing or a tangent
 built from a checkout: `make test PLUGINS=compile`, then `make run PLUGINS=compile`, or

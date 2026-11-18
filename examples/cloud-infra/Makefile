@@ -25,7 +25,7 @@ TANGENT ?= tangent
 
 # The packs' plugins, one of two ways. `fetch`: prebuilt, from the tangent
 # release of this tangent's version, each checked against GitHub's attestation
-# of its build before it is kept (needs gh, no login; nothing to compile).
+# of its build before it is kept (nothing to compile).
 # `compile`: built here from source, with the Rust WASM toolchain, for hacking
 # on a pack or a tangent built from a checkout:  make run PLUGINS=compile
 PLUGINS ?= fetch
