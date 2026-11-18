@@ -39,6 +39,13 @@ pub trait Sink: Send + Sync {
     async fn flush(&self) -> Result<()> {
         Ok(())
     }
+
+    /// What it has taken so far, where its readers find it, and the sink
+    /// goes on taking writes: a WAL seals its open files and waits until
+    /// each is sent. A sink that writes as it is given has nothing to do.
+    async fn seal(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub struct SinkItem {
@@ -323,6 +330,18 @@ impl SinkManager {
                 INFLIGHT.inc();
             })
             .map_err(|e| anyhow::anyhow!("send to sink '{sink_name}' failed: {e}"))
+    }
+
+    /// Every sink's records so far where its readers find them
+    /// ([`Sink::seal`]): for a caller that has waited for its writes' acks
+    /// and is about to run what reads them, as replay is before it closes
+    /// the groups a reviewer reads the lake for.
+    pub async fn seal(&self) {
+        for (name, entry) in &self.sinks {
+            if let Err(e) = entry.sink().seal().await {
+                tracing::warn!(sink = %name, "sealing failed; what reads this sink may miss its last records: {e}");
+            }
+        }
     }
 
     /// Drain and flush everything.
