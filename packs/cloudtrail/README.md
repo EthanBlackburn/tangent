@@ -78,6 +78,7 @@ enrichment_tables:                  # your company: packs/README.md#the-profile
 
 sinks:
   lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    inputs: [cloudtrail]
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
@@ -99,11 +100,10 @@ sources:
     queue_url: ${CLOUDTRAIL_QUEUE_URL}      # e.g. https://sqs.us-east-1.amazonaws.com/111122223333/trail-files
     bucket_role: ${CLOUDTRAIL_BUCKET_ROLE}  # an organization trail's log archive role; unset otherwise
 
-dag:
-  - from: aws_audit
-    to: [cloudtrail]
-  - from: cloudtrail   # kept, learned, judged
-    to: [lake, baseline_builder, baseline_renderer]
+plugins:
+  cloudtrail: { inputs: [aws_audit] }
+  baseline_builder: { inputs: [cloudtrail] }     # learned
+  baseline_renderer: { inputs: [cloudtrail] }    # and judged
 ```
 
 and `cloudtrail` in your profile's `own_sources`, so every account is your

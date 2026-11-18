@@ -260,7 +260,7 @@ A request holds the records the node is handed, or with `group_by: [_norm.actor]
 
 `encoding: {type: logfmt, keep: [...], sources: {<source>: {principal, time, keep, ids}}}` writes the records as logfmt lines in about half the tokens of JSON, and the text decodes back to the records: a principal's records are grouped, the fields they share written once above their rows, the `keep` fields on every row, a day's timestamps as times of day; `sidecar: true` swaps a source's `ids` for references the model never sees. The judge pack has a row for each pack's sources ([packs/judge/ingest.yaml](/packs/judge/ingest.yaml)).
 
-A plugin can hold a conversation with a node instead, with `model.chat`: it sends what has been said so far and the tools the model may call, runs the calls the model asks for, and sends their results with the next turn, until the model answers. The node gives the model, its credentials, `prompt_file` as the system prompt, `max_tokens` (here a turn's), `timeout_ms`, `retries`, `concurrency` and `extra`; the plugin's `models` names the nodes it may call, and a node named there needs no edge:
+A plugin can hold a conversation with a node instead, with `model.chat`: it sends what has been said so far and the tools the model may call, runs the calls the model asks for, and sends their results with the next turn, until the model answers. The node gives the model, its credentials, `prompt_file` as the system prompt, `max_tokens` (here a turn's), `timeout_ms`, `retries`, `concurrency` and `extra`; the plugin's `models` names the nodes it may call, and a node named there needs no inputs:
 
 ```yaml
 inference:
@@ -316,7 +316,7 @@ plugins:
 - Two files that don't include each other must agree on any value that is not a map, and on whether a key holds a map at all. When they don't, a file that includes both settles it; without one, loading fails naming the key and both files.
 - A value reads as its file wrote it: `model: 1.10` is `"1.10"` to a string field, with `include:` or without, and two files agree only when they wrote the same.
 - A plugin two files define the same way is one plugin, loaded once per worker however many files define it; an enrichment table two files define the same way is one table, loaded once for the process.
-- Lists are values, except `dag`: every file's edges add up, and an edge given twice counts once.
+- Lists are values, a node's `inputs` among them: what an including file gives a node as `inputs` is what it takes, in place of the included file's, so a config can put a step of its own between two a pack wired.
 - A plugin's `path`, `data` and `tests`, an inference node's `prompt_file` and `schema_file`, and an enrichment table's `path` are relative to the file that names them. `runtime` paths stay relative to the config you run, and source and sink paths to the working directory, as before.
 - A file included twice (by two packs, say) is read once, and what each includer changes in it holds; a cycle is an error. `${VAR}` works in every file, in `include` paths too, and `${VAR:-default}` is `default` when the variable is unset or empty.
 - `runtime` may be left out, for its defaults. An unknown key is an error: `includes:` at the top, `bind_adress` in a source. A top-level key that starts `x-` is the file's own, a place for YAML anchors (`x-prompt: &prompt judge.md`), and is neither read nor merged.
@@ -327,7 +327,7 @@ Unknown keys aside, a config without `include:` reads as it always has.
 
 `tangent config --config FILE` prints the merged config, every default filled in, after the files it came from. Secret fields (tokens, `api_key`, `webhook_url`, passwords) are left out, so it is for reading, not for running.
 
-An edge names its nodes and nothing else, `from: aws_audit` and `to: [cloudtrail, lake]`: a name is one node, so no source, plugin, inference node and sink share one, and a config where two do fails to load, naming both. `tangent run` checks the DAG before it starts: an edge to a node no file defines is an error, and so is one out of a sink or into a source. It warns about a source with no edge out, and names once a source whose records none of its targets take, as when no included plugin's probe claims a record's `source`; `tangent_unrouted_records_total` counts every record dropped that way, per node.
+A plugin, an inference node and a sink each name the nodes whose records they take, `inputs: [aws_audit, events]`: sources, plugins and inference nodes, by name and nothing else. A name is one node, so no source, plugin, inference node and sink share one, and a config where two do fails to load, naming both. `tangent run` checks the DAG the inputs make before it starts: an input no file defines is an error, and so is a sink as an input, or inputs that go round in a cycle. It warns about a source that is no node's input and about a node with no inputs, and names once a source whose records none of the nodes that take it accept, as when no included plugin's probe claims a record's `source`; `tangent_unrouted_records_total` counts every record dropped that way, per node. A config with a `dag:` list, which is how nodes were wired before, does not load, and is told to give each node its `inputs`.
 
 ## Packs
 A pack is what tangent knows about one provider's logs, and it is one plugin, named after the logs it reads. Tangent's own sources read the logs (`cloudtrail`, `github_audit`, `okta`, `google_workspace` and `supabase` read the providers' APIs; `tcp` takes anything else as NDJSON with a `source` field), and the pack's plugin turns each raw record into a finished one:
@@ -358,7 +358,7 @@ The judge also sees each actor's history, which one window of its records cannot
 ### Using packs
 Packs need tangent 0.2.0 or later. Their prebuilt plugins are released with tangent, and each tangent fetches the ones of its own version ([Prebuilt plugins](#prebuilt-plugins)).
 
-A pipeline is one config: judge's `ingest.yaml`, which includes enrich-ip's and behavior-baseline's, and the `ingest.yaml` of each pack you want. It names your sources and the sink that keeps their records, sends each source to its pack and each pack's records on to the lake, `baseline_builder` and the judge (`baseline_renderer`), and points the `profile` table at your company. Without the model, include enrich-ip's `ingest.yaml` in place of judge's, and behavior-baseline's too for each actor's `_baseline`, and draw only the edges to what you included: finished records in the lake, and no model. Each actor's records wait in a group for the judge (`baseline_renderer`'s `group_by`), and the judge runs on workers of its own, so ingest never waits on the model. To watch AWS and Okta from a directory beside your tangent checkout:
+A pipeline is one config: judge's `ingest.yaml`, which includes enrich-ip's and behavior-baseline's, and the `ingest.yaml` of each pack you want. It names your sources and the sink that keeps their records, gives each pack's plugin its source as an input and the lake, `baseline_builder` and the judge (`baseline_renderer`) each pack's records, and points the `profile` table at your company. Without the model, include enrich-ip's `ingest.yaml` in place of judge's, and behavior-baseline's too for each actor's `_baseline`, and give inputs only to what you included: finished records in the lake, and no model. Each actor's records wait in a group for the judge (`baseline_renderer`'s `group_by`), and the judge runs on workers of its own, so ingest never waits on the model. To watch AWS and Okta from a directory beside your tangent checkout:
 
 ```yaml
 # tangent.yaml
@@ -372,6 +372,7 @@ enrichment_tables:
 
 sinks:
   lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    inputs: [cloudtrail, okta]
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
@@ -389,15 +390,11 @@ sources:
   aws_audit: { type: cloudtrail, region: "${AWS_REGION}", queue_url: "${CLOUDTRAIL_QUEUE_URL}" }
   okta_audit: { type: okta, org_url: "${OKTA_ORG_URL}", token: "${OKTA_API_TOKEN}" }
 
-dag:
-  - from: aws_audit
-    to: [cloudtrail]
-  - from: okta_audit
-    to: [okta]
-  - from: cloudtrail     # kept, learned, judged
-    to: [lake, baseline_builder, baseline_renderer]
-  - from: okta
-    to: [lake, baseline_builder, baseline_renderer]
+plugins:
+  cloudtrail: { inputs: [aws_audit] }                  # each pack's plugin takes its source
+  okta: { inputs: [okta_audit] }
+  baseline_builder: { inputs: [cloudtrail, okta] }     # their records learned
+  baseline_renderer: { inputs: [cloudtrail, okta] }    # and judged
 ```
 
 ```yaml

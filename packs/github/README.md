@@ -73,6 +73,7 @@ enrichment_tables:                  # your company: packs/README.md#the-profile
 
 sinks:
   lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    inputs: [github]
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
@@ -95,13 +96,10 @@ sources:
     type: tcp
     bind_address: 0.0.0.0:9400
 
-dag:
-  - from: github_audit
-    to: [github]
-  - from: events
-    to: [github]
-  - from: github   # kept, learned, judged
-    to: [lake, baseline_builder, baseline_renderer]
+plugins:
+  github: { inputs: [github_audit, events] }
+  baseline_builder: { inputs: [github] }     # learned
+  baseline_renderer: { inputs: [github] }    # and judged
 ```
 
 and `github_audit`, `gha_ci` and `runner_egress` in your profile's
