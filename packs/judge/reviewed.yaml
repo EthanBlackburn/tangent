@@ -9,9 +9,11 @@
 #   inference:
 #     judge: { url: ..., model: ..., api_key: ... }
 #     reviewer: { url: ..., model: ..., api_key: ... }
-#   dag:
-#     - from: cloudtrail
-#       to: [lake, baseline_builder, baseline_renderer]
+#   plugins:
+#     baseline_builder: { inputs: [cloudtrail] }
+#     baseline_renderer: { inputs: [cloudtrail] }
+#   sinks:
+#     lake: { inputs: [cloudtrail] }
 #
 # A null here removes what review.yaml set, as hosted.yaml's do ingest.yaml's.
 include:
@@ -40,13 +42,11 @@ sinks:
         source: string
         _norm: { org: string, actor: string, kind: string, ip: string }
   reviews:
+    inputs: [review]
     type: file
     path: reviews.ndjson
     compression:
       type: none
 
-dag:
-  - from: flagged                # each alert, also to the reviewer
-    to: [review]
-  - from: review
-    to: [reviews]
+plugins:
+  review: { inputs: [flagged] }  # each alert, also to the reviewer

@@ -13,6 +13,7 @@ runtime:
 
 plugins:
   enrich:
+    inputs: [events]
     module_type: rust
     path: .
     data: data/                  # read-only at /data in the guest; filled by setup.sh
@@ -30,13 +31,8 @@ sources:
 
 sinks:
   out:
+    inputs: [enrich]
     type: file
     path: out.ndjson
     compression:
       type: none
-
-dag:
-  - from: events
-    to: [enrich]
-  - from: enrich
-    to: [out]

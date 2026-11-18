@@ -3,6 +3,7 @@ runtime:
     plugins_path: plugins/
 plugins:
   zeek:
+    inputs: [network_input]
     module_type: go
     path: .
     tests:
@@ -14,11 +15,5 @@ sources:
     bind_address: 0.0.0.0:9000
 sinks:
   blackhole:
+    inputs: [zeek]
     type: blackhole
-
-dag:
-  - from: network_input
-    to: [zeek]
-
-  - from: zeek
-    to: [blackhole]

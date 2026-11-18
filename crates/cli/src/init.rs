@@ -270,7 +270,7 @@ mod tests {
             );
             assert_eq!(cfg.sinks.contains_key("reviews"), reviewed, "{model:?}");
             let kept = cfg
-                .dag
+                .edges()
                 .iter()
                 .any(|e| &*e.from == "cloudtrail" && e.to.iter().any(|t| &**t == "lake"));
             assert_eq!(kept, reviewed, "{model:?}");

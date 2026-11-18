@@ -7,7 +7,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use tangent_shared::dag::Edge;
 use tangent_shared::plugins::PluginConfig;
 use tangent_shared::runtime::{RuntimeConfig, StateBackend, StateConfig};
 use tangent_shared::sinks::common::{CommonSinkOptions, Compression, Encoding};
@@ -96,11 +95,12 @@ pub async fn run(opts: TestOptions) -> Result<()> {
                 fs::remove_file(out_file.clone())?;
             }
 
-            let file_sink = SinkConfig {
+            let mut file_sink = SinkConfig {
                 kind: SinkKind::File(fileSink::FileConfig {
                     path: out_file.clone(),
                 }),
                 common: CommonSinkOptions {
+                    inputs: Vec::new(),
                     compression: Compression::None,
                     encoding: Encoding::NDJSON,
                     object_max_bytes: tangent_shared::sinks::common::object_max_bytes(),
@@ -140,34 +140,33 @@ pub async fn run(opts: TestOptions) -> Result<()> {
             };
             let (source, sink) = (named("input"), named("out"));
 
-            let entry = Edge {
-                from: Arc::clone(&source),
-                to: vec![name.clone()],
-            };
-
-            let exit = Edge {
-                from: name.clone(),
-                to: vec![Arc::clone(&sink)],
-            };
+            // The plugin takes the test's source, and the test's sink takes
+            // the plugin.
+            file_sink.common.inputs = vec![name.clone()];
 
             // The sinks the plugin's `tables` name, as the config has them,
-            // so its statements read what the pipeline wrote. No edge
-            // reaches them here: the test writes them nothing.
+            // so its statements read what the pipeline wrote. They take
+            // nothing here: the test writes them nothing.
             let mut sinks: BTreeMap<_, _> = cfg
                 .sinks
                 .iter()
                 .filter(|(kept, _)| plugin_cfg.tables.values().any(|t| **t == ***kept))
-                .map(|(kept, sink)| (Arc::clone(kept), sink.clone()))
+                .map(|(kept, sink)| {
+                    let mut sink = sink.clone();
+                    sink.common.inputs.clear();
+                    (Arc::clone(kept), sink)
+                })
                 .collect();
             sinks.insert(sink, file_sink);
 
             let mut sources = BTreeMap::new();
-            sources.insert(source, input_source);
+            sources.insert(Arc::clone(&source), input_source);
 
             let mut tables = cfg.enrichment_tables.clone();
             tables.extend(test.enrichment_tables);
 
             let plugin_config = PluginConfig {
+                inputs: vec![source],
                 module_type: "".to_string(), // not used
                 path: plugins_path,
                 // Where it was fetched from, so the copy `tangent plugin
@@ -209,7 +208,6 @@ pub async fn run(opts: TestOptions) -> Result<()> {
                 // and the root's resolve against the test config, which sits
                 // next to it.
                 enrichment_tables: tables,
-                dag: vec![entry, exit],
             };
 
             let yaml = serde_yaml::to_string(&test_config)?;

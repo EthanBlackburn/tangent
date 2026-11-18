@@ -20,16 +20,19 @@ plugins:
     expire_after_ms: 3600000     # an hour's quiet too, not the 30 s default: fuller groups, fewer requests
     history: 10                  # the actor's latest ten records again, as `_context`, which fresh drops
   fresh:
+    inputs: [judge]
     module_type: rust
     path: fresh
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
   flagged:
+    inputs: [fresh]
     module_type: rust
     path: ../../examples/inference-local/flagged
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
 
 inference:
   judge:
+    inputs: [baseline_renderer]
     url: ${JUDGE_URL:-http://localhost:8080/v1}
     model: ${JUDGE_MODEL:-glm-4.7-flash}
     api_key: ${JUDGE_API_KEY:-none}
@@ -86,22 +89,14 @@ inference:
 
 sinks:
   alerts:
+    inputs: [flagged]
     type: file
     path: alerts.ndjson
     compression:
       type: none
   verdicts:
+    inputs: [fresh]
     type: file
     path: verdicts.ndjson
     compression:
       type: none
-
-dag:
-  - from: baseline_renderer
-    to: [judge]
-  - from: judge
-    to: [fresh]
-  - from: fresh
-    to: [flagged, verdicts]
-  - from: flagged
-    to: [alerts]

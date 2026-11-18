@@ -15,6 +15,7 @@ enrichment_tables:
 
 sinks:
   lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    inputs: [supabase]
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
@@ -35,8 +36,9 @@ sources:
     token: ${SUPABASE_ACCESS_TOKEN}
     since: ${SUPABASE_SINCE:-1h}   # how far back the first run reads
 
-dag:
-  - from: supabase_auth
-    to: [supabase]
-  - from: supabase   # kept, judged
-    to: [lake, baseline_builder, baseline_renderer]
+# The pack's plugin takes the source, and its records are kept, learned and
+# judged: the lake above, and the judge pack's builder and renderer.
+plugins:
+  supabase: { inputs: [supabase_auth] }
+  baseline_builder: { inputs: [supabase] }
+  baseline_renderer: { inputs: [supabase] }

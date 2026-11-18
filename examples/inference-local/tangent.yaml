@@ -19,6 +19,7 @@ sources:
 
 inference:
   judge:
+    inputs: [events]
     backend: openai                 # the protocol, not the vendor
     url: http://localhost:8080/v1
     model: mlx-community/GLM-4.7-Flash-4bit
@@ -34,21 +35,15 @@ inference:
 
 plugins:
   flagged:                          # keeps judge.flag == true, and records the judge could not read
+    inputs: [judge]
     module_type: rust
     path: flagged
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's build of it: nothing to compile (tangent plugin fetch)
 
 sinks:
   flagged_out:
+    inputs: [flagged]
     type: file
     path: flagged.ndjson
     compression:
       type: none
-
-dag:
-  - from: events
-    to: [judge]
-  - from: judge
-    to: [flagged]
-  - from: flagged
-    to: [flagged_out]

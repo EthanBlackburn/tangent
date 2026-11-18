@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::sinks::{blackhole, file, rolling_file, s3, slack, sqlite};
 
@@ -76,6 +77,11 @@ impl SinkKind {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommonSinkOptions {
+    /// The nodes whose records this one takes, by name: sources, plugins and
+    /// inference nodes. A node with none never runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<Arc<str>>,
+
     #[serde(default)]
     pub compression: Compression,
 

@@ -2,6 +2,7 @@ runtime:
   plugins_path: "plugins/"
 plugins:
   golang:
+    inputs: [network_input]
     module_type: go
     path: .
     tests:
@@ -13,10 +14,5 @@ sources:
     bind_address: 0.0.0.0:9000
 sinks:
   blackhole:
+    inputs: [golang]
     type: blackhole
-dag:
-  - from: network_input
-    to: [golang]
-
-  - from: golang
-    to: [blackhole]

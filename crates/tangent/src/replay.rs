@@ -543,17 +543,12 @@ mod tests {
             format!(
                 "runtime: {{ workers: 2, plugins_path: plugins/, state: {{ backend: sqlite, path: state.sqlite }} }}
 plugins:
-  judge: {{ module_type: rust, path: ., group_by: [actor], expire_after_ms: 1800000, history: 3 }}
+  judge: {{ module_type: rust, path: ., group_by: [actor], expire_after_ms: 1800000, history: 3, inputs: [test] }}
 sources:
   test: {{ type: tcp, bind_address: 127.0.0.1:0 }}
 sinks:
-  read: {{ type: file, path: {r}/read.ndjson, compression: {{ type: none }} }}
-  lake: {{ type: rolling_file, path: {r}/lake/logs/%H, wal_path: {r}/lake/wal, max_file_age_seconds: 3600, compression: {{ type: none }} }}
-dag:
-  - from: test
-    to: [judge, lake]
-  - from: judge
-    to: [read]
+  read: {{ type: file, path: {r}/read.ndjson, compression: {{ type: none }}, inputs: [judge] }}
+  lake: {{ type: rolling_file, path: {r}/lake/logs/%H, wal_path: {r}/lake/wal, max_file_age_seconds: 3600, compression: {{ type: none }}, inputs: [test] }}
 ",
                 r = root.display()
             ),

@@ -26,23 +26,20 @@ enrichment_tables:
 
 plugins:
   baseline_renderer:
+    inputs: [story]
     module_type: rust
     path: renderer
     state_namespace: baseline
   baseline_builder:
+    inputs: [story]
     module_type: rust
     path: builder
     state_namespace: baseline
 
 sinks:
   out:
+    inputs: [baseline_renderer]
     type: file
     path: test_out.ndjson
     compression: { type: none }
     in_flight_limit: 1           # one write at a time: compared line by line
-
-dag:
-  - from: story
-    to: [baseline_renderer, baseline_builder]   # a call each, in this order
-  - from: baseline_renderer
-    to: [out]

@@ -15,6 +15,7 @@ sources:
 
 inference:
   judge:
+    inputs: [events]
     backend: anthropic              # Anthropic's Messages API
     api_key: "${ANTHROPIC_API_KEY}"
     model: claude-haiku-5-5
@@ -28,21 +29,15 @@ inference:
 
 plugins:
   flagged:                          # the same plugin as inference-local: keeps judge.flag == true
+    inputs: [judge]
     module_type: rust
     path: ../inference-local/flagged
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's build of it: nothing to compile (tangent plugin fetch)
 
 sinks:
   flagged_out:
+    inputs: [flagged]
     type: file
     path: flagged.ndjson
     compression:
       type: none
-
-dag:
-  - from: events
-    to: [judge]
-  - from: judge
-    to: [flagged]
-  - from: flagged
-    to: [flagged_out]

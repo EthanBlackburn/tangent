@@ -410,6 +410,7 @@ fn tangent_config_for(language: &str, name: &str) -> String {
   plugins_path: "plugins/"
 plugins:
   {name}:
+    inputs: [network_input]
     module_type: {language}
     path: {path}
     tests:
@@ -421,12 +422,8 @@ sources:
     bind_address: 0.0.0.0:9000
 sinks:
   blackhole:
-    type: blackhole
-dag:
-  - from: network_input
-    to: [{name}]
-  - from: {name}
-    to: [blackhole]"#
+    inputs: [{name}]
+    type: blackhole"#
     )
 }
 

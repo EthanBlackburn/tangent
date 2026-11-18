@@ -34,16 +34,14 @@ sources:
     type: socket
     socket_path: net.sock
 
-dag:
-  - from: es
-    to: [macos]
-  - from: net                    # joined to the same process tree
-    to: [macos]
-  - from: macos                  # every record kept; each session summarized
-    to: [lake, macos_sessions]
-  - from: macos_sessions         # and judged (packs/judge)
-    to: [judge]
-  - from: judge                  # what it said of a session, kept for the session's next summary
-    to: [macos_verdicts]
-  - from: macos_verdicts         # and a `look` or a `flag` a person has not been told of in this turn
-    to: [alerts]
+plugins:
+  macos: { inputs: [es, net] }               # the sensor's events, and the connections joined to the same process tree
+  macos_sessions: { inputs: [macos] }        # each session summarized
+  macos_verdicts: { inputs: [judge] }        # what the judge said of a session, kept for the session's next summary
+
+inference:
+  judge: { inputs: [macos_sessions] }        # sessions, in place of the judge pack's own input
+
+sinks:
+  lake: { inputs: [macos] }                  # every record kept
+  alerts: { inputs: [flagged, macos_verdicts] }   # the judge pack's, and a `look` or a `flag` a person has not been told of in this turn

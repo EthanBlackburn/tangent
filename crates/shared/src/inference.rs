@@ -2,6 +2,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
 pub use tangent_compact::{CompactConfig, SourceSpec};
 
 /// Ask a model about each record. The node sends `prompt_file` as the system
@@ -16,6 +17,11 @@ pub use tangent_compact::{CompactConfig, SourceSpec};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InferenceConfig {
+    /// The nodes whose records this one takes, by name: sources, plugins and
+    /// inference nodes. A node with none never runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<Arc<str>>,
+
     /// Where the model is served.
     #[serde(default)]
     pub backend: Backend,

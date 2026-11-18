@@ -13,13 +13,11 @@ include:
 
 sinks:
   reviews:
+    inputs: [review]
     type: file
     path: reviews.ndjson
     compression:
       type: none
 
-dag:
-  - from: flagged                  # each alert, also to the reviewer
-    to: [review]
-  - from: review
-    to: [reviews]
+plugins:
+  review: { inputs: [flagged] }    # each alert, also to the reviewer

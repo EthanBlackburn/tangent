@@ -8,6 +8,7 @@ runtime:
   plugins_path: "plugins/"
 plugins:
   enrichment:
+    inputs: [network_input]
     module_type: go
     path: .
     tests:
@@ -19,13 +20,8 @@ sources:
     bind_address: 0.0.0.0:9000
 sinks:
   out:
+    inputs: [enrichment]
     type: file
     path: out.ndjson
     compression:
       type: none
-dag:
-  - from: network_input
-    to: [enrichment]
-
-  - from: enrichment
-    to: [out]

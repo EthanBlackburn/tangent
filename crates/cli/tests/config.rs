@@ -3,17 +3,16 @@
 
 use std::process::Command;
 
-/// A sink no edge reaches: `tangent config` warns of it on stderr, keeps
+/// A sink with no inputs: `tangent config` warns of it on stderr, keeps
 /// stdout YAML, and exits 0, since the rest of the config runs.
 #[test]
-fn config_warns_of_a_node_no_edge_reaches() {
+fn config_warns_of_a_node_with_no_inputs() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("tangent.yaml");
     std::fs::write(
         &file,
         "sources:\n  input: { type: file, path: in.ndjson, decoding: { format: { type: ndjson } } }\n\
-         sinks:\n  out: { type: blackhole }\n  never: { type: blackhole }\n\
-         dag:\n  - from: input\n    to: [out]\n",
+         sinks:\n  out: { type: blackhole, inputs: [input] }\n  never: { type: blackhole }\n",
     )
     .unwrap();
     let shown = Command::new(env!("CARGO_BIN_EXE_tangent"))
@@ -26,7 +25,7 @@ fn config_warns_of_a_node_no_edge_reaches() {
     let stderr = String::from_utf8_lossy(&shown.stderr);
     assert!(shown.status.success(), "{stderr}");
     assert!(
-        stderr.contains("warning: sink never: no edge reaches it; it never runs"),
+        stderr.contains("warning: sink never: it has no inputs; it never runs"),
         "{stderr}"
     );
     assert!(!stdout.contains("warning"), "{stdout}");

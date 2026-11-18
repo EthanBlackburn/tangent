@@ -146,8 +146,8 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
     if cfg.sinks.is_empty() {
         bail!("At least one sink is required.");
     }
-    if cfg.dag.is_empty() {
-        bail!("Must configure dag.");
+    if cfg.edges().is_empty() {
+        bail!("No node has `inputs`: nothing would be read.");
     }
 
     if std::env::var("DEBUG").is_ok_and(|x| x == "1") {
