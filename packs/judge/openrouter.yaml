@@ -1,0 +1,25 @@
+# judge, reviewed, on OpenRouter: DeepSeek V4 Flash, whose weights are open,
+# judges every record and settles what it flagged, with the lake to query.
+# OPENROUTER_API_KEY is a key from openrouter.ai/keys; your records go to
+# whichever host serves the request. README.md has what the pair caught and
+# what it cost.
+include:
+  - reviewed.yaml
+
+inference:
+  judge:
+    url: https://openrouter.ai/api/v1
+    api_key: "${OPENROUTER_API_KEY}"
+    model: deepseek/deepseek-v4-flash-0731
+    max_tokens: 200                                 # per record
+    temperature: 0.7                                # with top_p, the sampling it was measured with
+    extra:
+      top_p: 0.95
+      reasoning: { enabled: false }                 # no thinking: the reply is the answer
+      provider: { require_parameters: true }        # only hosts that hold the reply to its schema
+  reviewer:
+    url: https://openrouter.ai/api/v1
+    api_key: "${OPENROUTER_API_KEY}"
+    model: deepseek/deepseek-v4-flash-0731
+    extra:
+      reasoning: { effort: low }                    # it thinks before each query and its report, briefly

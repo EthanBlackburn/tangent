@@ -1,0 +1,22 @@
+# judge, reviewed, on Anthropic's API: Claude Haiku 5.5 judges every record
+# and Claude Sonnet 5.5 settles what it flagged, with the lake to query.
+# ANTHROPIC_API_KEY is a key from console.anthropic.com. README.md has what
+# the pair caught and what it cost.
+include:
+  - reviewed.yaml
+
+inference:
+  judge:
+    backend: anthropic
+    url: https://api.anthropic.com
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: claude-haiku-5-5
+    max_tokens: 400                                 # per record
+    extra: { thinking: { type: disabled } }         # no thinking: the reply is the answer
+  reviewer:
+    backend: anthropic
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: claude-sonnet-5-5
+    extra:
+      thinking: { type: adaptive }                  # it thinks before each query and its report, briefly
+      output_config: { effort: low }
