@@ -2,11 +2,10 @@
 
 Your AWS account's last day of CloudTrail, judged by Claude Haiku 5.5, and what it flags reviewed by Claude Sonnet 5.5, with your Anthropic API key; or by another model you choose.
 
-1. Install tangent, and gh (GitHub's CLI, 2.90 or later), which checks the plugins tangent fetches:
+1. Install tangent:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/EthanBlackburn/tangent/releases/latest/download/tangent-cli-installer.sh | sh
-brew install gh    # or see https://cli.github.com
 ```
 
 2. Write the config, and give the model's key:
@@ -38,4 +37,4 @@ tangent replay --config tangent.yaml --from 1d
 
 The models' calls are billed to your model account: replay prints about how many records the range holds before it judges any, and Ctrl-C stops it. The README's [Volume and cost](../README.md#volume-and-cost) prices a day.
 
-What the judge flagged is in alerts.ndjson and every verdict in verdicts.ndjson. With a reviewer, each alert is in reviews.ndjson too, with `review`: a verdict (`malicious`, `benign` or `unresolved`), a finding and what to check first; those are the ones to read. The first run fetches the packs' plugins for this version of tangent; gh checks each without a login, and if it asks for one, `gh auth login`. Replay warns that four enrichment files are missing and runs without them; tangent.yaml says where they come from. Your AWS identity needs cloudtrail:LookupEvents. With `--model bedrock` it also needs Bedrock access to Claude Haiku 5.5 in every US region: the judge calls us-west-2, and the model's `us.` profile may serve a call from another.
+What the judge flagged is in alerts.ndjson and every verdict in verdicts.ndjson. With a reviewer, each alert is in reviews.ndjson too, with `review`: a verdict (`malicious`, `benign` or `unresolved`), a finding and what to check first; those are the ones to read. The first run fetches the packs' plugins for this version of tangent, and checks each against the attestation of its build before it is kept. Replay warns that four enrichment files are missing and runs without them; tangent.yaml says where they come from. Your AWS identity needs cloudtrail:LookupEvents. With `--model bedrock` it also needs Bedrock access to Claude Haiku 5.5 in every US region: the judge calls us-west-2, and the model's `us.` profile may serve a call from another.
