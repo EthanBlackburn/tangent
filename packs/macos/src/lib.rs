@@ -473,7 +473,7 @@ fn keep(pid: i64, k: &Known, now: Option<i64>) {
     }
 }
 
-/// A line of ps/ps.py: a process that was running when the capture
+/// A line of the source's snapshot: a process that was running when the capture
 /// began, which no fork or exec will ever show. The tree takes its parent
 /// and path, so the programs started before the log (the terminal, the
 /// apps, an agent left open) are named in `parents` and as `responsible`;
@@ -853,7 +853,7 @@ fn turn(sid: i64) -> Option<String> {
     }
 }
 
-/// A connection from net/net.py (tcpdump's process-tagged packets): the
+/// A connection from the source (tcpdump's process-tagged packets): the
 /// program that opened it as the tree knows it, else as tcpdump names it, in
 /// its session like any event. A connection a system daemon made for an app
 /// is the app's (`epid`), with the daemon as `via`.
@@ -997,7 +997,7 @@ fn monitored(mut pid: i64, now: Option<i64>) -> bool {
 /// file is not the request.
 const PROMPT_BYTES: usize = 4000;
 
-/// A line of agent/transcripts.py: what a person asked an AI coding agent,
+/// A prompt from the source: what a person asked an AI coding agent,
 /// as the agent's transcript records it. Endpoint Security shows what the
 /// agent then ran and never why, so the prompt is a record in the session
 /// the agent is in: `pids` names the agent's process, and the first of them
@@ -1309,8 +1309,8 @@ impl Guest for Component {
         }
     }
 
-    /// A line from the sensor: an `event` from a `process`; or a connection from
-    /// net/net.py.
+    /// A line from the sensor: an `event` from a `process`; or a connection
+    /// tcpdump saw.
     fn probe() -> Vec<Selector> {
         vec![
             Selector {
