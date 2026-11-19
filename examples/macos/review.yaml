@@ -5,7 +5,12 @@
 # its review: malicious, benign or unresolved. It costs money and sends
 # records to a second model, so it is its own config.
 #
-#   REVIEW=1 ./run.sh        # or: tangent run --config review.yaml
+#   tangent run --config review.yaml
+#
+# Each review that stands is then put to you in a dialog on this Mac, and
+# your answer kept in feedback.ndjson: sink `ask` gives each review to
+# packs/macos/review/ask.py. Without the sink nothing asks, and
+# reviews.ndjson is what there is to read.
 include:
   - haiku.yaml
   - ../../packs/macos/review.yaml  # inference node reviewer, and plugin macos_review, which holds a conversation with it
@@ -17,6 +22,10 @@ sinks:
     path: reviews.ndjson
     compression:
       type: none
+  ask:
+    inputs: [macos_review]
+    type: exec
+    command: [python3, -I, ../../packs/macos/review/ask.py, --out, feedback.ndjson]
 
 plugins:
   macos_review: { inputs: [macos_verdicts] }   # each alert, also to the reviewer

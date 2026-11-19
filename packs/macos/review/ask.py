@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """Ask the Mac's owner about each review that stands, in a dialog, and keep the answer.
 
-    python3 -I ask.py --follow reviews.ndjson >> feedback.ndjson    # live: each new review
-    python3 -I ask.py < reviews.ndjson > feedback.ndjson            # a finished run's
+    command: [python3, -I, ask.py, --out, feedback.ndjson]    # live: an `exec` sink's command, each review as tangent writes it
+    python3 -I ask.py < reviews.ndjson > feedback.ndjson       # a finished run's
 
-Each line read is a review, as plugin macos_review writes it. One that stands (its
+Each line of stdin is a review, as plugin macos_review writes it. One that stands (its
 verdict is not `benign`; --all asks about every one) is shown in a dialog on this Mac: the session, the verdict, what
 the reviewer found and what it says to check, a field for a note, and three
 buttons, "Not me", "Not sure" and "That was me". The dialog waits for an
 answer, the next review behind it, unless --give-up says how long.
 
-One line goes to stdout for each review asked about: the session, the
+One line goes to stdout, or is added to --out's file, for each review asked about: the session, the
 judge's answer, the review's verdict and its time (`reviewed`, the review's
 `ts`, which with the session says which review this answers), `answer`
 (`not_mine`, `unsure`, `mine`, or `none` when the dialog gave up) and `note`.
 
-Told to stop (SIGTERM), it asks about what the file already holds and then
-ends, so the reviews tangent writes as it stops are asked about too. Told a
-second time, it ends at once.
+It ends when stdin does, having asked about every review it was given: an
+`exec` sink closes its command's stdin when tangent stops, after the reviews
+tangent writes as it stops.
 
 The dialog is `osascript`'s `display dialog`. Its text is the reviewer's,
 written about records an attacker can write into, so it goes to the script
@@ -27,12 +27,8 @@ Standard library only; macOS."""
 import argparse
 import datetime
 import json
-import os
-import signal
 import subprocess
 import sys
-
-import time
 
 FINDING = 900   # characters of the finding shown
 CHECK = 400
@@ -48,35 +44,6 @@ def when(text):
     except ValueError:
         return None
     return t.astimezone(datetime.timezone.utc) if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
-
-
-def lines(follow, start=None, stopping=lambda: False):
-    """The lines to read: stdin's, or with `follow` those added to that file
-    from now on (from byte `start`, when given; all of a file that is not
-    there yet), until `stopping()` and the file's end."""
-    if not follow:
-        yield from sys.stdin
-        return
-    if start is None and not os.path.exists(follow):
-        start = 0   # whatever it comes to hold is new
-    while not os.path.exists(follow):
-        if stopping():
-            return
-        time.sleep(1)
-    with open(follow) as f:
-        f.seek(0, os.SEEK_END) if start is None else f.seek(start)
-        line = ""
-        while True:
-            more = f.readline()
-            if not more:
-                if stopping():
-                    return
-                time.sleep(1)
-                continue
-            line += more
-            if line.endswith("\n"):
-                yield line
-                line = ""
 
 
 def part(review, key):
@@ -173,16 +140,13 @@ def ask(review, show, give_up=0):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--follow", metavar="FILE", help="ask about each review added to FILE from now on, instead of stdin's")
+    ap.add_argument("--out", metavar="FILE", help="add each answer to FILE, instead of writing it to stdout")
     ap.add_argument("--all", action="store_true", help="ask about every review, the ones called benign too")
     ap.add_argument("--give-up", type=int, default=0, metavar="SECONDS",
                     help="close an unanswered dialog after this many whole seconds, as answer `none` (default: wait)")
     a = ap.parse_args()
-    # told to stop, it asks about what the file already holds, then ends;
-    # told again, it ends now, and the dialog is closed
-    stopping = []
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0) if stopping else stopping.append(True))
-    for line in lines(a.follow, stopping=lambda: bool(stopping)):
+    out = open(a.out, "a", encoding="utf-8") if a.out else sys.stdout
+    for line in sys.stdin:
         try:
             review = json.loads(line)
         except ValueError:
@@ -190,7 +154,7 @@ def main():
         if not isinstance(review, dict) or "review" not in review:
             continue
         if a.all or stands(review):
-            print(json.dumps(ask(review, dialog, a.give_up), ensure_ascii=False), flush=True)
+            print(json.dumps(ask(review, dialog, a.give_up), ensure_ascii=False), file=out, flush=True)
 
 
 if __name__ == "__main__":
