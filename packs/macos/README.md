@@ -14,31 +14,11 @@ one config:
 ```bash
 cd examples/macos
 tangent plugin compile --config tangent.yaml
-tangent run --config haiku.yaml &               # or tangent.yaml: a local model
-sudo ../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor | nc -U es.sock
-sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
-  | python3 ../../packs/macos/net/net.py | nc -U net.sock    # optional: network connections
-tail -f alerts.ndjson
+tangent run --config haiku.yaml                 # or tangent.yaml: a local model
+tail -f alerts.ndjson                           # in another terminal
 ```
 
-The sensor needs root, and the terminal it runs in needs Full Disk Access
-(System Settings → Privacy & Security), restarted after the grant. It writes
-to stdout only, and tangent reads sockets, so `nc -U` joins them: root writes
-the socket, tangent owns it, and nothing listens on a port.
-
-The sensor is built and signed from [`sensor/`](sensor), and needs an
-entitlement Apple grants to a developer team: its README has the steps. Its
-lines are in the shape of `eslogger`'s, Apple's own Endpoint Security tool,
-at about half the size.
-
-A `macos` source runs the sensor and tcpdump without the script or the
-sockets. Tangent starts them as root through `sudo`, which asks for the
-password once, sends ahead of the sensor
-[what was already running](#what-was-already-running), names
-[itself as the capture](#the-captures-own-processes), makes the
-[connections](#network) of tcpdump's packets as net.py does, follows Claude
-Code's transcripts for [what the agent was asked](#what-the-agent-was-asked)
-as transcripts.py does, and ends both programs when it stops:
+A `macos` source is the whole capture, with no script and no socket:
 
 ```yaml
 sources:
@@ -49,8 +29,32 @@ plugins:
   macos: { inputs: [mac] }
 ```
 
-Tangent itself runs as you. [examples/macos](/examples/macos) does not use
-the source yet.
+Tangent asks for your password once, through `sudo`, and starts the sensor
+and macOS's tcpdump as root. It sends ahead of the sensor
+[what was already running](#what-was-already-running), names
+[itself as the capture](#the-captures-own-processes), makes the
+[connections](#network) of tcpdump's packets, follows Claude Code's
+transcripts for [what the agent was asked](#what-the-agent-was-asked), and
+ends both programs when it stops. Tangent itself runs as you, and the
+terminal it runs in needs Full Disk Access (System Settings → Privacy &
+Security), restarted after the grant.
+
+The sensor is built and signed from [`sensor/`](sensor), and needs an
+entitlement Apple grants to a developer team: its README has the steps. Its
+lines are in the shape of `eslogger`'s, Apple's own Endpoint Security tool,
+at about half the size.
+
+To keep what the source reads, for reading through the plugin again, give
+it a sink of its own. An `exec` sink hands each line to a command, here
+`zstd`, and a `file` source reads the file back in place of the Mac:
+
+```yaml
+sinks:
+  raw:
+    inputs: [mac]                 # the source's lines, before the plugin
+    type: exec
+    command: [zstd, -q, -f, -o, raw.ndjson.zst]   # each run's in place of the last
+```
 
 ## What the plugin keeps
 
@@ -134,24 +138,23 @@ subscribes to. The terminal, the apps and an agent left open were started
 before the capture, so the programs they run have no one above them and
 `responsible` has a pid and no name: in a ten-minute run 68 of 249 programs'
 chains ended in `(unknown)`, and the judge read one as "no known launcher".
-`ps/ps.py`, standard library only and run as you, lists what is running
-(`ps -axo pid=,ppid=,lstart=,comm=`) as one JSON line each; sent to the
-sensor's socket once, right after the sensor starts, it gives the tree each
-process's parent, path and start. The plugin takes a line only for a process
+The source lists what is running (`ps -axo pid=,ppid=,lstart=,comm=`) as
+one line each, ahead of the sensor's first line and again a second after it
+starts, which gives the tree each process's parent, path and start. The plugin takes a line only for a process
 it does not know, or knows by another start, and a process's first event replaces what the snapshot said (its
 signature, and its parent unless launchd has taken it since), so a late or
-repeated snapshot does no harm. `ps/ps_test.py` checks it.
+repeated snapshot does no harm.
 
 ## The capture's own processes
 
-The script that runs the capture (examples/macos/run.sh) writes one line to
-the sensor's socket, `{"monitor": {"pid": N}}`, with its own pid. From then
-on the plugin drops the records of that process and everything under it
-(tcpdump, net.py, the snapshot and the transcript reader), though the tree
-still knows them. A name or a command line could not exempt them, since a
+The source sends one line, `{"monitor": {"pid": N}}`, with tangent's own
+pid. From then on the plugin drops the records of that process and
+everything under it (the sensor, tcpdump, the snapshot's `ps`, and what an
+`exec` sink runs), though the tree still knows them. A name or a command line could not exempt them, since a
 look-alike is worth a flag. The declaration is itself a record, in the
-session of the process it names: anything running as the person can write
-the line, and a program that is called the monitor is seen being so. A line
+session of the process it names: whatever can write to one of the plugin's
+sources can write the line (a socket source would let anything running as
+the person), and a program that is called the monitor is seen being so. A line
 that names a pid the tree does not know is not taken, since it would exempt
 whatever took that pid next with no record of it.
 
@@ -163,17 +166,15 @@ prompt tells them apart. Claude Code writes each session to a transcript
 (`~/.claude/projects/<project>/<session id>.jsonl`), marks the entries a
 person typed (`origin.kind` is `human`; a tool's result, a system notice and
 the agent's prompt to a subagent are entries too), and keeps
-`~/.claude/sessions/<pid>.json` for each running agent. `agent/transcripts.py`,
-standard library only and run as you, follows the transcripts and writes each
-typed prompt (to 4000 characters) with the agent's session id, working
-directory and pid as one JSON line. A message typed while the agent is
+`~/.claude/sessions/<pid>.json` for each running agent. The source, which
+runs as you, follows the transcripts and sends each typed prompt (to 4000
+characters) with the agent's session id, working directory and pid as one
+line. A message typed while the agent is
 working never becomes a `user` entry: Claude Code queues it as an attachment
-(`queued_command`, its `origin.kind` `human` too), and the script takes
+(`queued_command`, its `origin.kind` `human` too), and the source takes
 those as well, marked `during`. Each line carries `after`, what the agent
 had last said before the prompt, its first 400 characters and its last 800:
 "yes, the second one" says nothing alone.
-
-    python3 agent/transcripts.py | nc -U es.sock
 
 It starts with the latest three prompts of each session touched in the last two
 hours, since what an agent is doing was asked for before the capture began,
@@ -186,19 +187,20 @@ the ones before, since what an agent runs for an hour was asked for once. A
 prompt has `replying_to` (what the agent had last said) on the summary it
 first appears in, and `while_working` when it was typed mid-turn. A window that holds only a prompt
 is not judged alone. The transcript's format is Claude Code's own and may
-change with a release; a line the script cannot read is skipped. Anything
-running as the person can write a transcript or a line to the socket, so a
-prompt is what was recorded, not proof. `agent/transcripts_test.py` checks it.
+change with a release; a line the source cannot read is skipped. Anything
+running as the person can write a transcript, so a prompt is what was
+recorded, not proof. Your prompts reach the model that judges, and the
+lake, with the command lines that already do.
 
 ## Network
 
-Endpoint Security has no network event, so the pack reads connections from
+Endpoint Security has no network event, so the source reads connections from
 `tcpdump`, which on macOS tags each packet with the process that sent it
 (`-k NP` on the `pktap` interface): 148 of 153 new connections in a minute
-of this Mac's traffic carried the tag. `net/net.py`, standard library only
-and run as you (only tcpdump is root), takes what starts a connection (TCP
-SYNs, TLS ClientHellos, QUIC Initials, DNS answers: `net.py --filter`) and
-writes one JSON line each: the process and pid, the app a system daemon
+of this Mac's traffic carried the tag. Only tcpdump is root: tangent, as
+you, takes what starts a connection (TCP SYNs, TLS ClientHellos, QUIC
+Initials and DNS answers are all the filter lets through) and makes one
+line of each: the process and pid, the app a system daemon
 connected for (`eproc`), the address, port and protocol, and the host, from
 the hello's server name or a DNS answer it saw before. The `macos` plugin
 makes each a `connect` record, joined to the process tree and session like
@@ -216,8 +218,7 @@ segment may hold its server name in the second, which the filter does not
 take: on a 30-second capture, half of a browser's and an Electron app's
 connections; curl, node and Python name it in the first. QUIC's hello is
 encrypted, so a QUIC connection is named by DNS or not at all. Nothing past
-a hello is read: no URL, no payload, no bytes counted. `net/net_test.py`
-checks it (`python3 -m unittest net_test` in `net/`).
+a hello is read: no URL, no payload, no bytes counted.
 
 ## What a program usually does
 
@@ -405,8 +406,10 @@ line of `feedback.ndjson`: the session, both verdicts, the review's time
 (`reviewed`, which with the session says which review it answers), `answer`
 and `note`. The dialog waits, the next review behind it, so nothing is told
 to an empty room; `--give-up` closes it after a while, and `--all` asks
-about the `benign` ones too. When tangent stops, ask.py first asks about
-the reviews written as it stopped. Its text is the reviewer's, written
+about the `benign` ones too. It is the command of an `exec` sink
+(examples/macos/review.yaml), which gives it each review as it is written:
+when tangent stops, it is still asked about the reviews written as it
+stopped, and it ends when it has asked about them all. Its text is the reviewer's, written
 about records an attacker can write into, so it reaches the script as an
 argument and is never part of the AppleScript that runs, and each value is
 cut and kept to its own line, so none can pass for another. Nothing reads the answers yet:
@@ -471,14 +474,14 @@ agent's children then read credentials under it. `git push`, `curl` to GitHub
 and `npm publish` are execs with the worm's node in their parents; a workflow
 file committed for persistence is a write to `.github/workflows/`; the wipe
 it runs when it finds no token is unlinks of transcripts, settings and
-credentials by bun. With net.py, the worm's calls to GitHub's API and to
+credentials by bun. With the network read, the worm's calls to GitHub's API and to
 its own servers are `connected` on the program that made them; what they
 sent, and the package's contents, are not in these records.
 
 ## Tests
 
-`tests/input.json` is thirty-eight synthetic records as eslogger writes them, two of
-net.py's lines, two of ps.py's and one of transcripts.py's (version 10,
+`tests/input.json` is thirty-eight synthetic records as eslogger writes them, two
+connections' lines, two of the snapshot's and one prompt's, as the source sends them (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
 started from it with `ANTHROPIC_BASE_URL` set, the person's prompt to it, the agent saving its config and
 reading the keychain, a package install under it whose `node` reads
@@ -500,7 +503,9 @@ In `review/`, `cargo test` checks the reviewer's loop against a made-up
 model, the view's bounds, and what a long result is cut to; what `read_file`
 shows and refuses (a key, a link to a file it may not read, a directory;
 a binary's text), and which files the log lets it read. tangent's own tests
-cover what a statement can read and cannot do (`lake.query`). `review/ask_test.py`
+cover what a statement can read and cannot do (`lake.query`), and the
+source: the snapshot's rows, the connections tcpdump's packets make and the
+prompts a transcript holds (`cargo test -p tangent-runtime sources::macos`). `review/ask_test.py`
 checks which reviews are asked about, the dialog's wording, and that the
 script holds none of a review's text; it shows no dialog.
 
