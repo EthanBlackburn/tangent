@@ -183,8 +183,9 @@ for line in sys.stdin:
 ```
 
 Tangent starts the command when it starts, so one that cannot start stops
-tangent there, and it is one process for the whole run. What it prints goes
-where tangent's own output goes. It ends when its stdin closes: at
+tangent there, and it is one process for the whole run, which gets the
+records in the order the sink did. What it prints goes where tangent's own
+output goes. It ends when its stdin closes: at
 tangent's stop its stdin is closed and tangent waits for it to end, up to
 the two minutes every sink has, and Ctrl-C at the terminal does not reach
 it, so the alerts written during the stop find it running. A command still

@@ -229,6 +229,32 @@ mod tests {
         sink.flush().await.unwrap();
     }
 
+    /// A command reads one stream, so the records reach it in the order
+    /// the sink got them, whatever `in_flight_limit` says of other sinks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn records_reach_the_command_in_the_order_they_came() {
+        use crate::sinks::manager::SinkManager;
+        let tmp = tempfile::tempdir().unwrap();
+        let got = tmp.path().join("got");
+        let config = serde_json::json!({"ask": {
+            "type": "exec",
+            "command": ["sh", "-c", r#"cat > "$0""#, got.to_string_lossy()],
+        }});
+        let manager = SinkManager::new(&serde_json::from_value(config).unwrap())
+            .await
+            .unwrap();
+        let sent: Vec<String> = (0..2000).map(|n| format!("{{\"n\":{n}}}\n")).collect();
+        for line in &sent {
+            let line = BytesMut::from(line.as_str());
+            manager
+                .enqueue(Arc::from("ask"), line, Vec::new())
+                .await
+                .unwrap();
+        }
+        manager.join().await.unwrap();
+        assert_eq!(std::fs::read_to_string(&got).unwrap(), sent.concat());
+    }
+
     #[tokio::test]
     async fn a_command_that_cannot_start_fails_the_start() {
         let none = |command: &[&str]| {

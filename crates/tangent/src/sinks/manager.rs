@@ -227,8 +227,11 @@ impl SinkManager {
             }
         }
 
-        Ok(Self::from_entries(sinks, |name| {
-            cfgs[name].common.in_flight_limit
+        Ok(Self::from_entries(sinks, |name| match cfgs[name].kind {
+            // a command reads one stream: its records one write at a time,
+            // in the order they came
+            SinkKind::Exec(_) => 1,
+            _ => cfgs[name].common.in_flight_limit,
         }))
     }
 
