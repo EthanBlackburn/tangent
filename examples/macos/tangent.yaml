@@ -5,37 +5,30 @@
 # config, one process.
 #
 #   tangent plugin compile --config tangent.yaml
-#   tangent run --config tangent.yaml &     # a local model: JUDGE_URL, JUDGE_MODEL (packs/judge/README.md); haiku.yaml for Claude Haiku
-#   sudo ../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor \
-#     | nc -U es.sock                       # packs/macos/sensor, built and signed (its README)
-#   python3 ../../packs/macos/ps/ps.py | nc -U es.sock     # once: what was already running
-#   python3 ../../packs/macos/agent/transcripts.py | nc -U es.sock   # what you asked Claude Code
-#   sudo tcpdump -i pktap,all -k NP -n -l -tt -X "$(python3 ../../packs/macos/net/net.py --filter)" \
-#     | python3 ../../packs/macos/net/net.py | nc -U net.sock
-#   tail -f alerts.ndjson
+#   tangent run --config tangent.yaml       # a local model: JUDGE_URL, JUDGE_MODEL (packs/judge/README.md); haiku.yaml for Claude Haiku
+#   tail -f alerts.ndjson                   # in another terminal
 #
-# The sensor needs root, and the terminal it runs in Full Disk Access (System
-# Settings, Privacy & Security), restarted after the grant. It writes to
-# stdout only, so nc joins it to the socket: root writes it, you own it, and
-# nothing listens on a port. Endpoint Security sees no network: tcpdump does,
-# each packet tagged with the process that sent it, and net.py, run as you,
-# makes the new connections of it (packs/macos/README.md). It is optional:
-# without it the net socket stays quiet.
+# The `macos` source is the whole capture (packs/macos/README.md). Tangent
+# asks for your password once, through sudo, and starts the sensor and
+# macOS's tcpdump as root: Endpoint Security sees no network, and tcpdump
+# tags each packet with the process that sent it. It reads what you ask
+# Claude Code from the transcripts under ~/.claude, as you. The terminal
+# tangent runs in needs Full Disk Access (System Settings, Privacy &
+# Security), restarted after the grant. Ctrl-C stops it all.
 include:
   - ../../packs/macos/ingest.yaml             # plugin macos, on one worker
   - ../../packs/macos/judge.yaml              # the judge (and the enrich-ip and behavior-baseline packs it includes), reading sessions with the macos pack's brief and answer: pass, look or flag
   - ../../packs/macos/lake.yaml               # sink lake: every record as Parquet, the columns the second reviewer queries
 
 sources:
-  es:
-    type: socket
-    socket_path: es.sock
-  net:                           # new connections, from tcpdump through packs/macos/net/net.py
-    type: socket
-    socket_path: net.sock
+  mac:
+    type: macos
+    # packs/macos/sensor, built and signed (its README), or a release's:
+    # SENSOR names tangent-sensor inside its TangentSensor.app
+    sensor: ${SENSOR:-../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor}
 
 plugins:
-  macos: { inputs: [es, net] }               # the sensor's events, and the connections joined to the same process tree
+  macos: { inputs: [mac] }                   # the sensor's events, and the connections and prompts joined to the same process tree
   macos_sessions: { inputs: [macos] }        # each session summarized
   macos_verdicts: { inputs: [judge] }        # what the judge said of a session, kept for the session's next summary
 
