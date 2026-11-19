@@ -15,6 +15,10 @@
 //!   starts macOS's tcpdump beside the sensor and makes a line of each
 //!   connection it sees begin ([`net`]). When tcpdump stops, the sensor is
 //!   still read.
+//! - **What the person asked.** The sensor shows what an agent ran, never
+//!   why. Tangent follows Claude Code's transcripts under `~/.claude`, as
+//!   you, and makes a line of each prompt as it is typed
+//!   ([`transcripts`]).
 //!
 //! The sensor and tcpdump need root and tangent does not, so they are
 //! started through `sudo`, which asks for the password once, on the
@@ -23,9 +27,10 @@
 //! source stops.
 
 use std::ffi::OsStr;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use bytes::BytesMut;
@@ -38,6 +43,7 @@ use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 
 mod net;
+mod transcripts;
 
 use crate::router::Router;
 use crate::sources::socket::drain_ndjson_lines;
@@ -83,7 +89,8 @@ pub async fn run_consumer(
     // this returns.
     let stop = shutdown.child_token();
     let _stops_with_the_sensor = stop.clone().drop_guard();
-    let network = tokio::spawn(connections(name.clone(), router.clone(), stop));
+    let network = tokio::spawn(connections(name.clone(), router.clone(), stop.clone()));
+    let asked = tokio::spawn(prompts(name.clone(), router.clone(), stop));
 
     let again = tokio::time::sleep(SECOND_SNAPSHOT);
     tokio::pin!(again);
@@ -116,7 +123,7 @@ pub async fn run_consumer(
     }
     // The pipe closes here, and the sensor ends at its next line.
     drop(out);
-    let _ = network.await;
+    let _ = tokio::join!(network, asked);
     Ok(())
 }
 
@@ -203,6 +210,49 @@ async fn allow_root(name: &str) -> Result<()> {
         bail!("source {name}: the sensor needs root, and sudo did not give it ({status})");
     }
     Ok(())
+}
+
+/// What the person asks Claude Code, until `stop`: each prompt as it is
+/// typed, read from the transcripts under `~/.claude` as you. An error here
+/// is logged and ends the prompts only.
+async fn prompts(name: Arc<str>, router: Arc<Router>, stop: CancellationToken) {
+    let Some(home) = std::env::var_os("HOME") else {
+        tracing::warn!(source = %name, "no HOME, so Claude Code's prompts are not read");
+        return;
+    };
+    let from = NodeRef::Source { name: name.clone() };
+    let mut follower = transcripts::Follower::new(&Path::new(&home).join(".claude"));
+    let mut poll = tokio::time::interval(transcripts::POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => return,
+            _ = poll.tick() => {}
+        }
+        // The transcripts are files, read off the runtime's threads.
+        let read = tokio::task::spawn_blocking(move || {
+            let lines = follower.poll(SystemTime::now());
+            (follower, lines)
+        });
+        let lines = match read.await {
+            Ok((back, lines)) => {
+                follower = back;
+                lines
+            }
+            Err(e) => {
+                tracing::error!(source = %name, "prompts are not read from here on: {e:#}");
+                return;
+            }
+        };
+        if lines.is_empty() {
+            continue;
+        }
+        if let Err(e) = router.forward(&from, lines, Vec::new()).await {
+            tracing::error!(source = %name, "prompts are not read from here on: {e:#}");
+            return;
+        }
+    }
 }
 
 /// A program's stderr: the last few lines, kept for when it stops, and
