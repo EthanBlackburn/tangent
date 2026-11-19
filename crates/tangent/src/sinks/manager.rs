@@ -14,6 +14,7 @@ use tokio::time::{sleep, Instant};
 use crate::sinks::blackhole;
 use crate::sinks::encoding;
 use crate::sinks::event_time::{EventTime, FieldPath};
+use crate::sinks::exec;
 use crate::sinks::file;
 use crate::sinks::rolling_file;
 use crate::sinks::s3::S3SinkItem;
@@ -219,11 +220,18 @@ impl SinkManager {
                     let sink = slack::SlackSink::new(sl)?;
                     sinks.insert(Arc::clone(name), SinkEntry::Other { sink });
                 }
+                SinkKind::Exec(ex) => {
+                    let sink = exec::ExecSink::new(name, ex)?;
+                    sinks.insert(Arc::clone(name), SinkEntry::Other { sink });
+                }
             }
         }
 
-        Ok(Self::from_entries(sinks, |name| {
-            cfgs[name].common.in_flight_limit
+        Ok(Self::from_entries(sinks, |name| match cfgs[name].kind {
+            // a command reads one stream: its records one write at a time,
+            // in the order they came
+            SinkKind::Exec(_) => 1,
+            _ => cfgs[name].common.in_flight_limit,
         }))
     }
 

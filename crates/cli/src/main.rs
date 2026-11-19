@@ -109,8 +109,8 @@ enum Commands {
     /// Read a past range of the config's sources through it, as fast as it
     /// is read, then close every group and wait for the judge. Each source
     /// whose past tangent can read is read (a cloudtrail source's, from its
-    /// account's Event history), and the rest are left out, as are Slack, S3
-    /// and sqlite sinks. The history it builds starts empty and is gone
+    /// account's Event history), and the rest are left out, as are Slack, S3,
+    /// sqlite and exec sinks. The history it builds starts empty and is gone
     /// after, and so is the lake a rolling_file sink writes, which is the
     /// replay's own; a live pipeline's state and lake are left as they are
     Replay {

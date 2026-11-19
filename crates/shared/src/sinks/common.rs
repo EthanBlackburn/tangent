@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::sinks::{blackhole, file, rolling_file, s3, slack, sqlite};
+use crate::sinks::{blackhole, exec, file, rolling_file, s3, slack, sqlite};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SinkConfig {
@@ -59,6 +59,9 @@ pub enum SinkKind {
     Sqlite(sqlite::SqliteConfig),
     #[serde(rename = "slack")]
     Slack(slack::SlackConfig),
+    /// Each record to a command, a JSON line on its stdin.
+    #[serde(rename = "exec")]
+    Exec(exec::ExecConfig),
 }
 
 impl SinkKind {
@@ -71,6 +74,7 @@ impl SinkKind {
             Self::Blackhole(_) => "blackhole",
             Self::Sqlite(_) => "sqlite",
             Self::Slack(_) => "slack",
+            Self::Exec(_) => "exec",
         }
     }
 }

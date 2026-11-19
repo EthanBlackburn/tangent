@@ -1,5 +1,6 @@
 pub mod blackhole;
 pub mod common;
+pub mod exec;
 pub mod file;
 pub mod rolling_file;
 pub mod s3;

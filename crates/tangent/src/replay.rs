@@ -352,7 +352,7 @@ fn keep_local(cfg: &mut Config, state_dir: &Path) -> Result<()> {
                 lake.path = dir.join("files").join(below).to_string_lossy().into_owned();
                 lake.wal_path = dir.join("wal");
             }
-            SinkKind::Slack(_) | SinkKind::S3(_) | SinkKind::Sqlite(_) => {
+            SinkKind::Slack(_) | SinkKind::S3(_) | SinkKind::Sqlite(_) | SinkKind::Exec(_) => {
                 tracing::warn!(sink = %name, "replay sends and archives nothing; this sink is left out");
                 sink.kind = SinkKind::Blackhole(BlackholeConfig {});
             }
