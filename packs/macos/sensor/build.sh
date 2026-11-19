@@ -55,4 +55,4 @@ case "$identity" in "Developer ID"*) stamp=--timestamp ;; esac
 codesign --force --options runtime "$stamp" --sign "$identity" --entitlements build/entitlements.plist "$app"
 codesign --verify --strict "$app"
 echo "built and signed $app $version ($bundle_id)"
-echo "run: sudo $(pwd)/$app/Contents/MacOS/tangent-sensor | nc -U es.sock"
+echo "a macos source's sensor: $(pwd)/$app/Contents/MacOS/tangent-sensor"

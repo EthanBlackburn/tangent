@@ -2,8 +2,11 @@
 
 The pack's Endpoint Security client: what plugin `macos` reads.
 
-```bash
-sudo build/TangentSensor.app/Contents/MacOS/tangent-sensor | nc -U es.sock
+```yaml
+sources:
+  mac:
+    type: macos
+    sensor: build/TangentSensor.app/Contents/MacOS/tangent-sensor
 ```
 
 It subscribes to ten events (`exec fork exit open close create rename unlink
@@ -12,7 +15,8 @@ The lines are in the shape of `eslogger`'s, Apple's own Endpoint Security
 tool, with its field names: they hold what the plugin reads and leave out the
 rest (the stat blocks, the code hashes), so a line is about half the size of
 eslogger's. Nothing is filtered yet: every event of the ten kinds is written.
-`examples/macos/run.sh` starts it with the rest of the capture.
+A `macos` source starts it, as root through `sudo`, with the rest of the
+capture ([examples/macos](/examples/macos)).
 
 Each line is written as its event arrives. When the reader is too slow the
 kernel drops events, and the sensor says on stderr how many of each kind, by
@@ -77,12 +81,13 @@ entitlement: it needs its own grant from Apple.
 
 ## Limits
 
-- It is started by hand or by `run.sh`, under sudo. It is not yet a launch
-  daemon.
+- Tangent starts it under sudo, with your password, each run. It is not yet
+  a launch daemon.
 - No filtering at the source: the plugin still drops most `open` events
-  after they have crossed the socket.
+  after they have crossed the pipe.
 - `btm_launch_item_add` and `tcc_modify` are written from Apple's headers
   and eslogger's field names; neither has occurred in a run yet.
 - The notarized build has been through Gatekeeper on the Mac that built it,
   as a quarantined download. It has not been run on a second Mac.
-- Endpoint Security reports no network. `net/net.py` stays.
+- Endpoint Security reports no network. The `macos` source reads it from
+  tcpdump.
