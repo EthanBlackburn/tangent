@@ -661,6 +661,16 @@ fn spawn_consumers(
                     }
                 }));
             }
+            (name, SourceConfig::Macos(mc)) => {
+                let router = router.clone();
+                handles.push(tokio::spawn(async move {
+                    if let Err(e) =
+                        sources::macos::run_consumer(name, mc, router, shutdown.clone()).await
+                    {
+                        tracing::error!("macos source error: {e:#}");
+                    }
+                }));
+            }
         }
     }
 

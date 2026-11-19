@@ -31,6 +31,25 @@ entitlement Apple grants to a developer team: its README has the steps. Its
 lines are in the shape of `eslogger`'s, Apple's own Endpoint Security tool,
 at about half the size.
 
+A `macos` source runs the sensor without the script or the sockets. Tangent
+starts it as root through `sudo`, which asks for the password once, sends
+ahead of it [what was already running](#what-was-already-running), names
+[itself as the capture](#the-captures-own-processes), and ends the sensor
+when it stops:
+
+```yaml
+sources:
+  mac:
+    type: macos
+    sensor: TangentSensor.app/Contents/MacOS/tangent-sensor   # relative to the working directory
+plugins:
+  macos: { inputs: [mac] }
+```
+
+Tangent itself runs as you. [examples/macos](/examples/macos) does not use
+the source yet: the network capture and the transcript reader are still
+run.sh's.
+
 ## What the plugin keeps
 
 Endpoint Security reports everything: on a developer's Mac, about 13,000

@@ -5,6 +5,7 @@ pub mod file;
 pub mod github_audit;
 pub mod github_webhook;
 pub mod google_workspace;
+pub mod macos;
 pub mod msk;
 pub mod okta;
 pub mod poll;

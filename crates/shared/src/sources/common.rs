@@ -6,6 +6,7 @@ use crate::sources::file::FileConfig;
 use crate::sources::github_audit::GithubAuditConfig;
 use crate::sources::github_webhook::GithubWebhookConfig;
 use crate::sources::google_workspace::GoogleWorkspaceConfig;
+use crate::sources::macos::MacosConfig;
 use crate::sources::msk::MSKConfig;
 use crate::sources::okta::OktaConfig;
 use crate::sources::socket::SocketConfig;
@@ -43,6 +44,9 @@ pub enum SourceConfig {
     Supabase(SupabaseConfig),
     #[serde(rename = "sqlite")]
     Sqlite(SqliteConfig),
+    /// The Mac tangent runs on, through its Endpoint Security sensor.
+    #[serde(rename = "macos")]
+    Macos(MacosConfig),
 }
 
 impl SourceConfig {
@@ -62,7 +66,8 @@ impl SourceConfig {
             | SourceConfig::SQS(_)
             | SourceConfig::GithubWebhook(_)
             | SourceConfig::Cloudtrail(_)
-            | SourceConfig::Sqlite(_) => false,
+            | SourceConfig::Sqlite(_)
+            | SourceConfig::Macos(_) => false,
         }
     }
 }
