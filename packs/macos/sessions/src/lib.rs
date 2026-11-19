@@ -47,7 +47,7 @@ const ASKED: usize = 5;
 /// A prompt shown to this many bytes.
 const PROMPT_BYTES: usize = 600;
 /// What the agent had said that a prompt replies to, shown to this many
-/// bytes (transcripts.py sends its start and its end): "yes, the second one"
+/// bytes (the source sends its start and its end): "yes, the second one"
 /// answers something.
 const AFTER_BYTES: usize = 1300;
 /// A session's prompts are kept this long for its later windows: what an
