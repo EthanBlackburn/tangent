@@ -13,7 +13,9 @@ use tokio_util::sync::CancellationToken;
 use crate::router::Router;
 use tangent_shared::sources::socket::SocketConfig;
 
-fn drain_ndjson_lines(buf: &mut BytesMut) -> Vec<BytesMut> {
+/// The whole lines at the front of `buf`, taken out of it, each with its
+/// newline; a line not yet ended stays.
+pub(crate) fn drain_ndjson_lines(buf: &mut BytesMut) -> Vec<BytesMut> {
     let mut out = Vec::with_capacity(500);
 
     while let Some(nl) = memchr(b'\n', &buf[..]) {

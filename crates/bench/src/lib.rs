@@ -195,6 +195,7 @@ pub async fn run_one_payload(
                         SourceConfig::GithubWebhook(_) => undriven(name, "github_webhook"),
                         SourceConfig::File(_) => undriven(name, "file"),
                         SourceConfig::Sqlite(_) => undriven(name, "sqlite"),
+                        SourceConfig::Macos(_) => undriven(name, "macos"),
                         SourceConfig::Cloudtrail(_)
                         | SourceConfig::GithubAudit(_)
                         | SourceConfig::Okta(_)
