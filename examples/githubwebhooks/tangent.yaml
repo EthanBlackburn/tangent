@@ -7,6 +7,7 @@ runtime:
   workers: 1
 plugins:
   githubwebhooks:
+    inputs: [github]
     module_type: go
     path: .
     tests:
@@ -23,11 +24,6 @@ sources:
     # secret: "${GITHUB_WEBHOOK_SECRET}"
 sinks:
   alerts:
+    inputs: [githubwebhooks]
     type: file
     path: alerts.ndjson
-dag:
-  - from: github
-    to: [githubwebhooks]
-
-  - from: githubwebhooks
-    to: [alerts]

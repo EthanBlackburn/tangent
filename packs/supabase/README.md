@@ -69,6 +69,7 @@ enrichment_tables:                  # your company: packs/README.md#the-profile
 
 sinks:
   lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    inputs: [supabase]
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
@@ -88,11 +89,10 @@ sources:
     project_ref: ${SUPABASE_PROJECT_REF}      # abcdefghijklmnopqrst
     token: ${SUPABASE_ACCESS_TOKEN}
 
-dag:
-  - from: supabase_auth
-    to: [supabase]
-  - from: supabase   # kept, judged
-    to: [lake, baseline_builder, baseline_renderer]
+plugins:
+  supabase: { inputs: [supabase_auth] }
+  baseline_builder: { inputs: [supabase] }
+  baseline_renderer: { inputs: [supabase] }    # judged
 ```
 
 and `supabase` in your profile's `own_sources`, so its records are your

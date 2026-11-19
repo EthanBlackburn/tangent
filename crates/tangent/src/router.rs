@@ -272,7 +272,7 @@ impl Router {
     }
 }
 
-/// A node's name, as an edge writes it, and a metric's `node` label: a name
+/// A node's name, as another's `inputs` write it, and a metric's `node` label: a name
 /// is one node, so it needs no kind beside it.
 fn node_name(n: &NodeRef) -> &str {
     match n {
@@ -283,7 +283,7 @@ fn node_name(n: &NodeRef) -> &str {
     }
 }
 
-/// Nodes by name, as an edge's `to` writes them: `[aws, lake]`.
+/// Nodes by name, as `inputs` write them: `[aws, lake]`.
 fn names(nodes: &[NodeRef]) -> String {
     let names: Vec<&str> = nodes.iter().map(node_name).collect();
     format!("[{}]", names.join(", "))

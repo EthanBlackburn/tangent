@@ -631,25 +631,16 @@ enrichment_tables:
   geo: {{ type: mmdb, path: data/geo.mmdb }}
   networks: {{ type: cidr, path: data/networks.csv }}
 plugins:
-  a: {{ module_type: rust, path: . }}
-  b: {{ module_type: rust, path: . }}
-  plain: {{ module_type: rust, path: . }}
+  a: {{ module_type: rust, path: ., inputs: [in] }}
+  b: {{ module_type: rust, path: ., inputs: [in] }}
+  plain: {{ module_type: rust, path: ., inputs: [in] }}
 sources:
   in:
     type: file
     path: {root}/in.ndjson
     decoding: {{ format: {{ type: ndjson }} }}
 sinks:
-  out: {{ type: file, path: {root}/out.ndjson, compression: {{ type: none }} }}
-dag:
-  - from: in
-    to: [a, b, plain]
-  - from: a
-    to: [out]
-  - from: b
-    to: [out]
-  - from: plain
-    to: [out]
+  out: {{ type: file, path: {root}/out.ndjson, compression: {{ type: none }}, inputs: [a, b, plain] }}
 ",
         root = root.display()
     );

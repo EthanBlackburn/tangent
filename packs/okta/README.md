@@ -66,6 +66,7 @@ enrichment_tables:                  # your company: packs/README.md#the-profile
 
 sinks:
   lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    inputs: [okta]
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
@@ -85,11 +86,10 @@ sources:
     org_url: ${OKTA_ORG_URL}          # https://example.okta.com
     token: ${OKTA_API_TOKEN}
 
-dag:
-  - from: okta_audit
-    to: [okta]
-  - from: okta   # kept, learned, judged
-    to: [lake, baseline_builder, baseline_renderer]
+plugins:
+  okta: { inputs: [okta_audit] }
+  baseline_builder: { inputs: [okta] }     # learned
+  baseline_renderer: { inputs: [okta] }    # and judged
 ```
 
 and `okta` in your profile's `own_sources`, so its records are your org's.

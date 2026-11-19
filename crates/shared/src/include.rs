@@ -1,6 +1,6 @@
 //! `include:`: a config spread over several files, merged into one before it
 //! is read. Nothing here knows what the files are for; it knows the config's
-//! shape only: which keys name a file, and that `dag` adds up.
+//! shape only: which keys name a file.
 //!
 //! Every file reachable from the root is read once, depth first, each file's
 //! includes before the file itself, and merged in that order:
@@ -12,7 +12,8 @@
 //!   file that includes both settles it; else loading fails naming the key
 //!   and both files. A null says nothing about files its file does not
 //!   include;
-//! - lists are values, except the top-level `dag`, whose edges add up;
+//! - lists are values: a node's `inputs` in an including file are its
+//!   inputs, in place of the included file's;
 //! - in a plugin's `config` and an inference node's `extra`, which tangent
 //!   hands on as written, a null is a value like any other;
 //! - a top-level key that starts `x-` is the file's own (a place for YAML
@@ -21,9 +22,9 @@
 //!   written out under the cache ([`crate::packs`]), and a message names it
 //!   so; its plugins have no `path` or `tests`, which are not built in.
 //!
-//! The result does not depend on the order of `include:`, only the order of
-//! the edges does: a file included twice is the same file to both includers,
-//! and what each changes in it holds. Each scalar keeps the text its file
+//! The result does not depend on the order of `include:`: a file included
+//! twice is the same file to both includers, and what each changes in it
+//! holds. Each scalar keeps the text its file
 //! wrote, so a value reads as it would in a file without `include:`: `1.10`
 //! is "1.10" to a string field, not 1.1.
 
@@ -42,14 +43,13 @@ use crate::packs;
 
 /// The keys a config file may have at its top, besides the `x-` keys it
 /// keeps for itself.
-pub const TOP_LEVEL: [&str; 8] = [
+pub const TOP_LEVEL: [&str; 7] = [
     "runtime",
     "sources",
     "sinks",
     "plugins",
     "inference",
     "enrichment_tables",
-    "dag",
     "include",
 ];
 
@@ -104,6 +104,13 @@ pub(crate) fn read(path: &Path) -> Result<Read> {
         _ => bail!("{}: a config is a map at its top", path.display()),
     };
     for k in map.keys() {
+        if k.as_str() == Some("dag") {
+            bail!(
+                "{}: there is no `dag` list: each plugin, inference node and sink names the \
+                 nodes it takes records from, as `inputs: [a, b]`",
+                path.display()
+            );
+        }
         if !k.as_str().is_some_and(|k| TOP_LEVEL.contains(&k)) && !own_key(k) {
             bail!(
                 "{}: unknown top-level key `{}` (one of {}, or x-<anything>, ignored)",
@@ -342,8 +349,6 @@ pub(crate) struct Merged {
     /// Every file, in the order merged; the root is last.
     pub files: Vec<PathBuf>,
     tree: Node,
-    /// The file each `dag` edge came from, in order.
-    edges: Vec<usize>,
     shown: Vec<String>,
 }
 
@@ -385,14 +390,8 @@ impl Merged {
 
     fn files_under(&self, path: &serde_path_to_error::Path) -> Vec<usize> {
         use serde_path_to_error::Segment;
-        let segments: Vec<&Segment> = path.iter().collect();
-        if let [Segment::Map { key }, Segment::Seq { index }, ..] = segments.as_slice() {
-            if key == "dag" {
-                return self.edges.get(*index).copied().into_iter().collect();
-            }
-        }
         let mut node = &self.tree;
-        for s in segments {
+        for s in path.iter() {
             let Segment::Map { key } = s else { break };
             let Node::Map { entries, .. } = node else {
                 break;
@@ -520,21 +519,10 @@ pub(crate) fn merge(root: &Path, read: Read) -> Result<Merged> {
         shown: loader.files.iter().map(|f| f.shown.clone()).collect(),
     };
     let mut tree: Option<Node> = None;
-    let mut dag: Vec<Value> = Vec::new();
-    let mut edges: Vec<usize> = Vec::new();
     for &f in &loader.order {
         let mut map = std::mem::take(&mut loader.files[f].map);
         map.shift_remove("include");
         map.retain(|k, _| !own_key(k));
-        match map.shift_remove("dag") {
-            None => {}
-            Some(v) if is_null(&v) => {}
-            Some(Value::Sequence(es)) => {
-                edges.extend(std::iter::repeat_n(f, es.len()));
-                dag.extend(es);
-            }
-            Some(_) => bail!("{}: `dag` is a list of edges", merger.shown[f]),
-        }
         tree = merger.merge(tree, &Value::Mapping(map), f, &mut Vec::new())?;
     }
     let tree = tree.unwrap_or(Node::Map {
@@ -550,13 +538,7 @@ pub(crate) fn merge(root: &Path, read: Read) -> Result<Merged> {
         );
     }
 
-    let mut value = tree.value();
-    if let Value::Mapping(m) = &mut value {
-        if !dag.is_empty() {
-            m.insert(Value::from("dag"), Value::Sequence(dag));
-        }
-    }
-    let text = emit(&value);
+    let text = emit(&tree.value());
     Ok(Merged {
         text,
         files: loader
@@ -565,7 +547,6 @@ pub(crate) fn merge(root: &Path, read: Read) -> Result<Merged> {
             .map(|&f| loader.paths[f].clone())
             .collect(),
         tree,
-        edges,
         shown: merger.shown,
     })
 }

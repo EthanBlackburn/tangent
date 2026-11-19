@@ -25,7 +25,7 @@ to query.
 
 One config holds all of it, in one process: the judge's groups run on
 workers of their own, so ingest never waits on the model. A pack defines
-only its plugin, and your config draws its edges, to `baseline_builder`,
+only its plugin, and your config gives it as an input to `baseline_builder`,
 `baseline_renderer` and the sink that keeps its records
 ([the lake](../README.md#the-lake) in the examples).
 
@@ -139,19 +139,17 @@ the default model has not been measured with either.
 
 ## Slack
 
-What **flagged** keeps can go to a channel too: add a `slack` sink and its
-edge to your config, and export `SLACK_WEBHOOK_URL`, an incoming
+What **flagged** keeps can go to a channel too: add a `slack` sink that
+takes `flagged` to your config, and export `SLACK_WEBHOOK_URL`, an incoming
 webhook's URL.
 
 ```yaml
 sinks:
   slack:
+    inputs: [flagged]
     type: slack
     webhook_url: ${SLACK_WEBHOOK_URL}
     text: "*{_norm.actor}* {_norm.kind|eventName|eventType|action|event|step|events.0.name} from {_norm.ip|sourceIPAddress|client.ipAddress|ipAddress|actor_ip|ip|client_ip}: {judge.why|not judged: judge.error}"
-dag:
-  - from: flagged
-    to: [slack]
 ```
 
 In `text`, `{a.b}` is the record's field (`-` when it has none) and `{x|words y}`
@@ -171,7 +169,7 @@ gives each actor's alerts to a stronger model with the lake to query.
 
 ```
 flagged ──┬──▶ alerts.ndjson
-          └──▶ review ──▶ reviews.ndjson          (your config's edges)
+          └──▶ review ──▶ reviews.ndjson          (your config's inputs)
                  │  ▲
         model.chat  lake.query
                  ▼  │
@@ -201,19 +199,16 @@ covered, the SQL the model ran, the calls and tokens it took, and the node.
 is the whole of it in one include. To wire it yourself:
 
 Include it beside `ingest.yaml` or `hosted.yaml` in a config with a sink
-named `lake`, and draw two edges
+named `lake`, and name two inputs
 ([examples/cloud-infra/review.yaml](/examples/cloud-infra/review.yaml) does,
 and `pack:judge/review` is the same file built in):
 
 ```yaml
 include: [packs/judge/hosted.yaml, packs/judge/review.yaml]
 sinks:
-  reviews: { type: file, path: reviews.ndjson, compression: { type: none } }
-dag:
-  - from: flagged
-    to: [review]
-  - from: review
-    to: [reviews]
+  reviews: { inputs: [review], type: file, path: reviews.ndjson, compression: { type: none } }
+plugins:
+  review: { inputs: [flagged] }
 ```
 
 The view reads the lake as examples/cloud-infra writes it: Parquet with
@@ -253,9 +248,11 @@ to `lake`, `baseline_builder` and `baseline_renderer`:
 
 ```yaml
 include: [pack:judge/anthropic, pack:cloudtrail]
-dag:
-  - from: cloudtrail
-    to: [lake, baseline_builder, baseline_renderer]
+plugins:
+  baseline_builder: { inputs: [cloudtrail] }
+  baseline_renderer: { inputs: [cloudtrail] }
+sinks:
+  lake: { inputs: [cloudtrail] }
 ```
 
 | pack | judge | reviewer | key |
@@ -281,14 +278,19 @@ Another pair is [reviewed.yaml](reviewed.yaml) (`pack:judge/reviewed`), the
 same with no model named, and your config's `inference.judge` and
 `inference.reviewer`.
 
+## Changing the judge's chain
+
+A node's `inputs` in your config take the place of the pack's, so a stage
+can be taken out of the judge's chain or put into it without copying
+`ingest.yaml`. `inference: { judge: { inputs: [my_filter] } }` puts a plugin
+of your own in front of the judge, where `my_filter` takes
+`baseline_renderer`; a judge without `baseline_renderer` is the judge with
+other inputs. The list is replaced whole, so it names every node the judge
+is to take. Where a pack's records go is your config's to say as well: the
+nodes that take them name the pack's plugin in their `inputs`.
+
 ## What include cannot do
 
-- **Take a stage out of, or put one into, the judge's chain.** Edges add up
-  and none can be removed, so `baseline_renderer -> judge` stays. Another
-  plugin between them, or a judge without `baseline_renderer`, means copying
-  `ingest.yaml` instead of including it, or a change here that every config
-  gets, as baseline was. Each pack's edges are your config's own, so where a
-  pack's records go is yours to say.
 - **Keep a batch's order.** A source routed to several packs hands each its own
   records in turn, and several workers hand an actor's records to its group as
   they finish, so a group holds them in the order they arrived, not by

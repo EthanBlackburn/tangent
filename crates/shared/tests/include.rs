@@ -60,16 +60,12 @@ sources:
     since: 3600
 inference:
   judge:
+    inputs: [gh]
     url: ${TANGENT_TEST_UNSET_URL}
     model:
     prompt_file: judge.md
 sinks:
-  out: { type: file, path: out.ndjson }
-dag:
-  - from: gh
-    to: [judge]
-  - from: judge
-    to: [out]
+  out: { type: file, path: out.ndjson, inputs: [judge] }
 ";
 
 #[test]
@@ -338,7 +334,8 @@ inference:
 }
 
 /// Two packs that define the same plugin, each relative to itself, are one
-/// node: one entry, so one instance per worker and its data read once.
+/// node: one entry, so one instance per worker and its data read once. The
+/// file that includes them says what it takes.
 #[test]
 fn packs_that_define_the_same_plugin_make_one_node() {
     let pack = |name: &str| {
@@ -351,11 +348,6 @@ plugins:
     path: ../../shared/enrich
     data: ../../shared/enrich/data
     config: {{ fields: [_norm.ip] }}
-dag:
-  - from: {name}
-    to: [enrich]
-  - from: enrich
-    to: [logs]
 "
         )
     };
@@ -367,8 +359,10 @@ dag:
             "deploy/ingest.yaml",
             "
 include: [../packs/cloudtrail/ingest.yaml, ../packs/okta/ingest.yaml]
+plugins:
+  enrich: { inputs: [cloudtrail, okta] }
 sinks:
-  logs: { type: file, path: logs.ndjson }
+  logs: { type: file, path: logs.ndjson, inputs: [enrich] }
 ",
         ),
     ]);
@@ -382,17 +376,14 @@ sinks:
         Some(canonical(&dir, "shared/enrich/data").as_path()),
         "a path that does not exist yet is joined all the same"
     );
-    let from_enrich: Vec<&Arc<str>> = cfg
-        .dag
+    assert_eq!(enrich.inputs, [plugin("cloudtrail"), plugin("okta")]);
+    let edges = cfg.edges();
+    let from_enrich: Vec<&Arc<str>> = edges
         .iter()
         .filter(|e| e.from == plugin("enrich"))
         .flat_map(|e| &e.to)
         .collect();
-    assert_eq!(
-        from_enrich,
-        [&sink("logs")],
-        "the edge both packs state, once"
-    );
+    assert_eq!(from_enrich, [&sink("logs")], "the one plugin, read once");
 }
 
 #[test]
@@ -508,57 +499,74 @@ inference:
     );
 }
 
+/// A node's `inputs` are a list, and a list is a value: the including
+/// file's are the node's, in place of the included file's, so a config can
+/// put a node of its own between two a pack wired. Two files neither of
+/// which includes the other must agree, or the file including both says.
 #[test]
-fn dag_edges_add_up_and_count_once() {
-    let dir = tree(&[
-        (
-            "a.yaml",
-            "
-dag:
-  - from: facts
-    to: [logs]
-",
-        ),
-        (
-            "b.yaml",
-            "
-dag:
-  - from: facts
-    to: [logs, debug]
-  - from: facts
-    to: [logs]
-",
-        ),
-        (
-            "root.yaml",
-            "
-include: [a.yaml, b.yaml]
+fn a_node_s_inputs_are_the_including_file_s() {
+    let pack = "
 plugins:
   facts: { module_type: rust, path: facts }
 sinks:
-  logs: { type: file, path: logs.ndjson }
-  debug: { type: file, path: debug.ndjson }
-dag:
-  - from: facts
-    to: [alerts]
+  logs: { type: file, path: logs.ndjson, inputs: [facts] }
+";
+    let dir = tree(&[
+        ("pack.yaml", pack),
+        (
+            "root.yaml",
+            "
+include: [pack.yaml]
+plugins:
+  mine: { module_type: rust, path: mine, inputs: [facts] }
+sinks:
+  logs: { inputs: [mine] }
 ",
+        ),
+        (
+            "other.yaml",
+            "sinks:\n  logs: { inputs: [facts, facts] }\nplugins:\n  facts: { module_type: rust, path: facts }\n",
+        ),
+        ("both.yaml", "include: [pack.yaml, other.yaml]\n"),
+        (
+            "settled.yaml",
+            "include: [pack.yaml, other.yaml]\nsinks:\n  logs: { inputs: [facts] }\n",
         ),
     ]);
     let cfg = load(&dir, "root.yaml").unwrap().config;
-    let edges: Vec<(Arc<str>, Vec<Arc<str>>)> = cfg
-        .dag
-        .iter()
-        .map(|e| (e.from.clone(), e.to.clone()))
-        .collect();
+    assert_eq!(cfg.sinks["logs"].common.inputs, [plugin("mine")]);
+    let edges: Vec<(Arc<str>, Vec<Arc<str>>)> =
+        cfg.edges().into_iter().map(|e| (e.from, e.to)).collect();
     assert_eq!(
         edges,
         vec![
-            (plugin("facts"), vec![sink("logs")]),
-            (plugin("facts"), vec![sink("debug")]),
-            (plugin("facts"), vec![sink("alerts")]),
+            (plugin("facts"), vec![plugin("mine")]),
+            (plugin("mine"), vec![sink("logs")]),
         ],
-        "in include order, the root's last; each target once"
+        "facts no longer goes straight to logs"
     );
+
+    let e = error(&dir, "both.yaml");
+    assert!(e.contains("sinks.logs.inputs"), "{e}");
+    assert!(e.contains("pack.yaml") && e.contains("other.yaml"), "{e}");
+    let cfg = load(&dir, "settled.yaml").unwrap().config;
+    assert_eq!(cfg.sinks["logs"].common.inputs, [plugin("facts")]);
+}
+
+/// There is no `dag` list any more, and a config with one is told what
+/// there is.
+#[test]
+fn a_dag_list_is_refused_with_what_to_write() {
+    let dir = tree(&[
+        ("tangent.yaml", "dag:\n  - from: a\n    to: [b]\n"),
+        ("pack.yaml", "dag: []\n"),
+        ("root.yaml", "include: [pack.yaml]\n"),
+    ]);
+    for file in ["tangent.yaml", "root.yaml"] {
+        let e = error(&dir, file);
+        assert!(e.contains("there is no `dag` list"), "{e}");
+        assert!(e.contains("`inputs: [a, b]`"), "{e}");
+    }
 }
 
 /// `core` is included by both packs. It is read once, and what each pack
@@ -572,9 +580,8 @@ fn a_diamond_is_read_once_and_merges_the_same_either_way() {
 runtime: { workers: 2, batch_age: 5 }
 plugins:
   facts: { module_type: rust, path: facts, data: profile }
-dag:
-  - from: facts
-    to: [logs]
+sinks:
+  logs: { type: file, path: logs.ndjson, inputs: [facts] }
 ",
         ),
         ("a.yaml", "include: [core.yaml]\nruntime: { workers: 4 }\n"),
@@ -592,7 +599,7 @@ dag:
         assert_eq!(cfg.runtime.batch_size, 64);
         assert_eq!(cfg.runtime.batch_age, 5);
         assert_eq!(cfg.plugins["facts"].data, None, "b's removal from core");
-        assert_eq!(cfg.dag.len(), 1, "core's edge once");
+        assert_eq!(cfg.edges().len(), 1, "core's edge once");
         let core = canonical(&dir, "core.yaml");
         assert_eq!(loaded.files.iter().filter(|f| **f == core).count(), 1);
         assert_eq!(loaded.files[0], core, "core first: both include it");
@@ -990,7 +997,7 @@ enrichment_tables:
         cfg.enrichment_tables["geo"].path,
         PathBuf::from("city.mmdb")
     );
-    let bare = tree(&[("tangent.yaml", "dag: []\n")]);
+    let bare = tree(&[("tangent.yaml", "sinks: {}\n")]);
     let text = yaml(&load(&bare, "tangent.yaml").unwrap().config);
     assert!(!text.contains("enrichment_tables"), "{text}");
 }
@@ -1137,15 +1144,10 @@ sources:
   input: { type: file, path: in.json, decoding: { format: { type: json-array }, compression: { type: none } } }
   events: { type: tcp, bind_address: 0.0.0.0:9400 }
 plugins:
-  probe: { module_type: rust, path: probe, data: profile, config: { fields: [ip] }, tests: [{ input: i.json, expected: e.json }] }
+  probe: { inputs: [input], module_type: rust, path: probe, data: profile, config: { fields: [ip] }, tests: [{ input: i.json, expected: e.json }] }
 sinks:
-  out: { type: file, path: out.ndjson, compression: { type: none }, in_flight_limit: 1, default: true }
-  logs: { type: sqlite, path: logs.sqlite, table: logs, partitions: { org: [_norm.org] } }
-dag:
-  - from: input
-    to: [probe]
-  - from: probe
-    to: [out, logs]
+  out: { type: file, path: out.ndjson, compression: { type: none }, in_flight_limit: 1, default: true, inputs: [probe] }
+  logs: { type: sqlite, path: logs.sqlite, table: logs, partitions: { org: [_norm.org] }, inputs: [probe] }
 ",
     )]);
     let cfg = load(&dir, "tangent.yaml").unwrap().config;
@@ -1176,16 +1178,16 @@ fn a_type_error_names_the_files_that_set_the_block() {
 }
 
 #[test]
-fn a_bad_edge_names_its_file() {
+fn a_bad_input_names_its_file() {
     let dir = tree(&[
         (
             "pack.yaml",
-            "dag:\n  - from: { kind: plugn, name: cloudtrail }\n    to: []\n",
+            "plugins:\n  cloudtrail: { module_type: rust, inputs: { from: aws } }\n",
         ),
         ("root.yaml", "include: [pack.yaml]\n"),
     ]);
     let err = error(&dir, "root.yaml");
-    assert!(err.contains("dag"), "{err}");
+    assert!(err.contains("plugins.cloudtrail.inputs"), "{err}");
     assert!(err.contains("pack.yaml)"), "{err}");
 }
 
@@ -1196,6 +1198,7 @@ fn a_bad_edge_names_its_file() {
 fn every_path_field_is_rebased() {
     let PluginConfig {
         module_type: _,
+        inputs: _,
         path: _, // PATHS
         prebuilt: _,
         tests: _, // PATHS: input, expected
@@ -1222,6 +1225,7 @@ fn every_path_field_is_rebased() {
     };
     let judge: InferenceConfig = serde_yaml::from_str("{ model: m, prompt_file: p }").unwrap();
     let InferenceConfig {
+        inputs: _,
         backend: _,
         url: _,
         api_key: _,
@@ -1321,11 +1325,10 @@ fn a_pack_name_includes_the_copy_built_in() {
 include: [pack:enrich-ip, pack:judge/hosted, pack:cloudtrail]
 sources:
   aws_audit: { type: cloudtrail, region: us-east-1 }
-dag:
-  - from: aws_audit
-    to: [cloudtrail]
-  - from: cloudtrail
-    to: [baseline_builder, baseline_renderer]
+plugins:
+  cloudtrail: { inputs: [aws_audit] }
+  baseline_builder: { inputs: [cloudtrail] }
+  baseline_renderer: { inputs: [cloudtrail] }
 ",
     )]);
     let loaded = load(&dir, "tangent.yaml").unwrap();
@@ -1376,11 +1379,12 @@ fn a_provider_s_pack_names_the_judge_and_the_reviewer() {
 include: [pack:judge/{pack}, pack:cloudtrail]
 sources:
   aws_audit: {{ type: cloudtrail, region: us-east-1 }}
-dag:
-  - from: aws_audit
-    to: [cloudtrail]
-  - from: cloudtrail
-    to: [lake, baseline_builder, baseline_renderer]
+plugins:
+  cloudtrail: {{ inputs: [aws_audit] }}
+  baseline_builder: {{ inputs: [cloudtrail] }}
+  baseline_renderer: {{ inputs: [cloudtrail] }}
+sinks:
+  lake: {{ inputs: [cloudtrail] }}
 "
             ),
         )]);

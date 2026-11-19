@@ -125,7 +125,7 @@ impl DagRuntime {
         )?;
         let mut outs: HashMap<NodeRef, Vec<NodeRef>> = HashMap::default();
         // `validate` has checked every name, so each resolves
-        for e in &cfg.dag {
+        for e in &cfg.edges() {
             let Some(from) = cfg.node(&e.from) else {
                 continue;
             };
@@ -803,7 +803,7 @@ mod tests {
         std::fs::write(
             &cfg_path,
             format!(
-                "runtime: {{ state: {{ backend: lru }} }}\nsources:\n  in: {{ type: file, path: {r}/in.ndjson, decoding: {{ format: {{ type: ndjson }} }} }}\nsinks:\n  out: {{ type: file, path: {r}/out.ndjson, compression: {{ type: none }} }}\ndag:\n  - from: in\n    to: [out]\n",
+                "runtime: {{ state: {{ backend: lru }} }}\nsources:\n  in: {{ type: file, path: {r}/in.ndjson, decoding: {{ format: {{ type: ndjson }} }} }}\nsinks:\n  out: {{ type: file, path: {r}/out.ndjson, compression: {{ type: none }}, inputs: [in] }}\n",
                 r = root.display()
             ),
         )
@@ -936,10 +936,7 @@ mod tests {
 sources:
   in: {{ type: file, path: {root}/in.ndjson, decoding: {{ format: {{ type: ndjson }} }} }}
 sinks:
-  out: {{ type: file, path: {root}/out.ndjson, compression: {{ type: none }} }}
-dag:
-  - from: in
-    to: [out]
+  out: {{ type: file, path: {root}/out.ndjson, compression: {{ type: none }}, inputs: [in] }}
 ",
                 root = root.display()
             ),
@@ -985,7 +982,7 @@ dag:
         std::fs::write(
             &cfg_path,
             format!(
-                "runtime: {{ state: {{ backend: lru }} }}\nplugins:\n  p: {{ module_type: rust, path: . }}\nsources:\n  in: {{ type: file, path: {}/in.ndjson, decoding: {{ format: {{ type: ndjson }} }} }}\nsinks:\n  out: {{ type: blackhole }}\ndag:\n  - from: in\n    to: [p]\n  - from: p\n    to: [out]\n",
+                "runtime: {{ state: {{ backend: lru }} }}\nplugins:\n  p: {{ module_type: rust, path: ., inputs: [in] }}\nsources:\n  in: {{ type: file, path: {}/in.ndjson, decoding: {{ format: {{ type: ndjson }} }} }}\nsinks:\n  out: {{ type: blackhole, inputs: [p] }}\n",
                 root.display()
             ),
         )

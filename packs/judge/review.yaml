@@ -7,7 +7,7 @@
 # plugin flagged to review, and review to where reviews go
 # (examples/cloud-infra/review.yaml does).
 inference:
-  reviewer:                        # no edge reaches it: the plugin calls it
+  reviewer:                        # it has no inputs: the plugin calls it
     backend: bedrock
     model: ${REVIEW_MODEL:-us.anthropic.claude-sonnet-5-5}
     aws:

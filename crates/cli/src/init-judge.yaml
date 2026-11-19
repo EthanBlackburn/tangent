@@ -43,11 +43,11 @@ enrichment_tables:
   asn: { type: mmdb, path: data/GeoLite2-ASN.mmdb }
   networks: { type: cidr, path: data/networks.csv }
 
-# The two edges that are this file's: the source to its plugin, and the
-# plugin's records to the judge pack, which goes on from there (each actor's
-# history, the model, then alerts.ndjson and verdicts.ndjson).
-dag:
-  - from: aws_audit
-    to: [cloudtrail]
-  - from: cloudtrail           # each record learned and judged
-    to: [baseline_builder, baseline_renderer]
+# What this file wires: the plugin takes the source, and the judge pack's
+# builder and renderer take the plugin's records. The pack goes on from
+# there (each actor's history, the model, then alerts.ndjson and
+# verdicts.ndjson).
+plugins:
+  cloudtrail: { inputs: [aws_audit] }
+  baseline_builder: { inputs: [cloudtrail] }     # each record learned
+  baseline_renderer: { inputs: [cloudtrail] }    # and judged

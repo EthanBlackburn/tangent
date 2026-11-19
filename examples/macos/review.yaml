@@ -12,13 +12,11 @@ include:
 
 sinks:
   reviews:
+    inputs: [macos_review]
     type: file
     path: reviews.ndjson
     compression:
       type: none
 
-dag:
-  - from: macos_verdicts           # each alert, also to the reviewer
-    to: [macos_review]
-  - from: macos_review
-    to: [reviews]
+plugins:
+  macos_review: { inputs: [macos_verdicts] }   # each alert, also to the reviewer

@@ -35,8 +35,8 @@ pub struct Config {
     #[serde(default)]
     pub plugins: std::collections::BTreeMap<Arc<str>, plugins::PluginConfig>,
 
-    /// Inference nodes, each with its own model and prompt, named in the DAG
-    /// as any node is.
+    /// Inference nodes, each with its own model and prompt, named in
+    /// another node's `inputs` as any node is.
     #[serde(default)]
     pub inference: std::collections::BTreeMap<Arc<str>, inference::InferenceConfig>,
 
@@ -44,9 +44,13 @@ pub struct Config {
     /// each looked up by its name.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub enrichment_tables: std::collections::BTreeMap<Arc<str>, enrichment::TableConfig>,
+}
 
-    #[serde(default)]
-    pub dag: Vec<Edge>,
+/// A node that takes records: its kind, its name and its `inputs`.
+struct Reader<'a> {
+    kind: &'static str,
+    name: &'a Arc<str>,
+    inputs: &'a [Arc<str>],
 }
 
 /// A config and the files it was read from.
@@ -85,7 +89,6 @@ impl Config {
             serde_path_to_error::deserialize(serde_yaml::Deserializer::from_str(&merged.text))
                 .map_err(|e| merged.explain(e))
                 .with_context(|| format!("loading {}", path.display()))?;
-        config.dag = dedupe(std::mem::take(&mut config.dag));
         config.inference.values_mut().for_each(|n| n.default_url());
         config
             .check_names()
@@ -127,7 +130,7 @@ impl Config {
         })
     }
 
-    /// A name is one node, so that an edge can name a node without its
+    /// A name is one node, so that `inputs` can name a node without its
     /// kind: no source, plugin, inference node and sink share one. And it is
     /// letters, digits, `_` and `-`: a plugin's names its `.cwasm` file in
     /// plugins_path, and an inference node's is the field its reply goes in,
@@ -162,44 +165,79 @@ impl Config {
             .collect();
         if !shared.is_empty() {
             anyhow::bail!(
-                "a name is one node, so an edge can name it; rename one of each:\n  - {}",
+                "a name is one node, so `inputs` can name it; rename one of each:\n  - {}",
                 shared.join("\n  - ")
             );
         }
         Ok(())
     }
 
+    /// The nodes that take records: the plugins, the inference nodes, then
+    /// the sinks, each by name.
+    fn readers(&self) -> Vec<Reader<'_>> {
+        let plugins = self.plugins.iter().map(|(name, p)| Reader {
+            kind: "plugin",
+            name,
+            inputs: &p.inputs,
+        });
+        let inference = self.inference.iter().map(|(name, i)| Reader {
+            kind: "inference node",
+            name,
+            inputs: &i.inputs,
+        });
+        let sinks = self.sinks.iter().map(|(name, s)| Reader {
+            kind: "sink",
+            name,
+            inputs: &s.common.inputs,
+        });
+        plugins.chain(inference).chain(sinks).collect()
+    }
+
+    /// The edges the nodes' `inputs` make, turned round for the router: each
+    /// node that is an input, by name, with the nodes that take its records
+    /// (plugins, inference nodes, then sinks, each by name), each once
+    /// however often it is listed.
+    pub fn edges(&self) -> Vec<Edge> {
+        let mut outs: BTreeMap<&Arc<str>, Vec<Arc<str>>> = BTreeMap::new();
+        for reader in self.readers() {
+            for input in reader.inputs {
+                let to = outs.entry(input).or_default();
+                if !to.contains(reader.name) {
+                    to.push(Arc::clone(reader.name));
+                }
+            }
+        }
+        outs.into_iter()
+            .map(|(from, to)| Edge {
+                from: Arc::clone(from),
+                to,
+            })
+            .collect()
+    }
+
     pub fn validate(&self) -> Result<()> {
         self.check_names()?;
         let mut missing: Vec<String> = Vec::new();
         let mut cannot: Vec<String> = Vec::new();
-        for e in &self.dag {
-            match self.node(&e.from) {
-                None => missing.push(format!("from `{}` does not exist", e.from)),
-                Some(NodeRef::Sink { .. }) => {
-                    cannot.push(format!("from `{}`: a sink sends nothing on", e.from))
-                }
-                Some(_) => {}
-            }
-            for t in &e.to {
-                match self.node(t) {
-                    None => missing.push(format!("to `{t}` does not exist")),
-                    Some(NodeRef::Source { .. }) => {
-                        cannot.push(format!("to `{t}`: a source takes nothing in"))
+        for Reader { kind, name, inputs } in self.readers() {
+            for input in inputs {
+                match self.node(input) {
+                    None => {
+                        missing.push(format!("{kind} `{name}`: input `{input}` does not exist"))
                     }
+                    Some(NodeRef::Sink { .. }) => cannot.push(format!(
+                        "{kind} `{name}`: input `{input}` is a sink, which sends nothing on"
+                    )),
                     Some(_) => {}
                 }
             }
         }
         if !missing.is_empty() {
-            anyhow::bail!(
-                "DAG references missing nodes:\n  - {}",
-                missing.join("\n  - ")
-            );
+            anyhow::bail!("inputs that name no node:\n  - {}", missing.join("\n  - "));
         }
         cannot.extend(self.cycles());
         if !cannot.is_empty() {
-            anyhow::bail!("DAG edges that cannot be:\n  - {}", cannot.join("\n  - "));
+            anyhow::bail!("inputs that cannot be:\n  - {}", cannot.join("\n  - "));
         }
 
         // a plugin's `models` are inference nodes
@@ -263,44 +301,39 @@ impl Config {
     }
 
     /// What loads and runs but likely is not meant, for the caller to print
-    /// (this crate does not log): a plugin, inference node or sink no edge
-    /// reaches never runs, and a source no edge leaves is read and dropped,
-    /// its records acked and a polling source's cursor moved past them. A
-    /// plugin no edge leaves is fine: it may only write state.
+    /// (this crate does not log): a plugin, inference node or sink with no
+    /// inputs never runs, and a source that is no node's input is read and
+    /// dropped, its records acked and a polling source's cursor moved past
+    /// them. A plugin that is no node's input is fine: it may only write
+    /// state.
     pub fn warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
+        let edges = self.edges();
         for name in self.sources.keys() {
-            if !self.dag.iter().any(|e| e.from == *name && !e.to.is_empty()) {
+            if !edges.iter().any(|e| e.from == *name) {
                 warnings.push(format!(
-                    "source {name}: no edge leaves it; its records are read and dropped"
+                    "source {name}: it is no node's input; its records are read and dropped"
                 ));
             }
         }
-        let fed: [(&str, Vec<&Arc<str>>); 3] = [
-            ("plugin", self.plugins.keys().collect()),
-            ("inference node", self.inference.keys().collect()),
-            ("sink", self.sinks.keys().collect()),
-        ];
-        // an inference node a plugin calls runs without an edge
+        // an inference node a plugin calls runs without an input
         let called = |name: &Arc<str>| self.plugins.values().any(|p| p.models.contains(name));
-        for (kind, names) in fed {
-            for name in names {
-                if kind == "inference node" && called(name) {
-                    continue;
-                }
-                if !self.dag.iter().any(|e| e.to.contains(name)) {
-                    warnings.push(format!("{kind} {name}: no edge reaches it; it never runs"));
-                }
+        for Reader { kind, name, inputs } in self.readers() {
+            if kind == "inference node" && called(name) {
+                continue;
+            }
+            if inputs.is_empty() {
+                warnings.push(format!("{kind} {name}: it has no inputs; it never runs"));
             }
         }
         warnings
     }
 
     /// Cycles among the plugins and inference nodes, each as `a -> b -> a`:
-    /// one at least wherever the edges go round. A walk sends a node's
-    /// records on along every edge until a sink, so a record on a cycle goes
-    /// round it for good, through a model each time round. No source or sink
-    /// is on one: no edge enters a source or leaves a sink.
+    /// one at least wherever the inputs go round. A walk sends a node's
+    /// records on to every node that takes them until a sink, so a record on
+    /// a cycle goes round it for good, through a model each time round. No
+    /// source or sink is on one: a source has no inputs and a sink is none.
     fn cycles(&self) -> Vec<String> {
         let inner = |n: &str| {
             matches!(
@@ -308,8 +341,9 @@ impl Config {
                 Some(NodeRef::Plugin { .. } | NodeRef::Inference { .. })
             )
         };
+        let edges = self.edges();
         let mut outs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for e in self.dag.iter().filter(|e| inner(&e.from)) {
+        for e in edges.iter().filter(|e| inner(&e.from)) {
             outs.entry(&e.from)
                 .or_default()
                 .extend(e.to.iter().map(|t| &**t).filter(|t| inner(t)));
@@ -367,22 +401,6 @@ fn visit<'a>(
     done.insert(node);
 }
 
-/// Each edge once: a target a node already sends to is dropped from a later
-/// edge, and an edge left with no target goes. The router extends a node's
-/// targets with every edge from it, so an edge two files both state would
-/// otherwise deliver every record twice.
-fn dedupe(dag: Vec<Edge>) -> Vec<Edge> {
-    let mut seen: HashSet<(Arc<str>, Arc<str>)> = HashSet::new();
-    dag.into_iter()
-        .filter_map(|mut e| {
-            let had = !e.to.is_empty();
-            let from = e.from.clone();
-            e.to.retain(|t| seen.insert((from.clone(), t.clone())));
-            (!had || !e.to.is_empty()).then_some(e)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,11 +411,11 @@ mod tests {
 
     const LINES: &str = "sources:\n  lines: { type: tcp, bind_address: \"127.0.0.1:9\" }\n";
 
-    /// An edge names its nodes, each found in whichever map defines it.
+    /// An input names its node, found in whichever map defines it.
     #[test]
     fn a_name_is_its_node() {
         let cfg = config(&format!(
-            "{LINES}sinks:\n  out: {{ type: blackhole }}\ndag:\n  - from: lines\n    to: [out]\n"
+            "{LINES}sinks:\n  out: {{ type: blackhole, inputs: [lines] }}\n"
         ));
         assert_eq!(
             cfg.node("lines"),
@@ -410,13 +428,13 @@ mod tests {
         cfg.validate().unwrap();
     }
 
-    /// Two kinds sharing a name would make an edge's name two nodes: an
+    /// Two kinds sharing a name would make an input's name two nodes: an
     /// error naming both.
     #[test]
     fn two_kinds_may_not_share_a_name() {
         let cfg = config(
             "sources:\n  out: { type: tcp, bind_address: \"127.0.0.1:9\" }\n\
-             sinks:\n  out: { type: blackhole }\ndag:\n  - from: out\n    to: [out]\n",
+             sinks:\n  out: { type: blackhole, inputs: [out] }\n",
         );
         let e = format!("{:#}", cfg.validate().unwrap_err());
         assert!(e.contains("`out` is a source and a sink"), "{e}");
@@ -429,11 +447,10 @@ mod tests {
     #[test]
     fn a_name_is_letters_digits_underscores_and_dashes() {
         let cfg = config(&format!(
-            "{LINES}plugins:\n  ../x: {{ module_type: rust }}\n  \
-             ok_name-2: {{ module_type: rust }}\n\
-             inference:\n  judge.v2: {{ model: m, prompt_file: p.txt }}\n\
-             sinks:\n  out: {{ type: blackhole }}\n\
-             dag:\n  - from: lines\n    to: [../x, ok_name-2, judge.v2, out]\n"
+            "{LINES}plugins:\n  ../x: {{ module_type: rust, inputs: [lines] }}\n  \
+             ok_name-2: {{ module_type: rust, inputs: [lines] }}\n\
+             inference:\n  judge.v2: {{ model: m, prompt_file: p.txt, inputs: [lines] }}\n\
+             sinks:\n  out: {{ type: blackhole, inputs: [lines] }}\n"
         ));
         let e = format!("{:#}", cfg.validate().unwrap_err());
         assert!(e.contains("plugin `../x`"), "{e}");
@@ -441,16 +458,27 @@ mod tests {
         assert!(!e.contains("ok_name-2"), "{e}");
     }
 
-    /// An edge runs from a node that sends to one that takes: not out of a
-    /// sink, not into a source.
+    /// An input is a node that sends its records on: one there is, and not
+    /// a sink. (A source takes nothing in: it has no `inputs` to say so.)
     #[test]
-    fn no_edge_leaves_a_sink_or_enters_a_source() {
-        let cfg = config(&format!(
-            "{LINES}sinks:\n  out: {{ type: blackhole }}\ndag:\n  - from: out\n    to: [lines]\n"
-        ));
-        let e = format!("{:#}", cfg.validate().unwrap_err());
-        assert!(e.contains("from `out`: a sink sends nothing on"), "{e}");
-        assert!(e.contains("to `lines`: a source takes nothing in"), "{e}");
+    fn an_input_is_a_node_that_sends() {
+        let after = |inputs: &str| {
+            let cfg = config(&format!(
+                "{LINES}sinks:\n  out: {{ type: blackhole, inputs: [lines] }}\n  \
+                 after: {{ type: blackhole, inputs: [{inputs}] }}\n"
+            ));
+            format!("{:#}", cfg.validate().unwrap_err())
+        };
+        let e = after("out");
+        assert!(
+            e.contains("sink `after`: input `out` is a sink, which sends nothing on"),
+            "{e}"
+        );
+        let e = after("lines, nope");
+        assert!(
+            e.contains("sink `after`: input `nope` does not exist"),
+            "{e}"
+        );
     }
 
     /// An s3 sink may name its objects' prefix; without one they go to the
@@ -473,75 +501,105 @@ mod tests {
         assert_eq!(s3(""), None);
     }
 
-    /// A walk sends a node's records on along every edge until a sink: one
-    /// on a cycle goes round it for good, through a model each time. An
-    /// error naming the cycle, through an ungrouped plugin, a grouped one or
-    /// a model; two edges into one node are no cycle.
+    /// A walk sends a node's records on to every node that takes them until
+    /// a sink: one on a cycle goes round it for good, through a model each
+    /// time. An error naming the cycle, through an ungrouped plugin, a
+    /// grouped one or a model; two nodes with one input are no cycle.
     #[test]
-    fn the_dag_has_no_cycle() {
-        let nodes = "plugins:\n  a: { module_type: rust }\n  \
-                     g: { module_type: rust, group_by: [actor] }\n\
-                     inference:\n  first: { model: m, prompt_file: p.txt }\n  \
-                     second: { model: m, prompt_file: p.txt }\n\
-                     sinks:\n  out: { type: blackhole }\n";
-        let validate = |dag: &str| {
+    fn the_inputs_make_no_cycle() {
+        // each node's inputs, besides the source's lines for a, g and first
+        let validate = |a: &str, g: &str, first: &str, second: &str, out: &str| {
             config(&format!(
-                "{LINES}{nodes}dag:\n  - from: lines\n    to: [a, g, first]\n{dag}"
+                "{LINES}plugins:\n  a: {{ module_type: rust, inputs: [lines{a}] }}\n  \
+                 g: {{ module_type: rust, group_by: [actor], inputs: [lines{g}] }}\n\
+                 inference:\n  first: {{ model: m, prompt_file: p.txt, inputs: [lines{first}] }}\n  \
+                 second: {{ model: m, prompt_file: p.txt, inputs: [{second}] }}\n\
+                 sinks:\n  out: {{ type: blackhole, inputs: [{out}] }}\n"
             ))
             .validate()
         };
-        let cycle = |dag: &str| format!("{:#}", validate(dag).unwrap_err());
+        let cycle = |a: &str, g: &str, first: &str, second: &str, out: &str| {
+            format!("{:#}", validate(a, g, first, second, out).unwrap_err())
+        };
 
-        let e = cycle("  - from: a\n    to: [a, out]\n");
+        let e = cycle(", a", "", "", "", "a");
         assert!(e.contains("a cycle: a -> a"), "{e}");
-        let e =
-            cycle("  - from: first\n    to: [second]\n  - from: second\n    to: [first, out]\n");
+        let e = cycle("", "", ", second", "first", "second");
         assert!(e.contains("a cycle: first -> second -> first"), "{e}");
-        let e = cycle("  - from: g\n    to: [first]\n  - from: first\n    to: [g, out]\n");
+        let e = cycle("", ", first", ", g", "", "first");
         assert!(e.contains("a cycle: first -> g -> first"), "{e}");
 
-        validate(
-            "  - from: a\n    to: [first, second]\n  - from: first\n    to: [second]\n  \
-             - from: second\n    to: [out]\n",
-        )
-        .unwrap();
+        validate("", "", ", a", "a, first", "second").unwrap();
     }
 
-    /// A node no edge reaches never runs, and a source no edge leaves is
-    /// read and dropped: each loads, with a warning naming it. A plugin no
-    /// edge leaves is fine: it may only write state.
+    /// A node with no inputs never runs, and a source that is no node's
+    /// input is read and dropped: each loads, with a warning naming it. A
+    /// plugin that is no node's input is fine: it may only write state.
     #[test]
-    fn a_node_no_edge_reaches_is_a_warning() {
+    fn a_node_with_no_inputs_is_a_warning() {
         let cfg = config(&format!(
             "{LINES}  idle: {{ type: tcp, bind_address: \"127.0.0.1:9\" }}\n\
-             plugins:\n  builder: {{ module_type: rust }}\n  stray: {{ module_type: rust }}\n\
+             plugins:\n  builder: {{ module_type: rust, inputs: [lines] }}\n  \
+             stray: {{ module_type: rust }}\n\
              inference:\n  lonely: {{ model: m, prompt_file: p.txt }}\n\
-             sinks:\n  out: {{ type: blackhole }}\n  never: {{ type: blackhole }}\n\
-             dag:\n  - from: lines\n    to: [builder, out]\n"
+             sinks:\n  out: {{ type: blackhole, inputs: [lines] }}\n  never: {{ type: blackhole }}\n"
         ));
         cfg.validate().unwrap();
         assert_eq!(
             cfg.warnings(),
             [
-                "source idle: no edge leaves it; its records are read and dropped",
-                "plugin stray: no edge reaches it; it never runs",
-                "inference node lonely: no edge reaches it; it never runs",
-                "sink never: no edge reaches it; it never runs",
+                "source idle: it is no node's input; its records are read and dropped",
+                "plugin stray: it has no inputs; it never runs",
+                "inference node lonely: it has no inputs; it never runs",
+                "sink never: it has no inputs; it never runs",
+            ]
+        );
+    }
+
+    /// The edges are the inputs turned round: each node with the nodes that
+    /// take its records, each once.
+    #[test]
+    fn the_edges_are_the_inputs_turned_round() {
+        let cfg = config(&format!(
+            "{LINES}plugins:\n  tidy: {{ module_type: rust, inputs: [lines, lines] }}\n\
+             sinks:\n  kept: {{ type: blackhole, inputs: [lines, tidy] }}\n  \
+             out: {{ type: blackhole, inputs: [tidy] }}\n"
+        ));
+        let edges: Vec<(String, Vec<String>)> = cfg
+            .edges()
+            .into_iter()
+            .map(|e| {
+                (
+                    e.from.to_string(),
+                    e.to.iter().map(|t| t.to_string()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            edges,
+            [
+                (
+                    "lines".to_string(),
+                    vec!["tidy".to_string(), "kept".to_string()]
+                ),
+                (
+                    "tidy".to_string(),
+                    vec!["kept".to_string(), "out".to_string()]
+                ),
             ]
         );
     }
 
     /// An inference node a plugin holds a conversation with (`models`) runs
-    /// without an edge, so it draws no warning; a name that is no node is an
+    /// without an input, so it draws no warning; a name that is no node is an
     /// error.
     #[test]
-    fn a_plugin_s_models_are_inference_nodes_and_need_no_edge() {
+    fn a_plugin_s_models_are_inference_nodes_and_need_no_input() {
         let with = |models: &str| {
             config(&format!(
-                "{LINES}plugins:\n  agent: {{ module_type: rust, models: [{models}] }}\n\
+                "{LINES}plugins:\n  agent: {{ module_type: rust, models: [{models}], inputs: [lines] }}\n\
                  inference:\n  reviewer: {{ model: m, prompt_file: p.txt }}\n\
-                 sinks:\n  out: {{ type: blackhole }}\n\
-                 dag:\n  - from: lines\n    to: [agent]\n  - from: agent\n    to: [out]\n"
+                 sinks:\n  out: {{ type: blackhole, inputs: [agent] }}\n"
             ))
         };
         let cfg = with("reviewer");
@@ -559,9 +617,7 @@ mod tests {
         let file = |encoding: &str| -> Config {
             serde_yaml::from_str(&format!(
                 "sources:\n  lines: {{ type: tcp, bind_address: \"127.0.0.1:9\" }}\n\
-                 sinks:\n  out: {{ type: file, path: /tmp/out, encoding: {encoding} }}\n\
-                 dag:\n  - from: lines\n    \
-                 to: [out]\n"
+                 sinks:\n  out: {{ type: file, path: /tmp/out, encoding: {encoding}, inputs: [lines] }}\n"
             ))
             .unwrap()
         };
@@ -580,13 +636,12 @@ mod tests {
     fn a_plugin_s_tables_are_sinks_a_statement_can_read() {
         let named = |name: &str, table: &str| {
             config(&format!(
-                "{LINES}plugins:\n  agent: {{ module_type: rust, tables: {{ {name}: {table} }} }}\n\
+                "{LINES}plugins:\n  agent: {{ module_type: rust, tables: {{ {name}: {table} }}, inputs: [lines] }}\n\
                  sinks:\n  \
-                 lake: {{ type: rolling_file, path: lake/logs/%Y/%m/%d, wal_path: lake/wal, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n  \
-                 lines_kept: {{ type: rolling_file, path: kept, wal_path: kept-wal }}\n  \
-                 bucket: {{ type: s3, bucket_name: b, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n  \
-                 dated: {{ type: rolling_file, path: \"%Y/%m\", wal_path: dated-wal, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n\
-                 dag:\n  - from: lines\n    to: [agent]\n  - from: agent\n    to: [lake, lines_kept, bucket]\n"
+                 lake: {{ type: rolling_file, path: lake/logs/%Y/%m/%d, wal_path: lake/wal, encoding: {{ type: parquet, schema: {{ n: int }} }}, inputs: [agent] }}\n  \
+                 lines_kept: {{ type: rolling_file, path: kept, wal_path: kept-wal, inputs: [agent] }}\n  \
+                 bucket: {{ type: s3, bucket_name: b, encoding: {{ type: parquet, schema: {{ n: int }} }}, inputs: [agent] }}\n  \
+                 dated: {{ type: rolling_file, path: \"%Y/%m\", wal_path: dated-wal, encoding: {{ type: parquet, schema: {{ n: int }} }} }}\n"
             ))
         };
         let with = |table: &str| named("records", table);

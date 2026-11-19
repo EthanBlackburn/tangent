@@ -7,6 +7,7 @@ runtime:
     max_ttl_ms: 0              # no cap on TTLs (the default caps them at an hour)
 plugins:
   counter:
+    inputs: [network_input]
     module_type: rust
     path: .
     tests:
@@ -18,13 +19,8 @@ sources:
     bind_address: 0.0.0.0:9000
 sinks:
   out:
+    inputs: [counter]
     type: file
     path: out.ndjson
     compression:
       type: none
-dag:
-  - from: network_input
-    to: [counter]
-
-  - from: counter
-    to: [out]

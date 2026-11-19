@@ -997,6 +997,7 @@ pub(crate) mod stub {
             json!({"enable_thinking": false}),
         );
         tangent_shared::inference::InferenceConfig {
+            inputs: Vec::new(),
             backend: tangent_shared::inference::Backend::Openai,
             url: Some(url.to_string()),
             api_key: None,

@@ -510,11 +510,9 @@ mod tests {
         std::fs::write(
             &file,
             "sources:\n  input: { type: file, path: in.ndjson, decoding: { format: { type: ndjson } } }\n\
-             inference:\n  first: { model: m, prompt_file: p.txt }\n  \
-             second: { model: m, prompt_file: p.txt }\n\
-             sinks:\n  looped: { type: file, path: looped.ndjson }\n\
-             dag:\n  - from: input\n    to: [first]\n  - from: first\n    to: [second]\n  \
-             - from: second\n    to: [first, looped]\n",
+             inference:\n  first: { model: m, prompt_file: p.txt, inputs: [input, second] }\n  \
+             second: { model: m, prompt_file: p.txt, inputs: [first] }\n\
+             sinks:\n  looped: { type: file, path: looped.ndjson, inputs: [second] }\n",
         )
         .unwrap();
         let err = format!("{:#}", show_config(&file).unwrap_err());

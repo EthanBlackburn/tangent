@@ -143,7 +143,7 @@ A pack's plugin links [packs/shared](/packs/shared) by path:
   and `kit.write(out, stamp, record, norm)` folds the org, names the person,
   enriches the addresses, adds the facts and writes the record as one line.
 
-The pack's `ingest.yaml` defines the plugin and its fixtures, and no edges:
+The pack's `ingest.yaml` defines the plugin and its fixtures, and no inputs:
 the config that includes the pack routes it to its sink, `baseline_builder`
 and `baseline_renderer`. behavior-baseline reads a source it knows from its
 own table ([kit/src/kinds](behavior-baseline/kit/src/kinds)); a new pack's

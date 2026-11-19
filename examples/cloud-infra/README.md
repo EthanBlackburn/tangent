@@ -7,8 +7,8 @@ logs at it, fill in one file about your company, run.
 It is built only from [packs](/packs): `tangent.yaml` includes
 [judge](/packs/judge), which brings [enrich-ip](/packs/enrich-ip) and
 [behavior-baseline](/packs/behavior-baseline), and four packs, and adds the
-sources, the lake, their edges, each pack's edges to the lake, the baseline
-and the judge, and the profile. One config, one process.
+sources, the lake, the inputs that send each source to its pack and each
+pack to the lake, the baseline and the judge, and the profile. One config, one process.
 
 ```
 CloudTrail ──▶ cloudtrail ─────────────┐
@@ -167,6 +167,6 @@ The packs' fixtures were cut from eight of the cases; `make test` runs them, nee
 ## Files
 
 ```
-tangent.yaml          judge and the four packs, the sources, the lake, every edge, the profile
+tangent.yaml          judge and the four packs, the sources, the lake, their inputs, the profile
 profile/profile.yaml  your company (edit this)
 ```

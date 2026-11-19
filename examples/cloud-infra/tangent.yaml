@@ -29,6 +29,7 @@ enrichment_tables:
 
 sinks:
   lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    inputs: [cloudtrail, github, okta, google_workspace]
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
@@ -41,8 +42,9 @@ sinks:
         ts: timestamp
         source: string
         _norm: { org: string, actor: string, kind: string, ip: string }
-  # What flagged keeps, to Slack too, with its edge at the end of `dag` (packs/judge/README.md#slack):
+  # What flagged keeps, to Slack too (packs/judge/README.md#slack):
   # slack:
+  #   inputs: [flagged]
   #   type: slack
   #   webhook_url: ${SLACK_WEBHOOK_URL}
   #   text: "*{_norm.actor}* {_norm.kind|eventName|eventType|action|event|step|events.0.name} from {_norm.ip|sourceIPAddress|client.ipAddress|ipAddress|actor_ip|ip|client_ip}: {judge.why|not judged: judge.error}"
@@ -70,33 +72,16 @@ sources:
     type: tcp
     bind_address: 0.0.0.0:9400
 
-dag:
-  - from: aws_audit
-    to: [cloudtrail]
-  - from: github_audit
-    to: [github]
-  - from: okta_audit
-    to: [okta]
-  - from: workspace_audit
-    to: [google_workspace]
-  # NDJSON, each record's `source` naming its shape: each pack takes its own
-  # (gha_ci and runner_egress are github's), and a record no pack takes is
-  # dropped, with a warning.
-  - from: events
-    to:
-      - cloudtrail
-      - github
-      - okta
-      - google_workspace
-  # Each pack's records: kept in the lake, folded into the actor's baseline,
-  # and judged (packs/behavior-baseline, packs/judge).
-  - from: cloudtrail
-    to: [lake, baseline_builder, baseline_renderer]
-  - from: github
-    to: [lake, baseline_builder, baseline_renderer]
-  - from: okta
-    to: [lake, baseline_builder, baseline_renderer]
-  - from: google_workspace
-    to: [lake, baseline_builder, baseline_renderer]
-  # - from: flagged   # to Slack, with `slack` above
-  #   to: [slack]
+plugins:
+  # Each pack's plugin takes its own source, and `events` as well: NDJSON,
+  # each record's `source` naming its shape. Each pack takes its own (gha_ci
+  # and runner_egress are github's), and a record no pack takes is dropped,
+  # with a warning.
+  cloudtrail: { inputs: [aws_audit, events] }
+  github: { inputs: [github_audit, events] }
+  okta: { inputs: [okta_audit, events] }
+  google_workspace: { inputs: [workspace_audit, events] }
+  # Each pack's records are folded into the actor's baseline and judged
+  # (packs/behavior-baseline, packs/judge), and kept in the lake above.
+  baseline_builder: { inputs: [cloudtrail, github, okta, google_workspace] }
+  baseline_renderer: { inputs: [cloudtrail, github, okta, google_workspace] }

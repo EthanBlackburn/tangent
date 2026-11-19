@@ -39,14 +39,11 @@ enrichment_tables:
 sources:
   okta_audit: { type: okta, org_url: "${OKTA_ORG_URL}", token: "${OKTA_API_TOKEN}" }
 sinks:
-  baselined: { type: file, path: baselined.ndjson }   # each record with its `_baseline`
-dag:
-  - from: okta_audit
-    to: [okta]
-  - from: okta
-    to: [baseline_builder, baseline_renderer]
-  - from: baseline_renderer
-    to: [baselined]
+  baselined: { inputs: [baseline_renderer], type: file, path: baselined.ndjson }   # each record with its `_baseline`
+plugins:
+  okta: { inputs: [okta_audit] }
+  baseline_builder: { inputs: [okta] }
+  baseline_renderer: { inputs: [okta] }
 ```
 
 ## What it learns

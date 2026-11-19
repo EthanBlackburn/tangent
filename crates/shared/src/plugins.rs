@@ -13,6 +13,11 @@ use crate::enrichment::TableConfig;
 pub struct PluginConfig {
     pub module_type: String,
 
+    /// The nodes whose records this one takes, by name: sources, plugins and
+    /// inference nodes. A node with none never runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<Arc<str>>,
+
     /// The plugin's source, relative to the file that names it, for `tangent
     /// plugin compile`. A plugin with `prebuilt` and no source leaves it out.
     #[serde(default)]
@@ -52,7 +57,7 @@ pub struct PluginConfig {
     pub tables: BTreeMap<String, String>,
 
     /// The inference nodes the plugin may hold a conversation with
-    /// (`model.chat`), by name. A node named here needs no edge.
+    /// (`model.chat`), by name. A node named here needs no inputs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<Arc<str>>,
 
@@ -101,6 +106,7 @@ const fn default_expire_after_ms() -> u64 {
 impl Default for PluginConfig {
     fn default() -> Self {
         Self {
+            inputs: Vec::new(),
             module_type: String::new(),
             path: PathBuf::new(),
             prebuilt: None,

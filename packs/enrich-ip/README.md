@@ -24,5 +24,5 @@ warning, and the fields it would give are left out.
 No sources, no sinks and no profile: your config adds them, sends each source
 to its pack, and sends each pack's plugin on to where its records go: a sink
 of yours ([the lake](../README.md#the-lake) in the examples),
-[behavior-baseline](../behavior-baseline), the judge. A plugin with no edge
-out keeps nothing: its records go nowhere.
+[behavior-baseline](../behavior-baseline), the judge. A plugin that no node
+takes as an input keeps nothing: its records go nowhere.

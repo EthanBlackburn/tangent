@@ -58,6 +58,7 @@ enrichment_tables:                  # your company: packs/README.md#the-profile
 
 sinks:
   lake:                          # every finished record, kept: Parquet files, a directory an hour; delete old hours to trim it
+    inputs: [google_workspace]
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
@@ -77,11 +78,10 @@ sources:
     credentials_file: ${GOOGLE_APPLICATION_CREDENTIALS}
     subject: ${GOOGLE_ADMIN_EMAIL}
 
-dag:
-  - from: workspace_audit
-    to: [google_workspace]
-  - from: google_workspace   # kept, learned, judged
-    to: [lake, baseline_builder, baseline_renderer]
+plugins:
+  google_workspace: { inputs: [workspace_audit] }
+  baseline_builder: { inputs: [google_workspace] }     # learned
+  baseline_renderer: { inputs: [google_workspace] }    # and judged
 ```
 
 and `google_workspace` in your profile's `own_sources`.
