@@ -36,8 +36,9 @@ sockets. Tangent starts them as root through `sudo`, which asks for the
 password once, sends ahead of the sensor
 [what was already running](#what-was-already-running), names
 [itself as the capture](#the-captures-own-processes), makes the
-[connections](#network) of tcpdump's packets as net.py does, and ends both
-when it stops:
+[connections](#network) of tcpdump's packets as net.py does, follows Claude
+Code's transcripts for [what the agent was asked](#what-the-agent-was-asked)
+as transcripts.py does, and ends both programs when it stops:
 
 ```yaml
 sources:
@@ -49,7 +50,7 @@ plugins:
 ```
 
 Tangent itself runs as you. [examples/macos](/examples/macos) does not use
-the source yet: the transcript reader is still run.sh's.
+the source yet.
 
 ## What the plugin keeps
 

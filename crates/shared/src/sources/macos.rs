@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// This Mac, as packs/macos reads it: what its Endpoint Security sensor
-/// sees, with the programs that were already running when it started, and
-/// each new connection, from macOS's tcpdump. Tangent starts the sensor and
-/// tcpdump itself, as root through `sudo`, which asks for the password
-/// once, and stops them when the source stops. Tangent itself runs as you.
+/// sees, with the programs that were already running when it started,
+/// each new connection, from macOS's tcpdump, and each prompt typed to
+/// Claude Code, from its transcripts under `~/.claude`. Tangent starts the
+/// sensor and tcpdump itself, as root through `sudo`, which asks for the
+/// password once, and stops them when the source stops. Tangent itself
+/// runs as you.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacosConfig {
