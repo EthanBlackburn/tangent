@@ -11,12 +11,18 @@
 //! - **That tangent is the capture.** A line names tangent's own pid, and
 //!   the plugin leaves out what it and the programs under it do: the sensor
 //!   reading every file event is what spyware looks like.
+//! - **New connections.** Endpoint Security reports no network, so tangent
+//!   starts macOS's tcpdump beside the sensor and makes a line of each
+//!   connection it sees begin ([`net`]). When tcpdump stops, the sensor is
+//!   still read.
 //!
-//! The sensor needs root and tangent does not, so it is started through
-//! `sudo`, which asks for the password once, on the terminal, before
-//! anything is read. Root's process is not tangent's to signal: it ends
-//! when the pipe it writes to closes, which is when this source stops.
+//! The sensor and tcpdump need root and tangent does not, so they are
+//! started through `sudo`, which asks for the password once, on the
+//! terminal, before anything is read. Root's process is not tangent's to
+//! signal: each ends when the pipe it writes to closes, which is when this
+//! source stops.
 
+use std::ffi::OsStr;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,8 +34,10 @@ use serde_json::json;
 use tangent_shared::dag::NodeRef;
 use tangent_shared::sources::macos::MacosConfig;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
+
+mod net;
 
 use crate::router::Router;
 use crate::sources::socket::drain_ndjson_lines;
@@ -62,21 +70,20 @@ pub async fn run_consumer(
     first.push(monitor(std::process::id(), Utc::now()));
     router.forward(&from, first, Vec::new()).await?;
 
-    let mut sensor = Command::new("sudo")
-        .arg("-n")
-        .arg("--")
-        .arg(&cfg.sensor)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let mut sensor = as_root(cfg.sensor.as_os_str(), &[])
         .with_context(|| format!("source {name}: starting {}", cfg.sensor.display()))?;
     let mut out = sensor.stdout.take().expect("the sensor's stdout is piped");
     let err = sensor.stderr.take().expect("the sensor's stderr is piped");
     // What the sensor says of itself: the events the kernel dropped, and why
     // it stopped.
-    let said = tokio::spawn(said(name.clone(), err));
+    let said = tokio::spawn(said(name.clone(), Some("sensor"), err));
     tracing::info!(source = %name, sensor = %cfg.sensor.display(), "the sensor is started");
+
+    // The connections are read beside the sensor, and stop with it however
+    // this returns.
+    let stop = shutdown.child_token();
+    let _stops_with_the_sensor = stop.clone().drop_guard();
+    let network = tokio::spawn(connections(name.clone(), router.clone(), stop));
 
     let again = tokio::time::sleep(SECOND_SNAPSHOT);
     tokio::pin!(again);
@@ -109,7 +116,76 @@ pub async fn run_consumer(
     }
     // The pipe closes here, and the sensor ends at its next line.
     drop(out);
+    let _ = network.await;
     Ok(())
+}
+
+/// A program started as root, for its output: `sudo -n`, which asks
+/// nothing, since [`allow_root`] has asked.
+fn as_root(program: &OsStr, arguments: &[String]) -> std::io::Result<Child> {
+    Command::new("sudo")
+        .arg("-n")
+        .arg("--")
+        .arg(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
+/// New connections until `stop`, from tcpdump. An error here is logged and
+/// ends the connections only.
+async fn connections(name: Arc<str>, router: Arc<Router>, stop: CancellationToken) {
+    if let Err(e) = read_connections(&name, &router, &stop).await {
+        tracing::error!(source = %name, "connections are not read from here on: {e:#}");
+    }
+}
+
+async fn read_connections(
+    name: &Arc<str>,
+    router: &Router,
+    stop: &CancellationToken,
+) -> Result<()> {
+    let mut tcpdump = as_root(OsStr::new(net::TCPDUMP), &net::arguments())
+        .with_context(|| format!("starting {}", net::TCPDUMP))?;
+    let mut out = tcpdump.stdout.take().expect("tcpdump's stdout is piped");
+    let err = tcpdump.stderr.take().expect("tcpdump's stderr is piped");
+    // tcpdump says what it listens on as it starts, which is no warning.
+    let said = tokio::spawn(said(name.clone(), None, err));
+
+    let from = NodeRef::Source { name: name.clone() };
+    let mut reader = net::Connections::new();
+    let mut buf = BytesMut::with_capacity(64 * 1024);
+    loop {
+        let mut lines = Vec::new();
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => {
+                reader.done(&mut lines);
+                if !lines.is_empty() {
+                    router.forward(&from, lines, Vec::new()).await?;
+                }
+                return Ok(());
+            }
+            read = out.read_buf(&mut buf) => {
+                if read.context("reading tcpdump")? == 0 {
+                    if tokio::time::timeout(STOP_KNOWN, stop.cancelled()).await.is_ok() {
+                        continue;
+                    }
+                    let status = tcpdump.wait().await?;
+                    let last = said.await.unwrap_or_default();
+                    bail!("tcpdump stopped ({status}): {}", last.join("; "));
+                }
+                for line in drain_ndjson_lines(&mut buf) {
+                    reader.line(String::from_utf8_lossy(&line).trim_end(), &mut lines);
+                }
+            }
+        }
+        if !lines.is_empty() {
+            router.forward(&from, lines, Vec::new()).await?;
+        }
+    }
 }
 
 /// Root's leave to start the sensor, asked for on the terminal before
@@ -129,13 +205,20 @@ async fn allow_root(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// The sensor's stderr, each line logged, and the last few kept for when it
-/// stops.
-async fn said(name: Arc<str>, err: tokio::process::ChildStderr) -> Vec<String> {
+/// A program's stderr: the last few lines, kept for when it stops, and
+/// each line logged as a warning from `who` when there is one to name.
+async fn said(
+    name: Arc<str>,
+    who: Option<&'static str>,
+    err: tokio::process::ChildStderr,
+) -> Vec<String> {
     let mut last = Vec::new();
     let mut lines = BufReader::new(err).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        tracing::warn!(source = %name, "sensor: {line}");
+        match who {
+            Some(who) => tracing::warn!(source = %name, "{who}: {line}"),
+            None => tracing::debug!(source = %name, "{line}"),
+        }
         if last.len() == 5 {
             last.remove(0);
         }
