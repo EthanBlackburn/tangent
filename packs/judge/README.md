@@ -160,6 +160,43 @@ line in the message. A post that can work later (a 429, after its
 only once Slack has it; one Slack refuses (another 4xx) is dropped and
 counted in `tangent_sink_records_rejected_total`, and the first is logged.
 
+## A command
+
+For anywhere else an alert should go (a pager, a ticket, a dialog on your
+screen), an `exec` sink gives each record to a command of yours, a JSON
+line on its stdin:
+
+```yaml
+sinks:
+  page:
+    inputs: [flagged]
+    type: exec
+    command: [python3, page.py]    # the program and its arguments, not a shell's line
+```
+
+```python
+# page.py
+import json, sys
+for line in sys.stdin:
+    alert = json.loads(line)
+    print("flagged:", alert["_norm"]["actor"], alert["judge"]["why"], flush=True)
+```
+
+Tangent starts the command when it starts, so one that cannot start stops
+tangent there, and it is one process for the whole run. What it prints goes
+where tangent's own output goes. It ends when its stdin closes: at
+tangent's stop its stdin is closed and tangent waits for it to end, up to
+the two minutes every sink has, and Ctrl-C at the terminal does not reach
+it, so the alerts written during the stop find it running. A command still
+at work after that is left to finish alone.
+
+A record is delivered once it is written to the command. One the command
+had read and not acted on when it ended is not sent again; a command that
+ends is started again for the next record. A command that reads slower
+than records come holds them in its pipe and the sink's queue, and past
+those tangent waits for it, as for any sink that is down. `tangent replay`
+leaves the sink out, as it does Slack.
+
 ## The second reviewer
 
 The judge reads an actor's latest records, flags freely and cannot look
