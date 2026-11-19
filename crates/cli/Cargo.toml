@@ -37,6 +37,8 @@ hex = "0.4.3"
 # the Sigstore root it carries, and aws-lc-rs for the signatures, which rustls
 # already brings.
 sigstore-verify = { version = "0.16.0", default-features = false, features = ["aws-lc-rs"] }
+# `tangent init`'s two questions: a list to pick several from, and one to pick one.
+inquire = "0.9.5"
 
 [[bin]]
 name = "tangent"

@@ -122,7 +122,7 @@ pub async fn missing(config_path: &Path) -> Result<()> {
     let cache = cache?;
     let names: Vec<&str> = wanted.iter().map(|(name, ..)| *name).collect();
     println!(
-        "tangent {VERSION}, first run: fetching {} (once per version)",
+        "tangent {VERSION}: fetching {} (once per version)",
         names.join(", ")
     );
     let client = client()?;

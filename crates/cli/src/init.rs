@@ -1,222 +1,904 @@
-//! `tangent init`: a tangent.yaml that replays the AWS account's CloudTrail
-//! and has a model judge it, with the packs built in. `--model` says who
-//! serves the model. Where the judge pack has a provider's pair, a second
-//! model reviews what the first flagged.
+//! `tangent init`: asks what to watch and which models judge it, and writes
+//! the whole pipeline to tangent.yaml, with what the two models are told
+//! beside it (judge.md, judge.schema.json, review.md). Nothing is left in a
+//! file tangent keeps: every node, its settings and its `inputs` are in the
+//! file written, to read and to edit.
+//!
+//! `--sources` and `--models` answer the two questions, for a script or an
+//! agent: a question is asked only at a terminal, and only when its flag was
+//! left out. The plugins the config names are fetched, and the attestation
+//! of each build checked, before a file is written: init leaves a pipeline
+//! that runs, or nothing.
+
+use std::fmt;
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, IsTerminal as _, Write as _};
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use std::fs::OpenOptions;
-use std::io::{ErrorKind, Write as _};
-use std::path::Path;
+use clap::ValueEnum as _;
+use tangent_shared::packs;
 
-/// The config `tangent init` writes for [`Model::Anthropic`]: a judge and a
-/// reviewer, from the provider's pack. OpenRouter's is this one with its own
-/// parts in place of Anthropic's.
-const REVIEWED: &str = include_str!("init.yaml");
+use crate::fetch;
 
-/// The config for [`Model::Bedrock`]: a judge alone, its settings in the
-/// file. OpenAI's and a local model's are this one with their own parts in
-/// place of Bedrock's.
-const JUDGED: &str = include_str!("init-judge.yaml");
+/// tangent.yaml with its sources, their plugins and rows, and the two
+/// models' settings left out: `{{name}}` where each goes.
+const CONFIG: &str = include_str!("init.yaml");
 
-/// Who serves the model that judges.
+/// Where a pack's compiled plugin comes from: this repository's release, as
+/// built by the workflow that attests it.
+const PREBUILT: &str =
+    "{ repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }";
+
+/// The command that reads a source's past, and the one that reads sources
+/// as they are written.
+const REPLAY: &str = "tangent replay --config tangent.yaml --from 1d";
+const RUN: &str = "tangent run --config tangent.yaml";
+
+/// What the judge and the reviewer are told, written beside tangent.yaml as
+/// the judge pack has them: the file's name, and its path under packs/.
+const BRIEFS: &[(&str, &str)] = &[
+    ("judge.md", "judge/judge.md"),
+    ("judge.schema.json", "judge/judge.schema.json"),
+    ("review.md", "judge/review.md"),
+];
+
+/// A source to watch, by its pack's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+pub enum Source {
+    /// AWS: CloudTrail
+    Cloudtrail,
+    /// GitHub: an organization's audit log
+    Github,
+    /// Okta: the System Log
+    Okta,
+    /// Google Workspace: login, token, Drive and admin activity
+    #[value(name = "google_workspace")]
+    GoogleWorkspace,
+    /// Supabase: a project's Auth log
+    Supabase,
+}
+
+/// A variable a config reads, and what it holds.
+type Needs = &'static [(&'static str, &'static str)];
+
+/// What a source brings to the config.
+struct Pack {
+    /// The pack, and its plugin: what `--sources` takes.
+    name: &'static str,
+    /// What the question calls it.
+    label: &'static str,
+    /// The source node's name.
+    source: &'static str,
+    /// The source node, under `sources`.
+    node: &'static str,
+    /// Its rows under the judge's `encoding.sources`: one for each value of
+    /// `source` its records carry.
+    rows: &'static str,
+    needs: Needs,
+}
+
+impl Pack {
+    /// Whose logs they are: the label, up to its colon.
+    fn provider(&self) -> &'static str {
+        self.label.split(':').next().unwrap_or(self.label)
+    }
+}
+
+impl Source {
+    fn pack(self) -> Pack {
+        match self {
+            Source::Cloudtrail => Pack {
+                name: "cloudtrail",
+                label: "AWS: CloudTrail",
+                source: "aws_audit",
+                node: r#"  aws_audit:                     # AWS: CloudTrail
+    type: cloudtrail
+    profile: "${AWS_PROFILE:-default}"   # the AWS profile (~/.aws/config) that reads CloudTrail; EDIT to name another
+    region: us-east-1            # for looking up its credentials; replay reads every region
+    queue_url: ${CLOUDTRAIL_QUEUE_URL}   # for `tangent run`: the SQS queue the trail's bucket notifies; replay needs none
+"#,
+                rows: r#"        cloudtrail:
+          principal: [_norm.actor, userIdentity.arn]
+          time: [eventTime, ts]
+          keep: [eventName, requestParameters, responseElements, errorCode, errorMessage, userIdentity.mfaAuthenticated, additionalEventData.MFAUsed, _facts.root, _facts.world_open]
+"#,
+                needs: &[(
+                    "AWS_PROFILE",
+                    "the AWS profile that reads CloudTrail; `default` when unset",
+                )],
+            },
+            Source::Github => Pack {
+                name: "github",
+                label: "GitHub: an organization's audit log",
+                source: "github_audit",
+                node: r#"  github_audit:                  # GitHub: the organization's audit log
+    type: github_audit
+    org: ${GITHUB_ORG}           # the organization's login
+    token: ${GITHUB_TOKEN}       # a token with read:audit_log
+"#,
+                rows: r#"        github_audit:
+          principal: [_norm.actor, actor]
+          time: ["@timestamp", created_at, ts]
+          keep: [action, repo, visibility, permission, programmatic_access_type, token_scopes, operation_type]
+"#,
+                needs: &[
+                    ("GITHUB_ORG", "the organization's login"),
+                    ("GITHUB_TOKEN", "a token with read:audit_log"),
+                ],
+            },
+            Source::Okta => Pack {
+                name: "okta",
+                label: "Okta: the System Log",
+                source: "okta_audit",
+                node: r#"  okta_audit:                    # Okta: the System Log
+    type: okta
+    org_url: ${OKTA_ORG_URL}     # https://acme.okta.com
+    token: ${OKTA_API_TOKEN}
+"#,
+                rows: r#"        okta:
+          principal: [_norm.actor, actor.alternateId]
+          time: [published, ts]
+          keep: [eventType, outcome, target, authenticationContext.credentialType, securityContext.isProxy, debugData.threatSuspected]
+"#,
+                needs: &[
+                    ("OKTA_ORG_URL", "the org's address, https://acme.okta.com"),
+                    ("OKTA_API_TOKEN", "an API token"),
+                ],
+            },
+            Source::GoogleWorkspace => Pack {
+                name: "google_workspace",
+                label: "Google Workspace: login, token, Drive and admin activity",
+                source: "workspace_audit",
+                node: r#"  workspace_audit:               # Google Workspace: login, token, Drive and admin activity
+    type: google_workspace
+    credentials_file: ${GOOGLE_APPLICATION_CREDENTIALS}   # a service account's key file, with domain-wide delegation
+    subject: ${GOOGLE_ADMIN_EMAIL}                         # the admin it acts as
+"#,
+                rows: r#"        google_workspace:
+          principal: [_norm.actor, actor.email]
+          time: [id.time, ts]
+          keep: [events]
+"#,
+                needs: &[
+                    (
+                        "GOOGLE_APPLICATION_CREDENTIALS",
+                        "a service account's key file, with domain-wide delegation",
+                    ),
+                    (
+                        "GOOGLE_ADMIN_EMAIL",
+                        "the admin the service account acts as",
+                    ),
+                ],
+            },
+            Source::Supabase => Pack {
+                name: "supabase",
+                label: "Supabase: a project's Auth log",
+                source: "supabase_auth",
+                node: r#"  supabase_auth:                 # Supabase: a project's Auth log
+    type: supabase
+    project_ref: ${SUPABASE_PROJECT_REF}   # Project Settings, General
+    token: ${SUPABASE_ACCESS_TOKEN}        # Account, Access Tokens
+"#,
+                rows: r#"        supabase:
+          principal: [_norm.actor, auth_event.actor_username]
+          time: [ts]
+          keep: [log, auth_event.action, auth_event.traits.provider, auth_audit_event.action, path, status, error]
+"#,
+                needs: &[
+                    ("SUPABASE_PROJECT_REF", "the project's reference"),
+                    (
+                        "SUPABASE_ACCESS_TOKEN",
+                        "an access token that can read its logs",
+                    ),
+                ],
+            },
+        }
+    }
+
+    /// The pack's plugin, under `plugins`: it takes the source.
+    fn plugin(self) -> String {
+        let pack = self.pack();
+        format!(
+            "  {}:\n    inputs: [{}]\n    module_type: rust\n    prebuilt: {PREBUILT}\n",
+            pack.name, pack.source
+        )
+    }
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.pack().label)
+    }
+}
+
+/// The model that judges and the one that reviews what it flagged, by who
+/// serves them: a pair measured together, with the settings it was measured
+/// with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum Model {
-    /// Claude Haiku 5.5, reviewed by Claude Sonnet 5.5, through Anthropic's API, with ANTHROPIC_API_KEY
+pub enum Models {
+    /// Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API, with ANTHROPIC_API_KEY
     Anthropic,
-    /// Claude Haiku 5.5 on Amazon Bedrock, with the AWS profile that reads CloudTrail
+    /// The same pair on Amazon Bedrock, with an AWS profile
     Bedrock,
-    /// DeepSeek V4 Flash, open weights, which also reviews, through OpenRouter, with OPENROUTER_API_KEY
+    /// DeepSeek V4 Flash, open weights, judges and reviews, through OpenRouter, with OPENROUTER_API_KEY
     Openrouter,
-    /// GPT-6 Luna through OpenAI's API, with OPENAI_API_KEY
+    /// GPT-6 Luna judges and GPT-6.1 Terra reviews, through OpenAI's API, with OPENAI_API_KEY
     Openai,
-    /// A local model: a server you run at http://localhost:8080/v1 (llama-server, mlx_lm.server, Ollama, vLLM)
+    /// A model on this machine judges and reviews: a server you run at http://localhost:8080/v1 (llama-server, mlx_lm.server, Ollama, vLLM)
     Local,
 }
 
-const ANTHROPIC: &str = "  - pack:judge/anthropic       # Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews; the key is $ANTHROPIC_API_KEY, from console.anthropic.com";
-const OPENROUTER: &str = "  - pack:judge/openrouter      # DeepSeek V4 Flash judges and reviews; the key is $OPENROUTER_API_KEY, from openrouter.ai/keys";
-const HOSTED: &str = "  - pack:judge/hosted          # the judge, for a hosted model, with the enrich-ip and behavior-baseline packs";
-const LOCAL: &str = "  - pack:judge                 # the judge, for a local model, with the enrich-ip and behavior-baseline packs";
+/// What a pair brings to the config.
+struct Pair {
+    /// Who judges, who reviews, and who serves them, as the file says it.
+    label: &'static str,
+    /// The same as the question lists it, in a line with `measured`.
+    choice: &'static str,
+    /// What the pair did over tangent-eval's cloud logs: attacks caught of
+    /// 71, and ordinary records still flagged after review, of 5,304.
+    measured: &'static str,
+    /// The judge's own settings, under `inference.judge`.
+    judge: &'static str,
+    /// The reviewer's, under `inference.reviewer`.
+    reviewer: &'static str,
+    needs: Needs,
+}
 
-impl Model {
-    /// Who judges, and who reviews, as the file's first lines say it.
-    fn judged_by(self) -> &'static str {
+impl Models {
+    fn pair(self) -> Pair {
         match self {
-            Model::Anthropic => "judged by Claude Haiku 5.5, and what it flags reviewed by Claude Sonnet 5.5 (Anthropic's API)",
-            Model::Bedrock => "judged by Claude Haiku 5.5 on Bedrock",
-            Model::Openrouter => "judged by DeepSeek V4 Flash, and what it flags reviewed by the same model (OpenRouter)",
-            Model::Openai => "judged by GPT-6 Luna (OpenAI's API)",
-            Model::Local => "judged by the local model at localhost:8080",
-        }
-    }
-
-    /// The variable that holds the model's key, for those that take one.
-    fn key(self) -> Option<&'static str> {
-        match self {
-            Model::Anthropic => Some("ANTHROPIC_API_KEY"),
-            Model::Openrouter => Some("OPENROUTER_API_KEY"),
-            Model::Openai => Some("OPENAI_API_KEY"),
-            Model::Bedrock | Model::Local => None,
-        }
-    }
-
-    /// The pack the judge comes from: the provider's pair, a hosted model's
-    /// settings, or a local one's.
-    fn include(self) -> &'static str {
-        match self {
-            Model::Anthropic => ANTHROPIC,
-            Model::Openrouter => OPENROUTER,
-            Model::Local => LOCAL,
-            Model::Bedrock | Model::Openai => HOSTED,
-        }
-    }
-
-    /// The `inference.judge` the config sets over the pack's, for a model
-    /// whose pack does not name it.
-    fn judge(self) -> Option<&'static str> {
-        Some(match self {
-            Model::Anthropic | Model::Openrouter => return None,
-            Model::Bedrock => {
-                r#"inference:
-  judge:
-    backend: bedrock
+            Models::Anthropic => Pair {
+                label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Anthropic's API)",
+                choice: "Claude Haiku 5.5, Sonnet 5.5 reviews (Anthropic)",
+                measured: "70 of 71, 40 flagged",
+                judge: r#"    backend: anthropic
+    api_key: "${ANTHROPIC_API_KEY}"   # a key from console.anthropic.com
+    model: claude-haiku-5-5
+    max_tokens: 400              # per record
+    extra: { thinking: { type: disabled } }   # no thinking: the reply is the answer
+"#,
+                reviewer: r#"    backend: anthropic
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: claude-sonnet-5-5
+    extra:
+      thinking: { type: adaptive }   # it thinks before each query and its report, briefly
+      output_config: { effort: low }
+"#,
+                needs: &[("ANTHROPIC_API_KEY", "a key from console.anthropic.com")],
+            },
+            Models::Bedrock => Pair {
+                label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Amazon Bedrock)",
+                choice: "Claude Haiku 5.5, Sonnet 5.5 reviews (Bedrock)",
+                measured: "the same pair",
+                judge: r#"    backend: bedrock
     model: us.anthropic.claude-haiku-5-5
-    aws: { profile: *profile, region: us-west-2 }   # a US region: Bedrock serves this model there
-    max_tokens: 400                                 # per record
-    extra: { thinking: { type: disabled } }         # no thinking: the reply is the answer
-"#
-            }
-            Model::Openai => {
-                r#"inference:
-  judge:
-    url: https://api.openai.com/v1
-    api_key: "${OPENAI_API_KEY}"                    # a key from platform.openai.com
+    aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }   # a US region: Bedrock serves this model there
+    max_tokens: 400              # per record
+    extra: { thinking: { type: disabled } }   # no thinking: the reply is the answer
+"#,
+                reviewer: r#"    backend: bedrock
+    model: us.anthropic.claude-sonnet-5-5
+    aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }
+    extra:
+      thinking: { type: adaptive }   # it thinks before each query and its report, briefly
+      output_config: { effort: low }
+"#,
+                needs: &[(
+                    "AWS_PROFILE",
+                    "the AWS profile that calls Bedrock, with access to both models in the US regions; `default` when unset",
+                )],
+            },
+            Models::Openrouter => Pair {
+                label: "DeepSeek V4 Flash, open weights, judges and reviews (OpenRouter)",
+                choice: "DeepSeek V4 Flash, reviews itself (OpenRouter)",
+                measured: "71 of 71, 10 to 13 flagged",
+                judge: r#"    url: https://openrouter.ai/api/v1
+    api_key: "${OPENROUTER_API_KEY}"   # a key from openrouter.ai/keys
+    model: deepseek/deepseek-v4-flash-0731
+    max_tokens: 200              # per record
+    temperature: 0.7             # with top_p, the sampling it was measured with
+    extra:
+      top_p: 0.95
+      reasoning: { enabled: false }            # no thinking: the reply is the answer
+      provider: { require_parameters: true }   # only hosts that hold the reply to its schema
+"#,
+                reviewer: r#"    url: https://openrouter.ai/api/v1
+    api_key: "${OPENROUTER_API_KEY}"
+    model: deepseek/deepseek-v4-flash-0731
+    extra:
+      reasoning: { effort: low }   # it thinks before each query and its report, briefly
+"#,
+                needs: &[("OPENROUTER_API_KEY", "a key from openrouter.ai/keys")],
+            },
+            Models::Openai => Pair {
+                label: "GPT-6 Luna judges, GPT-6.1 Terra reviews (OpenAI's API)",
+                choice: "GPT-6 Luna, GPT-6.1 Terra reviews (OpenAI)",
+                measured: "71 of 71, 20 flagged",
+                judge: r#"    backend: responses           # OpenAI's Responses API
+    api_key: "${OPENAI_API_KEY}"   # a key from platform.openai.com
     model: gpt-6-luna
-    max_tokens: 400                                 # per record
-    extra: { reasoning_effort: low }                # little thinking: the reply is the answer
-"#
-            }
-            Model::Local => {
-                r#"inference:
-  judge:
-    url: http://localhost:8080/v1                   # llama-server, mlx_lm.server or vLLM; Ollama is http://localhost:11434/v1
-    model: glm-4.7-flash                            # EDIT to the name your server gives its model
-"#
-            }
-        })
-    }
-
-    /// What the AWS profile is for, as the comment over it says.
-    fn profile(self) -> &'static str {
-        match self {
-            Model::Bedrock => {
-                "# The AWS profile (~/.aws/config) that reads CloudTrail and calls Bedrock:"
-            }
-            _ => "# The AWS profile (~/.aws/config) that reads CloudTrail:",
+    max_tokens: 400              # per record, its thinking included
+    extra:
+      reasoning: { effort: low }   # little thinking: the reply is the answer
+"#,
+                reviewer: r#"    backend: responses
+    api_key: "${OPENAI_API_KEY}"
+    model: gpt-6.1-terra
+    extra:
+      reasoning: { effort: low }   # it thinks before each query and its report, briefly
+"#,
+                needs: &[("OPENAI_API_KEY", "a key from platform.openai.com")],
+            },
+            Models::Local => Pair {
+                label: "A model on this machine judges and reviews (llama-server, mlx_lm.server, Ollama, vLLM)",
+                choice: "A model on this machine, reviews itself",
+                measured: "not measured",
+                judge: r#"    url: http://localhost:8080/v1   # llama-server, mlx_lm.server or vLLM; Ollama is http://localhost:11434/v1
+    model: glm-4.7-flash         # EDIT to the name your server gives its model
+    max_tokens: 200              # per record
+    temperature: 0.7
+    extra:
+      top_p: 0.95
+      chat_template_kwargs: { enable_thinking: false }   # no thinking: the reply is the answer
+"#,
+                reviewer: r#"    url: http://localhost:8080/v1
+    model: glm-4.7-flash         # EDIT, as the judge's
+"#,
+                needs: &[],
+            },
         }
-    }
-
-    /// The parts of the config that are a model's own.
-    fn parts(self) -> Vec<&'static str> {
-        let mut parts = vec![self.judged_by(), self.profile(), self.include()];
-        parts.extend(self.judge());
-        parts
-    }
-
-    /// The model whose config this one's is made from, and that config: a
-    /// judge and a reviewer where the provider has a pack of the pair, a
-    /// judge alone where it has not.
-    fn base(self) -> (Model, &'static str) {
-        match self {
-            Model::Anthropic | Model::Openrouter => (Model::Anthropic, REVIEWED),
-            Model::Bedrock | Model::Openai | Model::Local => (Model::Bedrock, JUDGED),
-        }
-    }
-
-    /// The config for this model.
-    pub fn config(self) -> String {
-        let (base, config) = self.base();
-        let mut config = config.to_string();
-        for (theirs, this) in base.parts().into_iter().zip(self.parts()) {
-            config = config.replacen(theirs, this, 1);
-        }
-        config
     }
 }
 
-/// Writes `model`'s config to `dir`/tangent.yaml, unless a tangent.yaml is
-/// there: the file is created only if missing, in one step, so one already
-/// there is never written over. A write that fails removes the part written,
-/// which is this call's alone, so a later init is not refused by it.
-pub fn run_in(dir: &Path, model: Model) -> Result<()> {
-    let path = dir.join("tangent.yaml");
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => bail!(
-            "tangent.yaml is already here; init leaves it as it is (edit it, or run tangent init in another directory)"
-        ),
-        Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
-    };
-    if let Err(e) = file.write_all(model.config().as_bytes()) {
-        let _ = std::fs::remove_file(&path);
-        return Err(e).with_context(|| format!("writing {}", path.display()));
+impl fmt::Display for Models {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let pair = self.pair();
+        write!(f, "{:48}  {}", pair.choice, pair.measured)
     }
-    println!(
-        "Wrote tangent.yaml: CloudTrail, {}. It reads CloudTrail as $AWS_PROFILE, or your default AWS profile when that is unset; to use another, set it on the line marked EDIT.",
-        model.judged_by()
-    );
-    match (model, model.key()) {
-        (_, Some(key)) if std::env::var(key).map_or(true, |v| v.trim().is_empty()) => {
-            println!("The key is read from ${key}, which is not set: export it first.");
+}
+
+/// What a config is written for: the sources, in the order `Source` lists
+/// them and each once, and the pair of models.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choices {
+    watch: Vec<Source>,
+    models: Models,
+}
+
+impl Choices {
+    /// `watch` must name a source: a pipeline with none reads nothing.
+    pub fn new(mut watch: Vec<Source>, models: Models) -> Result<Self> {
+        if watch.is_empty() {
+            bail!(
+                "nothing to watch: name a source, as --sources {}",
+                names::<Source>("|")
+            );
         }
-        (_, Some(key)) => println!("The key is read from ${key}."),
-        (Model::Bedrock, None) => println!("The same profile calls Bedrock."),
-        (_, None) => println!(
-            "Start your model's server first; the line marked EDIT under `inference` names its model."
-        ),
+        watch.sort();
+        watch.dedup();
+        Ok(Self { watch, models })
     }
-    println!("  tangent replay --config tangent.yaml --from 1d");
+
+    fn replays(&self) -> bool {
+        self.watch.contains(&Source::Cloudtrail)
+    }
+
+    /// Whether a source is read as it happens with what init asks for:
+    /// every one but CloudTrail, which needs a queue as well.
+    fn runs(&self) -> bool {
+        self.watch.iter().any(|w| *w != Source::Cloudtrail)
+    }
+
+    /// The commands that read the sources, and what each reads, as lines
+    /// to print.
+    fn commands(&self) -> Vec<String> {
+        let mut commands = Vec::new();
+        if self.replays() {
+            commands.push(format!("{REPLAY}   # the last day of CloudTrail"));
+        }
+        if self.runs() {
+            let live: Vec<&str> = self
+                .watch
+                .iter()
+                .filter(|w| **w != Source::Cloudtrail)
+                .map(|w| w.pack().provider())
+                .collect();
+            // in a column with replay's, when both are there
+            let width = if self.replays() { REPLAY.len() } else { 0 };
+            commands.push(format!(
+                "{RUN:width$}   # {}, from an hour back and as it happens",
+                live.join(", ")
+            ));
+        }
+        commands
+    }
+
+    /// The variables the config reads, each once, the models' first.
+    fn needs(&self) -> Vec<(&'static str, &'static str)> {
+        let mut needs: Vec<(&'static str, &'static str)> = Vec::new();
+        let packs = self.watch.iter().flat_map(|w| w.pack().needs);
+        for need in self.models.pair().needs.iter().chain(packs) {
+            if !needs.iter().any(|(var, _)| var == &need.0) {
+                needs.push(*need);
+            }
+        }
+        needs
+    }
+
+    /// The file's first lines: what it watches, who judges, how to run it
+    /// and where the answers go.
+    fn header(&self) -> String {
+        let pair = self.models.pair();
+        let mut header = String::from("# tangent.yaml, written by `tangent init`.\n#\n");
+        for (i, w) in self.watch.iter().enumerate() {
+            let lead = if i == 0 { "watches" } else { "" };
+            header.push_str(&format!("#   {lead:7}  {}\n", w.pack().label));
+        }
+        header.push_str(&format!("#   models   {}\n#\n", pair.label));
+        for command in self.commands() {
+            header.push_str(&format!("#   {command}\n"));
+        }
+        header.push_str(
+            "#\n# What the judge flagged is in alerts.ndjson, each alert with its review in\n\
+             # reviews.ndjson (those are the ones to read), and every verdict in\n\
+             # verdicts.ndjson.\n#",
+        );
+        header
+    }
+
+    /// tangent.yaml for these choices.
+    pub fn config(&self) -> String {
+        let packs: Vec<Pack> = self.watch.iter().map(|w| w.pack()).collect();
+        let join = |part: fn(&Pack) -> &'static str| packs.iter().map(part).collect::<String>();
+        let flow: Vec<String> = packs
+            .iter()
+            .map(|p| format!("{} -> {}", p.source, p.name))
+            .collect();
+        let inputs: Vec<&str> = packs.iter().map(|p| p.name).collect();
+        let plugins: String = self.watch.iter().map(|w| w.plugin()).collect();
+        let pair = self.models.pair();
+        // Each part ends its last line, and so does the line it stands on.
+        let block = |text: &str| text.trim_end().to_string();
+        [
+            ("{{header}}", self.header()),
+            ("{{flow}}", flow.join("\n#   ")),
+            ("{{sources}}", block(&join(|p| p.node))),
+            ("{{packs}}", block(&plugins)),
+            ("{{inputs}}", inputs.join(", ")),
+            ("{{judge}}", block(pair.judge)),
+            ("{{rows}}", block(&join(|p| p.rows))),
+            ("{{reviewer}}", block(pair.reviewer)),
+        ]
+        .into_iter()
+        .fold(CONFIG.to_string(), |config, (place, part)| {
+            config.replace(place, &part)
+        })
+    }
+
+    /// Every file init writes, by name, with its text: tangent.yaml, and
+    /// what the two models are told.
+    fn files(&self) -> Vec<(&'static str, String)> {
+        let mut files = vec![("tangent.yaml", self.config())];
+        for (name, pack_file) in BRIEFS {
+            let (_, text) = packs::FILES
+                .iter()
+                .find(|(f, _)| f == pack_file)
+                .expect("the judge pack's briefs are built in");
+            files.push((name, (*text).to_string()));
+        }
+        files
+    }
+
+    /// Writes the files to `dir`, unless one of them is there: each is
+    /// created only if missing, so a file already there is never written
+    /// over, and a write that fails removes what this call wrote, which is
+    /// its alone. The paths written.
+    pub fn write(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        let files = self.files();
+        if let Some((name, _)) = files.iter().find(|(name, _)| dir.join(name).exists()) {
+            bail!(
+                "{name} is already here; init leaves it as it is, and writes nothing (run tangent init in another directory)"
+            );
+        }
+        let mut written = Vec::new();
+        for (name, text) in &files {
+            let path = dir.join(name);
+            let created = OpenOptions::new().write(true).create_new(true).open(&path);
+            let result = match created {
+                Ok(mut file) => {
+                    written.push(path.clone());
+                    file.write_all(text.as_bytes())
+                        .with_context(|| format!("writing {}", path.display()))
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(anyhow::anyhow!(
+                    "{name} is already here; init leaves it as it is"
+                )),
+                Err(e) => Err(e).with_context(|| format!("creating {}", path.display())),
+            };
+            if let Err(e) = result {
+                remove(&written);
+                return Err(e);
+            }
+        }
+        Ok(written)
+    }
+}
+
+fn remove(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Every value of a flag, as it is written, joined by `sep`.
+fn names<T: clap::ValueEnum>(sep: &str) -> String {
+    let names: Vec<String> = T::value_variants()
+        .iter()
+        .filter_map(|v| v.to_possible_value())
+        .map(|v| v.get_name().to_string())
+        .collect();
+    names.join(sep)
+}
+
+/// The choices: each flag's, and at a terminal a question for a flag left
+/// out. Away from a terminal a flag left out is an error that names it.
+fn choices(watch: Vec<Source>, models: Option<Models>) -> Result<Choices> {
+    let asks = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    let watch = match (watch.is_empty(), asks) {
+        (false, _) => watch,
+        (true, true) => inquire::MultiSelect::new(
+            "What do you want to watch?",
+            Source::value_variants().to_vec(),
+        )
+        .with_validator(inquire::min_length!(1, "Pick at least one, with space"))
+        .prompt()
+        .context("nothing is written")?,
+        (true, false) => bail!(
+            "what to watch? This is not a terminal, so say it with --sources, one or more of {} (as --sources cloudtrail,github)",
+            names::<Source>(", ")
+        ),
+    };
+    let models = match (models, asks) {
+        (Some(models), _) => models,
+        (None, true) => inquire::Select::new(
+            "Which models judge it, and review what is flagged?",
+            Models::value_variants().to_vec(),
+        )
+        .with_help_message(
+            "attacks caught, and ordinary records flagged of 5,304, in tangent's evals",
+        )
+        .prompt()
+        .context("nothing is written")?,
+        (None, false) => bail!(
+            "which models? This is not a terminal, so say it with --models, one of {}",
+            names::<Models>(", ")
+        ),
+    };
+    Choices::new(watch, models)
+}
+
+/// `tangent init` in `dir`: the choices, the files, and the plugins the
+/// config names, fetched and checked. A fetch that fails takes the files
+/// with it, so what is left runs or is nothing.
+pub async fn run(dir: &Path, watch: Vec<Source>, models: Option<Models>) -> Result<()> {
+    let choices = choices(watch, models)?;
+    let written = choices.write(dir)?;
+    let config = dir.join("tangent.yaml");
+    if let Err(e) = fetch::missing(&config.canonicalize().unwrap_or(config)).await {
+        remove(&written);
+        return Err(
+            e.context("a plugin the config names could not be fetched, so nothing is written")
+        );
+    }
+
+    let names: Vec<String> = written
+        .iter()
+        .filter_map(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .collect();
+    println!("\nWrote {}.", names.join(", "));
+    let needs = choices.needs();
+    if !needs.is_empty() {
+        println!("\nIt reads these from the environment:");
+        let width = needs.iter().map(|(var, _)| var.len()).max().unwrap_or(0);
+        for (var, what) in needs {
+            let set = std::env::var(var).is_ok_and(|v| !v.trim().is_empty());
+            let state = if set { "" } else { " (not set)" };
+            println!("  {var:width$}  {what}{state}");
+        }
+    }
+    if choices.models == Models::Local {
+        println!("\nStart your model's server first; the lines marked EDIT in tangent.yaml name its model.");
+    }
+    println!("\nThen:");
+    for command in choices.commands() {
+        println!("  {command}");
+    }
+    if !choices.runs() {
+        println!(
+            "\n`tangent run` reads CloudTrail as it is written once tangent.yaml's `queue_url` names the trail's queue."
+        );
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::ValueEnum as _;
+    use serde_yaml::Value;
     use tangent_shared::inference::Backend;
     use tangent_shared::sources::common::SourceConfig;
+    use tangent_shared::Config;
 
-    /// `model`'s config as `tangent init` writes it and as it loads: the
-    /// file's text, the source's AWS profile and the judge.
-    fn written(
-        model: Model,
-    ) -> (
-        String,
-        Option<String>,
-        tangent_shared::inference::InferenceConfig,
-    ) {
+    const EVERY: [Source; 5] = [
+        Source::Cloudtrail,
+        Source::Github,
+        Source::Okta,
+        Source::GoogleWorkspace,
+        Source::Supabase,
+    ];
+
+    /// The files for these choices, in a directory of their own, and the
+    /// config as it loads.
+    fn written(watch: &[Source], models: Models) -> (tempfile::TempDir, Config) {
         let dir = tempfile::tempdir().unwrap();
-        run_in(dir.path(), model).unwrap();
-        loaded(&dir.path().join("tangent.yaml"))
+        let choices = Choices::new(watch.to_vec(), models).unwrap();
+        choices.write(dir.path()).unwrap();
+        let cfg = Config::load(&dir.path().join("tangent.yaml"))
+            .unwrap_or_else(|e| panic!("{watch:?}, {models:?}: {e:#}"))
+            .config;
+        cfg.validate()
+            .unwrap_or_else(|e| panic!("{watch:?}, {models:?}: {e:#}"));
+        (dir, cfg)
     }
 
-    fn loaded(
-        path: &Path,
-    ) -> (
-        String,
-        Option<String>,
-        tangent_shared::inference::InferenceConfig,
-    ) {
-        let cfg = tangent_shared::Config::load(path).unwrap().config;
-        cfg.validate().unwrap();
-        let SourceConfig::Cloudtrail(source) = &cfg.sources["aws_audit"] else {
-            panic!("aws_audit is not a cloudtrail source");
-        };
-        (
-            std::fs::read_to_string(path).unwrap(),
-            source.profile.clone(),
-            cfg.inference["judge"].clone(),
-        )
+    /// Every source alone, and all five together, with every pair: the
+    /// config loads, passes what `tangent run` checks, and warns of nothing
+    /// in its wiring.
+    #[test]
+    fn every_choice_is_a_pipeline_that_loads() {
+        let mut sets: Vec<Vec<Source>> = EVERY.iter().map(|w| vec![*w]).collect();
+        sets.push(EVERY.to_vec());
+        for watch in &sets {
+            for models in Models::value_variants() {
+                let (_dir, cfg) = written(watch, *models);
+                assert_eq!(
+                    cfg.warnings(),
+                    Vec::<String>::new(),
+                    "{watch:?}, {models:?}"
+                );
+                assert_eq!(cfg.sources.len(), watch.len(), "{watch:?}");
+                for w in watch {
+                    let pack = w.pack();
+                    assert!(cfg.sources.contains_key(pack.source), "{watch:?}");
+                    assert_eq!(
+                        cfg.plugins[pack.name].inputs,
+                        [pack.source.into()],
+                        "{watch:?}"
+                    );
+                }
+                let names: Vec<std::sync::Arc<str>> =
+                    watch.iter().map(|w| w.pack().name.into()).collect();
+                assert_eq!(cfg.plugins["baseline_builder"].inputs, names);
+                assert_eq!(cfg.plugins["baseline_renderer"].inputs, names);
+                assert_eq!(cfg.sinks["lake"].common.inputs, names);
+            }
+        }
+    }
+
+    /// No place is left in a config, whatever the choices.
+    #[test]
+    fn every_place_in_the_file_is_filled() {
+        for models in Models::value_variants() {
+            let config = Choices::new(EVERY.to_vec(), *models).unwrap().config();
+            assert!(!config.contains("{{"), "{models:?}:\n{config}");
+            assert!(!config.contains("\n\n\n"), "{models:?}: a part left a gap");
+        }
+    }
+
+    /// A config as it loads, as YAML to compare: without the paths that say
+    /// where a file is rather than what it holds.
+    fn shape(cfg: &Config) -> Value {
+        let mut value = serde_yaml::to_value(cfg).unwrap();
+        for node in value["inference"].as_mapping_mut().unwrap().values_mut() {
+            let node = node.as_mapping_mut().unwrap();
+            node.remove("prompt_file");
+            node.remove("schema_file");
+        }
+        value
+    }
+
+    /// Every setting in `value`, as `a.b.c = value` lines, sorted: two
+    /// configs compare whatever order their maps are in, and a difference
+    /// is the lines that differ.
+    fn settings(value: &Value, at: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Mapping(map) => {
+                for (key, value) in map {
+                    let key = key.as_str().unwrap();
+                    settings(value, &format!("{at}.{key}"), out);
+                }
+            }
+            other => out.push(format!(
+                "{at} = {}",
+                serde_yaml::to_string(other).unwrap().trim_end()
+            )),
+        }
+        out.sort();
+    }
+
+    /// The config init writes is the judge pack's, node for node and setting
+    /// for setting: the same as a config that includes the provider's pack
+    /// and each source's, for the two pairs that have a pack. So what the
+    /// pack measured is what init writes.
+    #[test]
+    fn the_config_is_what_the_packs_say() {
+        for (models, pack) in [
+            (Models::Anthropic, "anthropic"),
+            (Models::Openrouter, "openrouter"),
+        ] {
+            let (_dir, ours) = written(&EVERY, models);
+
+            let choices = Choices::new(EVERY.to_vec(), models).unwrap();
+            let packs: Vec<Pack> = EVERY.iter().map(|w| w.pack()).collect();
+            let names: Vec<&str> = packs.iter().map(|p| p.name).collect();
+            let includes: Vec<String> = names.iter().map(|n| format!("pack:{n}")).collect();
+            let sources: String = packs.iter().map(|p| p.node).collect();
+            let plugins: String = packs
+                .iter()
+                .map(|p| format!("  {}: {{ inputs: [{}] }}\n", p.name, p.source))
+                .collect();
+            let tables = choices
+                .config()
+                .split_once("enrichment_tables:\n")
+                .and_then(|(_, rest)| rest.split_once("\nruntime:"))
+                .map(|(tables, _)| tables.to_string())
+                .unwrap();
+            let theirs = format!(
+                "include: [pack:judge/{pack}, {}]\nsources:\n{sources}plugins:\n{plugins}  \
+                 baseline_builder: {{ inputs: [{inputs}] }}\n  baseline_renderer: {{ inputs: [{inputs}] }}\n\
+                 sinks:\n  lake: {{ inputs: [{inputs}] }}\nenrichment_tables:\n{tables}\n",
+                includes.join(", "),
+                inputs = names.join(", "),
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tangent.yaml");
+            std::fs::write(&path, theirs).unwrap();
+            let theirs = Config::load(&path).unwrap().config;
+            theirs.validate().unwrap();
+
+            let (mut ours, mut theirs) = (shape(&ours), shape(&theirs));
+            // The pack names Anthropic's address over the local server's it
+            // starts from; the file has no address to name over.
+            for value in [&mut ours, &mut theirs] {
+                if models == Models::Anthropic {
+                    value["inference"]["judge"]
+                        .as_mapping_mut()
+                        .unwrap()
+                        .remove("url");
+                }
+            }
+            // The pack has a row for every source any pack reads; the file,
+            // for the sources it has.
+            let rows = theirs["inference"]["judge"]["encoding"]["sources"]
+                .as_mapping_mut()
+                .unwrap();
+            for unread in ["gha_ci", "runner_egress"] {
+                assert!(rows.remove(unread).is_some(), "{unread}");
+            }
+            let (mut written, mut included) = (Vec::new(), Vec::new());
+            settings(&ours, "", &mut written);
+            settings(&theirs, "", &mut included);
+            let only = |a: &[String], b: &[String]| -> Vec<String> {
+                a.iter().filter(|line| !b.contains(line)).cloned().collect()
+            };
+            assert_eq!(
+                (only(&written, &included), only(&included, &written)),
+                (Vec::new(), Vec::new()),
+                "{models:?}: settings only init writes, and only the packs have"
+            );
+            assert!(
+                written.len() > 150,
+                "{models:?}: {} settings",
+                written.len()
+            );
+        }
+    }
+
+    /// What the models are told is written beside the config as the judge
+    /// pack has it, and the config names those files.
+    #[test]
+    fn the_briefs_are_the_judge_packs_beside_the_config() {
+        let (dir, cfg) = written(&[Source::Cloudtrail], Models::Anthropic);
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs");
+        for (name, pack_file) in BRIEFS {
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join(name)).unwrap(),
+                std::fs::read_to_string(repo.join(pack_file)).unwrap(),
+                "{name}"
+            );
+        }
+        let judge = &cfg.inference["judge"];
+        assert_eq!(judge.prompt_file, Path::new("judge.md"));
+        assert_eq!(
+            judge.schema_file.as_deref(),
+            Some(Path::new("judge.schema.json"))
+        );
+        assert_eq!(
+            cfg.inference["reviewer"].prompt_file,
+            Path::new("review.md")
+        );
+    }
+
+    /// Each pair names the models it says it does, where they are served,
+    /// and its reviewer is the provider's own.
+    #[test]
+    fn every_pair_names_its_models() {
+        for models in Models::value_variants() {
+            let (_dir, cfg) = written(&[Source::Cloudtrail], *models);
+            let (judge, reviewer) = (&cfg.inference["judge"], &cfg.inference["reviewer"]);
+            let (backend, url, judges, reviews) = match models {
+                Models::Anthropic => (
+                    Backend::Anthropic,
+                    None,
+                    "claude-haiku-5-5",
+                    "claude-sonnet-5-5",
+                ),
+                Models::Bedrock => (
+                    Backend::Bedrock,
+                    None,
+                    "us.anthropic.claude-haiku-5-5",
+                    "us.anthropic.claude-sonnet-5-5",
+                ),
+                Models::Openrouter => (
+                    Backend::Openai,
+                    Some("https://openrouter.ai/api/v1"),
+                    "deepseek/deepseek-v4-flash-0731",
+                    "deepseek/deepseek-v4-flash-0731",
+                ),
+                Models::Openai => (Backend::Responses, None, "gpt-6-luna", "gpt-6.1-terra"),
+                Models::Local => (
+                    Backend::Openai,
+                    Some("http://localhost:8080/v1"),
+                    "glm-4.7-flash",
+                    "glm-4.7-flash",
+                ),
+            };
+            for node in [judge, reviewer] {
+                assert_eq!(node.backend, backend, "{models:?}");
+                assert_eq!(node.url.as_deref(), url, "{models:?}");
+            }
+            assert_eq!(
+                (judge.model.as_str(), reviewer.model.as_str()),
+                (judges, reviews)
+            );
+            assert!(
+                reviewer.inputs.is_empty(),
+                "{models:?}: the plugin calls it"
+            );
+            assert_eq!(reviewer.max_tokens, 8000, "{models:?}");
+        }
+    }
+
+    /// No hosted model is sent llama.cpp's `chat_template_kwargs`, which it
+    /// would refuse; the local model keeps it. Sampling settings are the
+    /// local model's and, as its pair was measured, OpenRouter's.
+    #[test]
+    fn a_hosted_model_is_sent_no_local_settings() {
+        for models in Models::value_variants() {
+            let (_dir, cfg) = written(&[Source::Cloudtrail], *models);
+            let judge = &cfg.inference["judge"];
+            let local = *models == Models::Local;
+            assert_eq!(
+                judge.extra.contains_key("chat_template_kwargs"),
+                local,
+                "{models:?}"
+            );
+            let sampled = matches!(models, Models::Local | Models::Openrouter);
+            assert_eq!(judge.temperature.is_some(), sampled, "{models:?}");
+            assert_eq!(judge.extra.contains_key("top_p"), sampled, "{models:?}");
+        }
     }
 
     /// The shell's AWS_PROFILE, or `default` when it is unset. The tests
@@ -229,152 +911,117 @@ mod tests {
             .or_else(|| Some("default".to_string()))
     }
 
-    /// Anthropic's config is init.yaml as it is and Bedrock's is
-    /// init-judge.yaml, and each part another model replaces is in its base
-    /// once, so every other model's config has all of its own.
+    /// On Bedrock the source, the judge and the reviewer use one profile,
+    /// the shell's, and the models are called in a US region.
     #[test]
-    fn a_models_config_is_its_base_s_with_its_own_parts() {
-        assert_eq!(Model::Anthropic.config(), REVIEWED);
-        assert_eq!(Model::Bedrock.config(), JUDGED);
-        for model in Model::value_variants() {
-            let (base, text) = model.base();
-            assert_eq!(base.base().0, base, "{model:?}: its base is a base");
-            assert_eq!(base.parts().len(), model.parts().len(), "{model:?}");
-            for part in base.parts() {
-                assert_eq!(text.matches(part).count(), 1, "{base:?}: {part}");
-            }
-            let config = model.config();
-            for part in model.parts() {
-                assert_eq!(config.matches(part).count(), 1, "{model:?}: {part}");
-            }
+    fn on_bedrock_the_models_use_the_sources_profile() {
+        let (_dir, cfg) = written(&[Source::Cloudtrail], Models::Bedrock);
+        let SourceConfig::Cloudtrail(source) = &cfg.sources["aws_audit"] else {
+            panic!("aws_audit is not a cloudtrail source");
+        };
+        assert_eq!(source.profile, profile());
+        for node in ["judge", "reviewer"] {
+            let aws = &cfg.inference[node].aws;
+            assert_eq!(aws.profile, profile(), "{node}");
+            assert_eq!(aws.region.as_deref(), Some("us-west-2"), "{node}");
         }
     }
 
-    /// Anthropic's and OpenRouter's configs have the provider's pair: a
-    /// reviewer, the lake it reads, which the plugin's records are routed
-    /// to, and reviews.ndjson. The others have a judge alone.
+    /// Replay reads only CloudTrail's past, and run reads CloudTrail only
+    /// with a queue: the file and init name the command that reads what was
+    /// chosen.
     #[test]
-    fn a_provider_with_a_pair_gets_its_reviewer() {
-        for model in Model::value_variants() {
-            let dir = tempfile::tempdir().unwrap();
-            run_in(dir.path(), *model).unwrap();
-            let cfg = tangent_shared::Config::load(&dir.path().join("tangent.yaml"))
-                .unwrap()
-                .config;
-            cfg.validate().unwrap();
-            let reviewed = matches!(model, Model::Anthropic | Model::Openrouter);
-            assert_eq!(
-                cfg.inference.contains_key("reviewer"),
-                reviewed,
-                "{model:?}"
-            );
-            assert_eq!(cfg.sinks.contains_key("reviews"), reviewed, "{model:?}");
-            let kept = cfg
-                .edges()
-                .iter()
-                .any(|e| &*e.from == "cloudtrail" && e.to.iter().any(|t| &**t == "lake"));
-            assert_eq!(kept, reviewed, "{model:?}");
-        }
-    }
-
-    /// Every model's config loads with the packs, reads CloudTrail as the
-    /// shell's profile, and names the model it says it does, where that
-    /// model is served.
-    #[test]
-    fn every_models_config_loads_and_names_its_model() {
-        for model in Model::value_variants() {
-            let (_, source_profile, judge) = written(*model);
-            assert_eq!(source_profile, profile(), "{model:?}");
-            let (backend, url, name) = match model {
-                Model::Anthropic => (
-                    Backend::Anthropic,
-                    Some("https://api.anthropic.com"),
-                    "claude-haiku-5-5",
-                ),
-                // the pack's address, which Bedrock does not read
-                Model::Bedrock => (
-                    Backend::Bedrock,
-                    Some("http://localhost:8080/v1"),
-                    "us.anthropic.claude-haiku-5-5",
-                ),
-                Model::Openrouter => (
-                    Backend::Openai,
-                    Some("https://openrouter.ai/api/v1"),
-                    "deepseek/deepseek-v4-flash-0731",
-                ),
-                Model::Openai => (
-                    Backend::Openai,
-                    Some("https://api.openai.com/v1"),
-                    "gpt-6-luna",
-                ),
-                Model::Local => (
-                    Backend::Openai,
-                    Some("http://localhost:8080/v1"),
-                    "glm-4.7-flash",
-                ),
+    fn the_commands_are_the_ones_that_read_what_is_watched() {
+        let commands = |watch: &[Source]| -> Vec<&'static str> {
+            let choices = Choices::new(watch.to_vec(), Models::Anthropic).unwrap();
+            let config = choices.config();
+            let lines = choices.commands();
+            for line in &lines {
+                assert!(config.contains(line.as_str()), "{watch:?}: {line}");
+            }
+            let command = |line: &String| {
+                if line.starts_with(REPLAY) {
+                    REPLAY
+                } else {
+                    RUN
+                }
             };
-            assert_eq!(judge.backend, backend, "{model:?}");
-            assert_eq!(judge.url.as_deref(), url, "{model:?}");
-            assert_eq!(judge.model, name, "{model:?}");
+            lines.iter().map(command).collect()
+        };
+        assert_eq!(commands(&[Source::Cloudtrail]), [REPLAY]);
+        assert_eq!(commands(&[Source::Okta, Source::Github]), [RUN]);
+        assert_eq!(commands(&EVERY), [REPLAY, RUN]);
+        let all = Choices::new(EVERY.to_vec(), Models::Anthropic).unwrap();
+        assert!(
+            all.commands()[1].ends_with(
+                "# GitHub, Okta, Google Workspace, Supabase, from an hour back and as it happens"
+            ),
+            "{:?}",
+            all.commands()
+        );
+    }
+
+    /// The sources are written once each, in one order, however the flag
+    /// named them; and a pipeline needs one.
+    #[test]
+    fn the_sources_are_each_once_and_at_least_one() {
+        let named = Choices::new(
+            vec![Source::Okta, Source::Cloudtrail, Source::Okta],
+            Models::Local,
+        )
+        .unwrap();
+        assert_eq!(named.watch, [Source::Cloudtrail, Source::Okta]);
+        let err = Choices::new(Vec::new(), Models::Local).unwrap_err();
+        assert!(format!("{err:#}").contains("nothing to watch"), "{err:#}");
+        assert_eq!(
+            names::<Source>(","),
+            "cloudtrail,github,okta,google_workspace,supabase"
+        );
+    }
+
+    /// Each pair's line in the question fits an 80-column terminal, with
+    /// the two columns the list's own marker takes.
+    #[test]
+    fn a_pairs_line_fits_a_terminal() {
+        for models in Models::value_variants() {
+            let line = models.to_string();
+            assert!(line.chars().count() <= 78, "{models:?}: {line}");
+            assert!(models.pair().choice.len() <= 48, "{models:?}");
         }
     }
 
-    /// No hosted model is sent llama.cpp's `chat_template_kwargs`, which it
-    /// would refuse; the local model keeps it. Sampling settings are the
-    /// local model's and, as its pair was measured, OpenRouter's.
+    /// A variable two parts read is asked for once: on Bedrock, the profile
+    /// that reads CloudTrail is the one that calls the models.
     #[test]
-    fn a_hosted_model_is_sent_no_local_settings() {
-        for model in Model::value_variants() {
-            let (_, _, judge) = written(*model);
-            let local = *model == Model::Local;
+    fn a_variable_is_named_once() {
+        let choices = Choices::new(vec![Source::Cloudtrail], Models::Bedrock).unwrap();
+        let vars: Vec<&str> = choices.needs().into_iter().map(|(var, _)| var).collect();
+        assert_eq!(vars, ["AWS_PROFILE"]);
+        let choices = Choices::new(vec![Source::Github], Models::Anthropic).unwrap();
+        let vars: Vec<&str> = choices.needs().into_iter().map(|(var, _)| var).collect();
+        assert_eq!(vars, ["ANTHROPIC_API_KEY", "GITHUB_ORG", "GITHUB_TOKEN"]);
+    }
+
+    /// A file of any of the names already there stops init before it writes
+    /// one, and every file is left as it was.
+    #[test]
+    fn refuses_a_file_already_there_and_writes_nothing() {
+        let choices = Choices::new(vec![Source::Cloudtrail], Models::Anthropic).unwrap();
+        for (taken, _) in choices.files() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(taken), "mine").unwrap();
+            let err = format!("{:#}", choices.write(dir.path()).unwrap_err());
+            assert!(err.contains(&format!("{taken} is already here")), "{err}");
+            let left: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name())
+                .collect();
+            assert_eq!(left, [std::ffi::OsString::from(taken)], "{taken}");
             assert_eq!(
-                judge.extra.contains_key("chat_template_kwargs"),
-                local,
-                "{model:?}"
+                std::fs::read_to_string(dir.path().join(taken)).unwrap(),
+                "mine"
             );
-            let sampled = matches!(model, Model::Local | Model::Openrouter);
-            assert_eq!(judge.temperature.is_some(), sampled, "{model:?}");
-            assert_eq!(judge.extra.contains_key("top_p"), sampled, "{model:?}");
         }
-    }
-
-    /// On Bedrock the source and the judge share one profile, and the judge
-    /// calls a US region.
-    #[test]
-    fn on_bedrock_the_judge_uses_the_sources_profile() {
-        let (_, source_profile, judge) = written(Model::Bedrock);
-        assert_eq!(judge.aws.profile, source_profile);
-        assert_eq!(judge.aws.region.as_deref(), Some("us-west-2"));
-    }
-
-    /// The profile is a quoted scalar: a name with ` #` or `: ` in it is
-    /// the whole name, not a comment's start or a mapping.
-    #[test]
-    fn a_profile_name_is_taken_whole() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tangent.yaml");
-        let config = Model::Bedrock.config();
-        let named = config.replace("${AWS_PROFILE:-default}", "team #1: prod");
-        assert_ne!(named, config);
-        std::fs::write(&path, named).unwrap();
-        let want = Some("team #1: prod".to_string());
-        let (_, source_profile, judge) = loaded(&path);
-        assert_eq!((source_profile, judge.aws.profile), (want.clone(), want));
-    }
-
-    #[test]
-    fn refuses_a_tangent_yaml_already_there_and_leaves_it_as_it_was() {
-        let dir = tempfile::tempdir().unwrap();
-        run_in(dir.path(), Model::Anthropic).unwrap();
-        let path = dir.path().join("tangent.yaml");
-        let config = Model::Anthropic.config();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
-        let edited = config.replace("${AWS_PROFILE:-default}", "prod");
-        assert_ne!(edited, config);
-        std::fs::write(&path, &edited).unwrap();
-
-        let err = format!("{:#}", run_in(dir.path(), Model::Bedrock).unwrap_err());
-        assert!(err.contains("tangent.yaml is already here"), "{err}");
-        assert_eq!(std::fs::read(&path).unwrap(), edited.as_bytes());
     }
 }

@@ -1,29 +1,141 @@
-# tangent.yaml, written by `tangent init`. Check the line marked EDIT, then:
+{{header}}
+# The whole pipeline is in this file. Each node names the nodes it takes
+# records from, as `inputs`:
 #
-#   tangent replay --config tangent.yaml --from 1d
+#   {{flow}}
+#     -> baseline_builder                           each record learned
+#     -> lake                                       and kept
+#     -> baseline_renderer -> judge -> fresh -> verdicts
+#                                      fresh -> flagged -> alerts
+#                                               flagged -> review -> reviews
 #
-# That reads the last day of your AWS account's CloudTrail (Event history,
-# every region, up to 90 days back) and has each actor's records
-# judged by Claude Haiku 5.5, and what it flags reviewed by Claude Sonnet 5.5 (Anthropic's API).
-# What was flagged is in alerts.ndjson, each alert with its review in
-# reviews.ndjson, and every verdict in verdicts.ndjson. `tangent config
-# --config tangent.yaml` prints it merged with the packs. `tangent init
-# --model` writes this file for another model: anthropic, bedrock,
-# openrouter, openai or local.
-
-# The AWS profile (~/.aws/config) that reads CloudTrail:
-# $AWS_PROFILE, or default when it is unset, as the aws CLI picks one.
-x-profile: &profile "${AWS_PROFILE:-default}"    # EDIT to name another profile
-
-include:
-  - pack:judge/anthropic       # Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews; the key is $ANTHROPIC_API_KEY, from console.anthropic.com
-  - pack:cloudtrail            # plugin cloudtrail: CloudTrail into finished records
+# judge.md and review.md, beside this file, are what the two models are told.
 
 sources:
-  aws_audit:
-    type: cloudtrail
-    profile: *profile
-    region: us-east-1          # for looking up its credentials; replay reads every region
+{{sources}}
+
+plugins:
+  # A plugin for each source: its records normalized, trimmed and enriched,
+  # with what profile.yaml says of whoever acted. `prebuilt` is the release a
+  # plugin comes from, compiled: tangent fetches it once for each of its
+  # versions, and keeps it only if the attestation of its build checks out.
+{{packs}}
+
+  # Each actor's history. The builder folds every record into state.sqlite.
+  # The renderer holds an actor's records as a group and puts `_baseline` on
+  # them: what was known of the actor before the first of them.
+  baseline_builder:
+    inputs: [{{inputs}}]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+    state_namespace: baseline
+  baseline_renderer:
+    inputs: [{{inputs}}]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+    state_namespace: baseline
+    drop_on_error: false         # no `_baseline` rather than no record
+    group_by: [_norm.org, _norm.actor]
+    max_events: 30               # a group goes to the judge at thirty records,
+    max_age_ms: 3600000          # or an hour after its first,
+    expire_after_ms: 3600000     # or after an hour's quiet
+    history: 10                  # with the actor's latest ten again, as `_context`
+
+  # After the judge: fresh drops the records it was shown again as context,
+  # and flagged keeps the ones it flagged.
+  fresh:
+    inputs: [judge]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+  flagged:
+    inputs: [fresh]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+
+  # An actor's alerts wait here together until the lake has their records, a
+  # little over an hour, and are reviewed in one conversation with the
+  # reviewer, which can query the lake.
+  review:
+    inputs: [flagged]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+    models: [reviewer]
+    tables:
+      lake: lake                 # table `lake` is what sink `lake` has written
+    group_by: [_norm.org, _norm.actor]
+    expire_after_ms: 4000000
+    config:
+      model: reviewer
+      table: lake
+      days: 30                   # how far back from the alerts the table reaches
+      settle_seconds: 0          # the table ends this long after the last alert
+      queries: 20                # the most queries one review may make
+
+inference:
+  # The judge reads every record, an actor's group in one request, and
+  # answers each: flagged or not, and why.
+  judge:
+    inputs: [baseline_renderer]
+{{judge}}
+    prompt_file: judge.md
+    schema_file: judge.schema.json   # the shape its answer is held to
+    group_by: [_norm.org, _norm.actor]
+    batch_bytes: 96000           # a request past this is split; an actor's forty records fit
+    timeout_ms: 90000
+    concurrency: 4
+    # How the records are written for the model: a logfmt line each, about
+    # half the tokens of JSON. The fields in `keep` are on every line, and
+    # the rest, which an actor's records share, are written once.
+    encoding:
+      type: logfmt
+      keep: [_context, _norm.actor, _norm.kind, _norm.target, _norm.dest, _facts.principal, _facts.watch, _facts.sensitive_target, _facts.key_known_network, _facts.ip.tor, _facts.ip.vpn]
+      # For each source: the fields that name who acted and when, and the
+      # fields of its own that are on every line.
+      sources:
+{{rows}}
+
+  # The reviewer settles what the judge flagged. It has no inputs: plugin
+  # review holds the conversation with it.
+  reviewer:
+{{reviewer}}
+    prompt_file: review.md
+    max_tokens: 8000             # a turn: its thinking, and a query or the report
+    timeout_ms: 120000           # reviews go one at a time: two minutes a try,
+    retries: 2                   # three tries, then the review is an error and the alerts stand
+    concurrency: 1
+
+sinks:
+  # Every record, kept as Parquet, a directory an hour: what the reviewer
+  # queries, and `tangent query` reads. Delete old hours to trim it.
+  lake:
+    inputs: [{{inputs}}]
+    type: rolling_file
+    path: lake/logs/%Y/%m/%d/%H
+    wal_path: lake/wal
+    max_file_age_seconds: 3600
+    compression: { type: zstd, level: 3 }
+    encoding:
+      type: parquet
+      record_column: record      # each record whole, for the fields the schema leaves out
+      schema:
+        ts: timestamp
+        source: string
+        _norm: { org: string, actor: string, kind: string, ip: string }
+  verdicts:                      # every record the judge answered, with its answer
+    inputs: [fresh]
+    type: file
+    path: verdicts.ndjson
+    compression: { type: none }
+  alerts:                        # the ones it flagged
+    inputs: [flagged]
+    type: file
+    path: alerts.ndjson
+    compression: { type: none }
+  reviews:                       # each alert with its review: malicious, benign or unresolved
+    inputs: [review]
+    type: file
+    path: reviews.ndjson
+    compression: { type: none }
 
 # Files beside this one, none shipped. Without one, its facts are left out,
 # with a warning. profile.yaml is your company, what no log says:
@@ -36,13 +148,9 @@ enrichment_tables:
   asn: { type: mmdb, path: data/GeoLite2-ASN.mmdb }
   networks: { type: cidr, path: data/networks.csv }
 
-# What this file wires: the plugin takes the source, and the judge pack's
-# lake, builder and renderer take the plugin's records. The pack goes on
-# from there (each actor's history, the judge, the reviewer, then
-# alerts.ndjson, reviews.ndjson and verdicts.ndjson).
-plugins:
-  cloudtrail: { inputs: [aws_audit] }
-  baseline_builder: { inputs: [cloudtrail] }     # each record learned
-  baseline_renderer: { inputs: [cloudtrail] }    # and judged
-sinks:
-  lake: { inputs: [cloudtrail] }                 # and kept, for the reviewer to query
+runtime:
+  state:                         # where the builder keeps each actor's history; its keys never expire
+    backend: sqlite
+    path: state.sqlite
+    default_ttl_ms: 0
+    max_ttl_ms: 0

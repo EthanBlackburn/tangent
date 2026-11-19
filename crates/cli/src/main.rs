@@ -93,12 +93,17 @@ enum Commands {
         config: PathBuf,
     },
 
-    /// Write tangent.yaml here: your AWS account's CloudTrail, replayed and
-    /// judged by a model. Refuses to overwrite one
+    /// Write tangent.yaml here, the whole pipeline in the one file: the
+    /// sources you watch, a model that judges every record and one that
+    /// reviews what it flagged. At a terminal it asks what a flag leaves
+    /// out. It fetches the plugins the config names, and writes over nothing
     Init {
-        /// Who serves the model that judges
-        #[arg(long, value_enum, default_value = "anthropic")]
-        model: init::Model,
+        /// What to watch, one or more: --sources cloudtrail,github
+        #[arg(long, value_enum, value_delimiter = ',')]
+        sources: Vec<init::Source>,
+        /// The pair of models, by who serves them
+        #[arg(long, value_enum)]
+        models: Option<init::Models>,
     },
 
     /// Read a past range of the config's sources through it, as fast as it
@@ -269,7 +274,7 @@ async fn main() -> Result<()> {
 
         Commands::Config { config } => print!("{}", show_config(&config)?),
 
-        Commands::Init { model } => init::run_in(Path::new("."), model)?,
+        Commands::Init { sources, models } => init::run(Path::new("."), sources, models).await?,
 
         Commands::Replay { config, from, to } => {
             let config = config.canonicalize().unwrap_or(config);
