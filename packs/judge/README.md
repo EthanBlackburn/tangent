@@ -40,8 +40,9 @@ only its plugin, and your config gives it as an input to `baseline_builder`,
   latest ten records again ahead of it, marked `_context` (`history: 10`):
   forty records a request, which `batch_bytes` is sized for. Groups wait in
   memory; the end of input closes every open one, and so does a signal
-  (Ctrl-C, a restart). After a signal, though, the model calls have ended:
-  the groups it closes and the requests the model has not answered get no
+  (Ctrl-C, a restart): `tangent run` reads nothing more, and waits for
+  the model to judge the groups it closed. A second signal ends the model
+  calls: the groups and requests the model has not answered get no
   verdict, their records in your sink and the baseline, and nothing asks
   about them again. The renderer puts the same `_baseline` on each of an
   actor's records
