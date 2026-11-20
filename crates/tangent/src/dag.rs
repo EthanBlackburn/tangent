@@ -248,6 +248,40 @@ impl DagRuntime {
         close_groups(&self.groups, &self.router, None).await;
     }
 
+    /// The first signal of `tangent run`, before the shutdown: once the
+    /// sources have stopped, [`Self::finish`], so what was read is judged
+    /// and reviewed however long the models take. `stop` ends the wait: the
+    /// model calls have ended with it, and the shutdown drops what waited on
+    /// one. Whether everything read is through.
+    pub async fn finish_until(&mut self, stop: &CancellationToken) -> bool {
+        self.sources_stopped().await;
+        tokio::select! {
+            () = self.finish() => true,
+            () = stop.cancelled() => false,
+        }
+    }
+
+    /// Waits for each source to stop reading, 30 seconds at most.
+    async fn sources_stopped(&mut self) {
+        for mut h in std::mem::take(&mut self.consumer_handles) {
+            let sleep = tokio::time::sleep(Duration::from_secs(30));
+            tokio::pin!(sleep);
+
+            tokio::select! {
+                _ = &mut sleep => {
+                    tracing::warn!("consumer shutdown timeout exceeded; aborting task");
+                    h.abort();
+                    let _ = h.await;
+                }
+                res = &mut h => {
+                    if let Err(e) = res {
+                        tracing::warn!("consumer task panicked or was cancelled: {e}");
+                    }
+                }
+            }
+        }
+    }
+
     /// Records in groups not yet out, open or waiting for their key's group
     /// out to be through, across the grouped plugins: what a caller feeding
     /// the DAG faster than real time holds in memory.
@@ -265,48 +299,35 @@ impl DagRuntime {
         }
     }
 
-    pub async fn shutdown(self, worker_timeout: Duration, sink_timeout: Duration) -> Result<()> {
-        let Self {
-            router,
-            pool,
-            sink_manager,
-            consumer_handles,
-            purge,
-            groups,
-            ..
-        } = self;
-
+    pub async fn shutdown(
+        mut self,
+        worker_timeout: Duration,
+        sink_timeout: Duration,
+    ) -> Result<()> {
         // Stopped with the shutdown signal already; this stops it when the
         // caller never sent one.
-        if let Some((stop, task)) = purge {
+        if let Some((stop, task)) = self.purge.take() {
             stop.cancel();
             let _ = task.await;
         }
 
         tracing::info!("waiting on consumers to shutdown...");
-        for mut h in consumer_handles {
-            let sleep = tokio::time::sleep(Duration::from_secs(30));
-            tokio::pin!(sleep);
+        self.sources_stopped().await;
 
-            tokio::select! {
-                _ = &mut sleep => {
-                    tracing::warn!("consumer shutdown timeout exceeded; aborting task");
-                    h.abort();
-                    let _ = h.await;
-                }
-                res = &mut h => {
-                    if let Err(e) = res {
-                        tracing::warn!("consumer task panicked or was cancelled: {e}");
-                    }
-                }
-            }
-        }
+        let Self {
+            router,
+            pool,
+            sink_manager,
+            groups,
+            ..
+        } = self;
 
         // Nothing new comes in now, but records already handed to a worker
-        // are still on their way through the DAG. After a signal the model
-        // calls have ended, and records that were waiting on one go to no
-        // sink and are not acked; a --once run waits for its calls. Wait for
-        // the DAG to go quiet, then take the workers down.
+        // may still be on their way through the DAG: a caller that did not
+        // wait for them (`finish`), or one whose wait a signal ended. That
+        // signal ended the model calls, and records that were waiting on
+        // one go to no sink and are not acked. Wait for the DAG to go quiet,
+        // then take the workers down.
         tracing::info!("draining workers...");
         if timeout(worker_timeout, drained(&router)).await.is_err() {
             tracing::warn!(
@@ -907,6 +928,41 @@ mod tests {
         let (runtime, through) = slow_groups(Duration::from_millis(300)).await;
         runtime.finish().await;
         assert_eq!(through.load(Ordering::SeqCst), 3);
+        runtime
+            .shutdown(Duration::from_millis(100), Duration::from_millis(100))
+            .await
+            .unwrap();
+    }
+
+    /// The first signal of a run: the sources have stopped, and the groups
+    /// they left open are closed and walked, however long that takes.
+    #[tokio::test]
+    async fn a_stop_waits_for_what_was_read() {
+        let (mut runtime, through) = slow_groups(Duration::from_millis(300)).await;
+        assert!(runtime.finish_until(&CancellationToken::new()).await);
+        assert_eq!(through.load(Ordering::SeqCst), 3);
+        runtime
+            .shutdown(Duration::from_millis(100), Duration::from_millis(100))
+            .await
+            .unwrap();
+    }
+
+    /// The second signal: the wait ends there, with groups not yet through.
+    #[tokio::test]
+    async fn a_second_signal_ends_the_wait() {
+        let (mut runtime, through) = slow_groups(Duration::from_secs(60)).await;
+        let stop = CancellationToken::new();
+        tokio::spawn({
+            let stop = stop.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                stop.cancel();
+            }
+        });
+        let waited = tokio::time::Instant::now();
+        assert!(!runtime.finish_until(&stop).await);
+        assert!(waited.elapsed() < Duration::from_secs(5));
+        assert_eq!(through.load(Ordering::SeqCst), 0);
         runtime
             .shutdown(Duration::from_millis(100), Duration::from_millis(100))
             .await
