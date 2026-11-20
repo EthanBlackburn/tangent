@@ -164,7 +164,7 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
         cfg.batch_age_ms()
     );
 
-    let dag_runtime = DagRuntime::build(
+    let mut dag_runtime = DagRuntime::build(
         cfg,
         &config_path,
         ingest_shutdown.clone(),
@@ -177,14 +177,15 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
 
     if !opts.once {
         wait_for_shutdown_signal().await?;
-        stopping(&stop_models);
+        info!("stopping: nothing more is read, and what was read is finished first, its model calls answered. A second signal ends them");
+        finishing(&stop_models);
     }
 
     #[cfg(feature = "alloc-prof")]
     jemalloc_dump("pre_teardown");
 
-    info!("received shutdown signal...");
     ingest_shutdown.cancel();
+    dag_runtime.finish_until(&stop_models).await;
 
     dag_runtime
         .shutdown(Duration::from_secs(120), Duration::from_secs(120))
@@ -193,14 +194,28 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
     Ok(())
 }
 
-/// What the first signal starts: the model calls end, and a second signal
-/// exits at once. One within a second of the first is the same stop.
+/// What the first signal of a run starts: a second signal ends the model
+/// calls ([`stopping`]). One within a second of the first is the same stop:
+/// a terminal's SIGINT, and the SIGTERM of whatever started tangent.
+fn finishing(stop_models: &CancellationToken) {
+    let stop_models = stop_models.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if wait_for_shutdown_signal().await.is_ok() {
+            tracing::warn!("second signal: the model calls end, and what waited on one is left out. Another exits now");
+            stopping(&stop_models);
+        }
+    });
+}
+
+/// The model calls end, and a signal a second or more after exits at once:
+/// the second signal of a run, and the first of a replay.
 pub(crate) fn stopping(stop_models: &CancellationToken) {
     stop_models.cancel();
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_secs(1)).await;
         if wait_for_shutdown_signal().await.is_ok() {
-            tracing::warn!("second signal; exiting now");
+            tracing::warn!("another signal; exiting now");
             std::process::exit(130);
         }
     });
