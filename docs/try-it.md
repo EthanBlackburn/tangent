@@ -24,9 +24,9 @@ It asks two questions. The first is what to watch, one or more of:
 | `google_workspace` | Google Workspace: login, token, Drive and admin activity | `GOOGLE_APPLICATION_CREDENTIALS`, a service account's key file with domain-wide delegation, and `GOOGLE_ADMIN_EMAIL`, the admin it acts as |
 | `supabase` | Supabase: a project's Auth log | `SUPABASE_PROJECT_REF`, `SUPABASE_ACCESS_TOKEN` |
 
-The second is which pair of models: one judges every record and flags freely, and the other reviews each actor's alerts, with the records to query, and clears what turns out to be ordinary work. Each pair is written with the settings it was measured with, over the logs [tangent-eval](https://github.com/EthanBlackburn/tangent-eval) builds: 71 attacks, and 5,304 ordinary records a model reads.
+The second is who serves the models. Each provider brings its pair: one judges every record and flags freely, and the other reviews each actor's alerts, with the records to query, and clears what turns out to be ordinary work. Each pair is written with the settings it was measured with, over the logs [tangent-eval](https://github.com/EthanBlackburn/tangent-eval) builds: 71 attacks, and 5,304 ordinary records a model reads.
 
-| `--models` | judge, then reviewer | attacks caught, of 71 | ordinary records flagged after review, of 5,304 | it needs |
+| `--provider` | judge, then reviewer | attacks caught, of 71 | ordinary records flagged after review, of 5,304 | it needs |
 |---|---|---|---|---|
 | `anthropic` | Claude Haiku 5.5, Claude Sonnet 5.5, through Anthropic's API | 70 (one run) | 40 | `ANTHROPIC_API_KEY` |
 | `bedrock` | the same pair on Amazon Bedrock | | | an AWS profile with Bedrock access to both models in every US region: the models are called in us-west-2, and their `us.` profiles may serve a call from another |
@@ -39,7 +39,7 @@ The corpus is one made-up company, and 36 of its attacks are cases the judge's b
 The flags answer the questions instead, for a script or an agent, which init asks nothing:
 
 ```bash
-tangent init --sources cloudtrail,github --models anthropic
+tangent init --sources cloudtrail,github --provider anthropic
 ```
 
 Init then fetches the plugins the config names, checks each against the attestation of its build, and writes four files:
