@@ -225,8 +225,44 @@ pub enum Provider {
     Openrouter,
     /// GPT-6 Luna judges and GPT-6.1 Terra reviews, through OpenAI's API, with OPENAI_API_KEY
     Openai,
+    /// Inkling 2 Mini, open weights, judges and reviews on this machine: Ollama, which you run, at http://localhost:11434/v1
+    Ollama,
     /// A model on this machine judges and reviews: a server you run at http://localhost:8080/v1 (llama-server, mlx_lm.server, Ollama, vLLM)
     Local,
+}
+
+/// How a pair's server is asked: how much in a request, how many requests at
+/// once, and how long an answer may take.
+struct Pace {
+    /// The judge's `batch_bytes`, `timeout_ms` and `concurrency`.
+    judge: &'static str,
+    /// The reviewer's `timeout_ms`.
+    reviewer: &'static str,
+}
+
+impl Pace {
+    /// A server that answers requests side by side, each in seconds.
+    const SIDE_BY_SIDE: Pace = Pace {
+        judge: "    batch_bytes: 96000           # a request past this is split; an actor's forty records fit
+    timeout_ms: 90000
+    concurrency: 4
+",
+        reviewer: "    timeout_ms: 120000           # reviews go one at a time: two minutes a try,
+",
+    };
+
+    /// One model in one machine's memory, as Ollama serves it: a request is
+    /// answered after the one before it, the judge's and the reviewer's in
+    /// one line, so each waits its turn; and a request has to fit the memory
+    /// the model leaves.
+    const IN_TURN: Pace = Pace {
+        judge: "    batch_bytes: 32000           # a request past this is split: a larger one can run the machine out of memory
+    timeout_ms: 600000           # ten minutes: a request waits behind the reviewer's
+    concurrency: 1               # Ollama answers one request at a time
+",
+        reviewer: "    timeout_ms: 600000           # reviews go one at a time, each turn behind the judge's request: ten minutes a try,
+",
+    };
 }
 
 /// What a pair brings to the config.
@@ -242,6 +278,10 @@ struct Pair {
     judge: &'static str,
     /// The reviewer's, under `inference.reviewer`.
     reviewer: &'static str,
+    pace: Pace,
+    /// What to start before tangent, for a pair this machine serves: init
+    /// starts no server and fetches no model.
+    first: Option<&'static str>,
     needs: Needs,
 }
 
@@ -265,6 +305,8 @@ impl Provider {
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
 "#,
+                pace: Pace::SIDE_BY_SIDE,
+                first: None,
                 needs: &[("ANTHROPIC_API_KEY", "a key from console.anthropic.com")],
             },
             Provider::Bedrock => Pair {
@@ -284,6 +326,8 @@ impl Provider {
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
 "#,
+                pace: Pace::SIDE_BY_SIDE,
+                first: None,
                 needs: &[(
                     "AWS_PROFILE",
                     "the AWS profile that calls Bedrock, with access to both models in the US regions; `default` when unset",
@@ -309,6 +353,8 @@ impl Provider {
     extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 "#,
+                pace: Pace::SIDE_BY_SIDE,
+                first: None,
                 needs: &[("OPENROUTER_API_KEY", "a key from openrouter.ai/keys")],
             },
             Provider::Openai => Pair {
@@ -328,7 +374,32 @@ impl Provider {
     extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 "#,
+                pace: Pace::SIDE_BY_SIDE,
+                first: None,
                 needs: &[("OPENAI_API_KEY", "a key from platform.openai.com")],
+            },
+            Provider::Ollama => Pair {
+                label: "Inkling 2 Mini, open weights, judges and reviews (Ollama, on this machine)",
+                choice: "Inkling 2 Mini, reviews itself (Ollama, here)",
+                measured: "not measured",
+                judge: r#"    url: http://localhost:11434/v1   # Ollama, which you start: tangent starts no server
+    model: inkling-2-mini        # `ollama pull inkling-2-mini`, about 20 GB
+    max_tokens: 200              # per record
+    temperature: 0.7
+    extra:
+      top_p: 0.95
+      reasoning_effort: none     # no thinking: the reply is the answer
+"#,
+                reviewer: r#"    url: http://localhost:11434/v1
+    model: inkling-2-mini
+    extra:
+      reasoning_effort: low      # it thinks before each query and its report, briefly
+"#,
+                pace: Pace::IN_TURN,
+                first: Some(
+                    "Start Ollama first, 0.40.17 or later, with the model in it (`ollama pull inkling-2-mini`, about 20 GB; a machine with 32 GB of memory).",
+                ),
+                needs: &[],
             },
             Provider::Local => Pair {
                 label: "A model on this machine judges and reviews (llama-server, mlx_lm.server, Ollama, vLLM)",
@@ -345,6 +416,10 @@ impl Provider {
                 reviewer: r#"    url: http://localhost:8080/v1
     model: glm-4.7-flash         # EDIT, as the judge's
 "#,
+                pace: Pace::SIDE_BY_SIDE,
+                first: Some(
+                    "Start your model's server first; the lines marked EDIT in tangent.yaml name its model.",
+                ),
                 needs: &[],
             },
         }
@@ -467,8 +542,10 @@ impl Choices {
             ("{{packs}}", block(&plugins)),
             ("{{inputs}}", inputs.join(", ")),
             ("{{judge}}", block(pair.judge)),
+            ("{{judge_pace}}", block(pair.pace.judge)),
             ("{{rows}}", block(&join(|p| p.rows))),
             ("{{reviewer}}", block(pair.reviewer)),
+            ("{{reviewer_pace}}", block(pair.pace.reviewer)),
         ]
         .into_iter()
         .fold(CONFIG.to_string(), |config, (place, part)| {
@@ -608,8 +685,8 @@ pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> 
             println!("  {var:width$}  {what}{state}");
         }
     }
-    if choices.provider == Provider::Local {
-        println!("\nStart your model's server first; the lines marked EDIT in tangent.yaml name its model.");
+    if let Some(first) = choices.provider.pair().first {
+        println!("\n{first}");
     }
     println!("\nThen:");
     for command in choices.commands() {
@@ -861,6 +938,12 @@ mod tests {
                     "deepseek/deepseek-v4-flash-0731",
                 ),
                 Provider::Openai => (Backend::Responses, None, "gpt-6-luna", "gpt-6.1-terra"),
+                Provider::Ollama => (
+                    Backend::Openai,
+                    Some("http://localhost:11434/v1"),
+                    "inkling-2-mini",
+                    "inkling-2-mini",
+                ),
                 Provider::Local => (
                     Backend::Openai,
                     Some("http://localhost:8080/v1"),
@@ -886,7 +969,7 @@ mod tests {
 
     /// No hosted model is sent llama.cpp's `chat_template_kwargs`, which it
     /// would refuse; the local model keeps it. Sampling settings are the
-    /// local model's and, as its pair was measured, OpenRouter's.
+    /// local models' and, as its pair was measured, OpenRouter's.
     #[test]
     fn a_hosted_model_is_sent_no_local_settings() {
         for provider in Provider::value_variants() {
@@ -898,9 +981,44 @@ mod tests {
                 local,
                 "{provider:?}"
             );
-            let sampled = matches!(provider, Provider::Local | Provider::Openrouter);
+            let sampled = matches!(
+                provider,
+                Provider::Local | Provider::Ollama | Provider::Openrouter
+            );
             assert_eq!(judge.temperature.is_some(), sampled, "{provider:?}");
             assert_eq!(judge.extra.contains_key("top_p"), sampled, "{provider:?}");
+        }
+    }
+
+    /// Inkling on Ollama thinks unless a request says not to, and thinks past
+    /// the judge's tokens: the judge's requests say `none`, in the setting
+    /// Ollama reads, and the reviewer's `low`.
+    #[test]
+    fn on_ollama_the_judge_does_not_think() {
+        let (_dir, cfg) = written(&[Source::Cloudtrail], Provider::Ollama);
+        let effort = |node: &str| cfg.inference[node].extra["reasoning_effort"].clone();
+        assert_eq!(effort("judge"), "none");
+        assert_eq!(effort("reviewer"), "low");
+    }
+
+    /// Ollama answers one request at a time, the judge's and the reviewer's
+    /// in one line: the judge asks one at a time, each of the two waits ten
+    /// minutes for its turn and its answer, and a request is small enough for
+    /// the memory the model leaves. Every other pair is asked side by side.
+    #[test]
+    fn a_pair_ollama_serves_is_asked_in_turn() {
+        for provider in Provider::value_variants() {
+            let (_dir, cfg) = written(&[Source::Cloudtrail], *provider);
+            let (judge, reviewer) = (&cfg.inference["judge"], &cfg.inference["reviewer"]);
+            let (bytes, at_once, judge_ms, reviewer_ms) = match provider {
+                Provider::Ollama => (32_000, 1, 600_000, 600_000),
+                _ => (96_000, 4, 90_000, 120_000),
+            };
+            assert_eq!(judge.batch_bytes, bytes, "{provider:?}");
+            assert_eq!(judge.concurrency, at_once, "{provider:?}");
+            assert_eq!(judge.timeout_ms, judge_ms, "{provider:?}");
+            assert_eq!(reviewer.timeout_ms, reviewer_ms, "{provider:?}");
+            assert_eq!(reviewer.concurrency, 1, "{provider:?}");
         }
     }
 
