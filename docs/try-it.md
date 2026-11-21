@@ -32,6 +32,7 @@ The second is who serves the models. Each provider brings its pair: one judges e
 | `bedrock` | the same pair on Amazon Bedrock | | | an AWS profile with Bedrock access to both models in every US region: the models are called in us-west-2, and their `us.` profiles may serve a call from another |
 | `openrouter` | DeepSeek V4 Flash, open weights, as both, through OpenRouter | 71 (two runs) | 10 to 13 | `OPENROUTER_API_KEY` |
 | `openai` | GPT-6 Luna, GPT-6.1 Terra, through OpenAI's API | 71 (one run) | 20 | `OPENAI_API_KEY` |
+| `ollama` | Inkling 2 Mini, open weights, as both, on this machine: [Ollama](https://ollama.com), which you run, at `http://localhost:11434/v1` | not measured | | Ollama 0.40.17 or later running, with the model in it (`ollama pull inkling-2-mini`, about 20 GB), on a machine with 32 GB of memory; nothing leaves the machine |
 | `local` | a model on this machine as both: a server you run at `http://localhost:8080/v1` (llama-server, mlx_lm.server, Ollama, vLLM) | not measured | | the server running; nothing leaves the machine |
 
 The corpus is one made-up company, and 36 of its attacks are cases the judge's brief was written against: it says nothing of how much a pair flags on your logs.
