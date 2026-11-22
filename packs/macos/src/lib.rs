@@ -17,6 +17,7 @@ wit_bindgen::generate!({
 });
 
 mod paths;
+mod secrets;
 
 use exports::tangent::logs::mapper::{Guest, Meta, Pred, Selector};
 use normkit::{Norm, Stamp};
@@ -1151,16 +1152,27 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
         _ => live,
     };
 
+    // An exec's arguments, with the secrets given on them taken out before
+    // anything is built from them: the record, and the name its children
+    // carry as their parent.
+    let args: Vec<String> = body
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|a| {
+            let said: Vec<String> = a
+                .iter()
+                .map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string))
+                .collect();
+            secrets::hidden(&said)
+        })
+        .unwrap_or_default();
+
     // An exec's process is the program that started, under the pid it took
     // over; the one that launched it is the first of its parents.
     let actor = match kind.as_str() {
         "exec" => {
             let mut target = proc_of(&body["target"])?;
-            let args: Vec<&str> = body
-                .get("args")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).collect())
-                .unwrap_or_default();
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
             let named = match (str_at(body, "/script/path"), interpreter(&target.path)) {
                 // a `#!` file: its arguments follow it
                 (Some(s), Some(i)) => {
@@ -1231,8 +1243,8 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     match kind.as_str() {
         "exec" => {
             let mut x = Map::new();
-            if let Some(args) = body.get("args") {
-                x.insert("args".into(), cut_args(args));
+            if body.get("args").is_some() {
+                x.insert("args".into(), cut_args(&json!(args)));
             }
             let cwd = str_at(body, "/cwd/path");
             org = org.or_else(|| cwd.and_then(home).map(|(name, _)| name.to_string()));
@@ -1637,7 +1649,6 @@ mod tests {
         assert_eq!(window("bad"), None);
     }
 
-    #[test]
     /// A command is kept whole: a script on a command's line that does its
     /// work after a screen of padding, the address a long curl ends with.
     /// Only one too long to be a command is cut, and then by both ends.
