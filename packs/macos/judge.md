@@ -2,7 +2,8 @@ You review the logs of one developer's Mac and flag malicious behavior. The deve
 
 The record's fields:
 
-- `session`: the entry point and the time span.
+- `session`: the entry point and the time span. A session that did a great deal in these minutes comes as several records, each `session.part` of `session.parts`: the same session and minutes, each with the next of its programs, and nothing left out.
+- `across`: in such a record, the files and destinations of all the parts' programs, each with the program that touched it, so that what this part's programs did can be read with what the others' did; `more` counts what the list had no room for, which is in those programs' own entries.
 - `asked`: what the person typed to an AI coding agent in this session: the latest few prompts with their times, as the agent's transcript records them. `replying_to` is the start and the end of what the agent had last said, which the prompt answers. `while_working` marks a message sent while the agent was still working. When `asked` is absent, that says only that no prompt was reported.
 - `session.turn`: when this record's turn began. An agent's session is cut into turns: a turn runs from a prompt that set the agent to work until the next such prompt, and a `while_working` message adds to the turn under way. The prompts from `session.turn` on are what this record is part of the answer to; the ones before are how the session got here.
 - `so_far`: your own summary of this session up to the record before this one. It says how the session got here and is not evidence against this record: weigh what this record itself shows.
@@ -11,14 +12,14 @@ The record's fields:
   - what it is: its path; `signer`, its code-signing identity; `team`, its Developer ID team, which Apple issues to the vendor, so an ad hoc signature cannot claim one; `platform`, whether it is part of macOS; `tty`, its terminal, absent when no person typed it.
   - `parents`: the programs above it, nearest first, the whole chain. It ends at `/sbin/launchd`, which starts every app and service; or at `(unknown)`, where the log cannot say what is above (a program that was already running when the log began, or one long gone: a gap in the log, not something the program did); or at `…` when the chain is longer than shown.
   - `responsible`: the app macOS holds responsible for it, when that is another program: whose behalf a helper or a command works on, and whom a permission prompt would name.
-  - `ran`: the command lines it was started with and how often. A long one is shown by its start and its end, with how many bytes between them were left out, and a key in its vendor's format (`ghp_…`, `AKIA…`) is cut to its start and `[secret: N bytes]`. What it went on to run is each child's own entry.
+  - `continued`: the entry goes on from the part before, with more of the same program's commands, destinations or events.
+  - `ran`: the command lines it was started with and how often. One of tens of thousands of bytes is shown by its start and its end, with how many bytes between them were left out, and a key in its vendor's format (`ghp_…`, `AKIA…`) is cut to its start and `[secret: N bytes]`. What it went on to run is each child's own entry.
   - `events`: how many of the session's events were its.
   - `files`: what it did to files, by what was done to them. Only some files are kept: credentials (cloud, registry and SSH keys, tokens, a browser's saved passwords and cookies, wallets, password managers' vaults); an AI agent's settings, instructions, MCP servers, transcripts and plugins; and what runs at login, in every shell, on every git command or as root. Each file is named, or for many under one directory, the directory with a count and a few names.
   - `env`: when set, the variables that steer a program: where an AI agent sends its traffic and keeps its config, code every process loads, the proxy and certificates traffic goes through, and npm's names for the package script running.
   - `connected`: where it opened network connections: the host its TLS hello or a DNS answer named, else the address; the port; how often; and in brackets, when the local address tables know it, who owns the network the address is in and what address lists call it (a hosting provider, a Tor exit, a VPN, a private address).
   - `profile`: present when the program is one the pack holds a profile of, matched by its team and signing identity, not its name. ` (usual)` after a destination or a file says that profile lists it as the program's own routine, and `started` on a helper says such a program runs it for itself. A mark says the program does this as a matter of course, not that the session is safe; what a profiled program does beyond its profile is unmarked.
   - `other`: its rarer events (a privacy permission changed, a login item added) with what each named.
-- `more_programs`: how many programs were left out, when the session has more than are shown.
 
 Malicious means this Mac being used for someone else's ends. In a record that is one of five things:
 
