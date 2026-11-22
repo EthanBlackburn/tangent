@@ -69,10 +69,18 @@ fn level(judge: &Value) -> u8 {
 fn told(story: Value, rec: &Value) -> Option<(Value, bool)> {
     let j = rec.get("judge")?;
     j.get("assessment")?.as_str()?;
+    // A long summary comes in parts, each judged alone with the `so_far` from
+    // before any of them: the first part's account stands, since it holds
+    // the programs that touched a file or connected, and a later part's
+    // would be of that part's programs only.
+    let later_part = rec
+        .pointer("/session/part")
+        .and_then(Value::as_u64)
+        .is_some_and(|part| part > 1);
     let so_far = j
         .get("so_far")
         .and_then(Value::as_str)
-        .filter(|t| !t.trim().is_empty())
+        .filter(|t| !later_part && !t.trim().is_empty())
         .map(|t| json!(t))
         .unwrap_or_else(|| story["so_far"].clone());
     let mut alerted = story["alerted"].clone();
@@ -193,6 +201,13 @@ mod tests {
         // the next turn's first look is told
         let (story, tell) = told(story, &piece("t2", "look", None)).unwrap();
         assert!(tell);
+        // a later part of a long summary is told like any piece, and its
+        // account does not take the place of the first part's
+        let mut part = piece("t3", "look", Some("Forty compilers ran."));
+        part["session"]["part"] = json!(2);
+        let (story, tell) = told(story, &part).unwrap();
+        assert!(tell);
+        assert_eq!(story["so_far"], "Then read the SSH key.");
         // a record the judge could not answer says nothing
         assert!(told(story, &rec(json!({"error": "timeout"}))).is_none());
     }
