@@ -101,9 +101,9 @@ enum Commands {
         /// What to watch, one or more: --sources cloudtrail,github
         #[arg(long, value_enum, value_delimiter = ',')]
         sources: Vec<init::Source>,
-        /// The pair of models, by who serves them
+        /// Who serves the models; each brings its pair, a judge and a reviewer
         #[arg(long, value_enum)]
-        models: Option<init::Models>,
+        provider: Option<init::Provider>,
     },
 
     /// Read a past range of the config's sources through it, as fast as it
@@ -274,7 +274,9 @@ async fn main() -> Result<()> {
 
         Commands::Config { config } => print!("{}", show_config(&config)?),
 
-        Commands::Init { sources, models } => init::run(Path::new("."), sources, models).await?,
+        Commands::Init { sources, provider } => {
+            init::run(Path::new("."), sources, provider).await?
+        }
 
         Commands::Replay { config, from, to } => {
             let config = config.canonicalize().unwrap_or(config);

@@ -4,7 +4,7 @@
 //! file tangent keeps: every node, its settings and its `inputs` are in the
 //! file written, to read and to edit.
 //!
-//! `--sources` and `--models` answer the two questions, for a script or an
+//! `--sources` and `--provider` answer the two questions, for a script or an
 //! agent: a question is asked only at a terminal, and only when its flag was
 //! left out. The plugins the config names are fetched, and the attestation
 //! of each build checked, before a file is written: init leaves a pipeline
@@ -212,11 +212,11 @@ impl fmt::Display for Source {
     }
 }
 
-/// The model that judges and the one that reviews what it flagged, by who
-/// serves them: a pair measured together, with the settings it was measured
-/// with.
+/// Who serves the models. Each brings its pair, the model that judges and
+/// the one that reviews what it flagged, measured together, with the
+/// settings it was measured with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum Models {
+pub enum Provider {
     /// Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API, with ANTHROPIC_API_KEY
     Anthropic,
     /// The same pair on Amazon Bedrock, with an AWS profile
@@ -245,10 +245,10 @@ struct Pair {
     needs: Needs,
 }
 
-impl Models {
+impl Provider {
     fn pair(self) -> Pair {
         match self {
-            Models::Anthropic => Pair {
+            Provider::Anthropic => Pair {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Anthropic's API)",
                 choice: "Claude Haiku 5.5, Sonnet 5.5 reviews (Anthropic)",
                 measured: "70 of 71, 40 flagged",
@@ -267,7 +267,7 @@ impl Models {
 "#,
                 needs: &[("ANTHROPIC_API_KEY", "a key from console.anthropic.com")],
             },
-            Models::Bedrock => Pair {
+            Provider::Bedrock => Pair {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Amazon Bedrock)",
                 choice: "Claude Haiku 5.5, Sonnet 5.5 reviews (Bedrock)",
                 measured: "the same pair",
@@ -289,7 +289,7 @@ impl Models {
                     "the AWS profile that calls Bedrock, with access to both models in the US regions; `default` when unset",
                 )],
             },
-            Models::Openrouter => Pair {
+            Provider::Openrouter => Pair {
                 label: "DeepSeek V4 Flash, open weights, judges and reviews (OpenRouter)",
                 choice: "DeepSeek V4 Flash, reviews itself (OpenRouter)",
                 measured: "71 of 71, 10 to 13 flagged",
@@ -311,7 +311,7 @@ impl Models {
 "#,
                 needs: &[("OPENROUTER_API_KEY", "a key from openrouter.ai/keys")],
             },
-            Models::Openai => Pair {
+            Provider::Openai => Pair {
                 label: "GPT-6 Luna judges, GPT-6.1 Terra reviews (OpenAI's API)",
                 choice: "GPT-6 Luna, GPT-6.1 Terra reviews (OpenAI)",
                 measured: "71 of 71, 20 flagged",
@@ -330,7 +330,7 @@ impl Models {
 "#,
                 needs: &[("OPENAI_API_KEY", "a key from platform.openai.com")],
             },
-            Models::Local => Pair {
+            Provider::Local => Pair {
                 label: "A model on this machine judges and reviews (llama-server, mlx_lm.server, Ollama, vLLM)",
                 choice: "A model on this machine, reviews itself",
                 measured: "not measured",
@@ -351,7 +351,7 @@ impl Models {
     }
 }
 
-impl fmt::Display for Models {
+impl fmt::Display for Provider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let pair = self.pair();
         write!(f, "{:48}  {}", pair.choice, pair.measured)
@@ -363,12 +363,12 @@ impl fmt::Display for Models {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choices {
     watch: Vec<Source>,
-    models: Models,
+    provider: Provider,
 }
 
 impl Choices {
     /// `watch` must name a source: a pipeline with none reads nothing.
-    pub fn new(mut watch: Vec<Source>, models: Models) -> Result<Self> {
+    pub fn new(mut watch: Vec<Source>, provider: Provider) -> Result<Self> {
         if watch.is_empty() {
             bail!(
                 "nothing to watch: name a source, as --sources {}",
@@ -377,7 +377,7 @@ impl Choices {
         }
         watch.sort();
         watch.dedup();
-        Ok(Self { watch, models })
+        Ok(Self { watch, provider })
     }
 
     fn replays(&self) -> bool {
@@ -418,7 +418,7 @@ impl Choices {
     fn needs(&self) -> Vec<(&'static str, &'static str)> {
         let mut needs: Vec<(&'static str, &'static str)> = Vec::new();
         let packs = self.watch.iter().flat_map(|w| w.pack().needs);
-        for need in self.models.pair().needs.iter().chain(packs) {
+        for need in self.provider.pair().needs.iter().chain(packs) {
             if !needs.iter().any(|(var, _)| var == &need.0) {
                 needs.push(*need);
             }
@@ -429,7 +429,7 @@ impl Choices {
     /// The file's first lines: what it watches, who judges, how to run it
     /// and where the answers go.
     fn header(&self) -> String {
-        let pair = self.models.pair();
+        let pair = self.provider.pair();
         let mut header = String::from("# tangent.yaml, written by `tangent init`.\n#\n");
         for (i, w) in self.watch.iter().enumerate() {
             let lead = if i == 0 { "watches" } else { "" };
@@ -457,7 +457,7 @@ impl Choices {
             .collect();
         let inputs: Vec<&str> = packs.iter().map(|p| p.name).collect();
         let plugins: String = self.watch.iter().map(|w| w.plugin()).collect();
-        let pair = self.models.pair();
+        let pair = self.provider.pair();
         // Each part ends its last line, and so does the line it stands on.
         let block = |text: &str| text.trim_end().to_string();
         [
@@ -543,7 +543,7 @@ fn names<T: clap::ValueEnum>(sep: &str) -> String {
 
 /// The choices: each flag's, and at a terminal a question for a flag left
 /// out. Away from a terminal a flag left out is an error that names it.
-fn choices(watch: Vec<Source>, models: Option<Models>) -> Result<Choices> {
+fn choices(watch: Vec<Source>, provider: Option<Provider>) -> Result<Choices> {
     let asks = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let watch = match (watch.is_empty(), asks) {
         (false, _) => watch,
@@ -559,11 +559,11 @@ fn choices(watch: Vec<Source>, models: Option<Models>) -> Result<Choices> {
             names::<Source>(", ")
         ),
     };
-    let models = match (models, asks) {
-        (Some(models), _) => models,
+    let provider = match (provider, asks) {
+        (Some(provider), _) => provider,
         (None, true) => inquire::Select::new(
             "Which models judge it, and review what is flagged?",
-            Models::value_variants().to_vec(),
+            Provider::value_variants().to_vec(),
         )
         .with_help_message(
             "attacks caught, and ordinary records flagged of 5,304, in tangent's evals",
@@ -571,18 +571,18 @@ fn choices(watch: Vec<Source>, models: Option<Models>) -> Result<Choices> {
         .prompt()
         .context("nothing is written")?,
         (None, false) => bail!(
-            "which models? This is not a terminal, so say it with --models, one of {}",
-            names::<Models>(", ")
+            "who serves the models? This is not a terminal, so say it with --provider, one of {}",
+            names::<Provider>(", ")
         ),
     };
-    Choices::new(watch, models)
+    Choices::new(watch, provider)
 }
 
 /// `tangent init` in `dir`: the choices, the files, and the plugins the
 /// config names, fetched and checked. A fetch that fails takes the files
 /// with it, so what is left runs or is nothing.
-pub async fn run(dir: &Path, watch: Vec<Source>, models: Option<Models>) -> Result<()> {
-    let choices = choices(watch, models)?;
+pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> Result<()> {
+    let choices = choices(watch, provider)?;
     let written = choices.write(dir)?;
     let config = dir.join("tangent.yaml");
     if let Err(e) = fetch::missing(&config.canonicalize().unwrap_or(config)).await {
@@ -608,7 +608,7 @@ pub async fn run(dir: &Path, watch: Vec<Source>, models: Option<Models>) -> Resu
             println!("  {var:width$}  {what}{state}");
         }
     }
-    if choices.models == Models::Local {
+    if choices.provider == Provider::Local {
         println!("\nStart your model's server first; the lines marked EDIT in tangent.yaml name its model.");
     }
     println!("\nThen:");
@@ -641,15 +641,15 @@ mod tests {
 
     /// The files for these choices, in a directory of their own, and the
     /// config as it loads.
-    fn written(watch: &[Source], models: Models) -> (tempfile::TempDir, Config) {
+    fn written(watch: &[Source], provider: Provider) -> (tempfile::TempDir, Config) {
         let dir = tempfile::tempdir().unwrap();
-        let choices = Choices::new(watch.to_vec(), models).unwrap();
+        let choices = Choices::new(watch.to_vec(), provider).unwrap();
         choices.write(dir.path()).unwrap();
         let cfg = Config::load(&dir.path().join("tangent.yaml"))
-            .unwrap_or_else(|e| panic!("{watch:?}, {models:?}: {e:#}"))
+            .unwrap_or_else(|e| panic!("{watch:?}, {provider:?}: {e:#}"))
             .config;
         cfg.validate()
-            .unwrap_or_else(|e| panic!("{watch:?}, {models:?}: {e:#}"));
+            .unwrap_or_else(|e| panic!("{watch:?}, {provider:?}: {e:#}"));
         (dir, cfg)
     }
 
@@ -661,12 +661,12 @@ mod tests {
         let mut sets: Vec<Vec<Source>> = EVERY.iter().map(|w| vec![*w]).collect();
         sets.push(EVERY.to_vec());
         for watch in &sets {
-            for models in Models::value_variants() {
-                let (_dir, cfg) = written(watch, *models);
+            for provider in Provider::value_variants() {
+                let (_dir, cfg) = written(watch, *provider);
                 assert_eq!(
                     cfg.warnings(),
                     Vec::<String>::new(),
-                    "{watch:?}, {models:?}"
+                    "{watch:?}, {provider:?}"
                 );
                 assert_eq!(cfg.sources.len(), watch.len(), "{watch:?}");
                 for w in watch {
@@ -690,10 +690,13 @@ mod tests {
     /// No place is left in a config, whatever the choices.
     #[test]
     fn every_place_in_the_file_is_filled() {
-        for models in Models::value_variants() {
-            let config = Choices::new(EVERY.to_vec(), *models).unwrap().config();
-            assert!(!config.contains("{{"), "{models:?}:\n{config}");
-            assert!(!config.contains("\n\n\n"), "{models:?}: a part left a gap");
+        for provider in Provider::value_variants() {
+            let config = Choices::new(EVERY.to_vec(), *provider).unwrap().config();
+            assert!(!config.contains("{{"), "{provider:?}:\n{config}");
+            assert!(
+                !config.contains("\n\n\n"),
+                "{provider:?}: a part left a gap"
+            );
         }
     }
 
@@ -734,13 +737,13 @@ mod tests {
     /// pack measured is what init writes.
     #[test]
     fn the_config_is_what_the_packs_say() {
-        for (models, pack) in [
-            (Models::Anthropic, "anthropic"),
-            (Models::Openrouter, "openrouter"),
+        for (provider, pack) in [
+            (Provider::Anthropic, "anthropic"),
+            (Provider::Openrouter, "openrouter"),
         ] {
-            let (_dir, ours) = written(&EVERY, models);
+            let (_dir, ours) = written(&EVERY, provider);
 
-            let choices = Choices::new(EVERY.to_vec(), models).unwrap();
+            let choices = Choices::new(EVERY.to_vec(), provider).unwrap();
             let packs: Vec<Pack> = EVERY.iter().map(|w| w.pack()).collect();
             let names: Vec<&str> = packs.iter().map(|p| p.name).collect();
             let includes: Vec<String> = names.iter().map(|n| format!("pack:{n}")).collect();
@@ -772,7 +775,7 @@ mod tests {
             // The pack names Anthropic's address over the local server's it
             // starts from; the file has no address to name over.
             for value in [&mut ours, &mut theirs] {
-                if models == Models::Anthropic {
+                if provider == Provider::Anthropic {
                     value["inference"]["judge"]
                         .as_mapping_mut()
                         .unwrap()
@@ -796,11 +799,11 @@ mod tests {
             assert_eq!(
                 (only(&written, &included), only(&included, &written)),
                 (Vec::new(), Vec::new()),
-                "{models:?}: settings only init writes, and only the packs have"
+                "{provider:?}: settings only init writes, and only the packs have"
             );
             assert!(
                 written.len() > 150,
-                "{models:?}: {} settings",
+                "{provider:?}: {} settings",
                 written.len()
             );
         }
@@ -810,7 +813,7 @@ mod tests {
     /// pack has it, and the config names those files.
     #[test]
     fn the_briefs_are_the_judge_packs_beside_the_config() {
-        let (dir, cfg) = written(&[Source::Cloudtrail], Models::Anthropic);
+        let (dir, cfg) = written(&[Source::Cloudtrail], Provider::Anthropic);
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs");
         for (name, pack_file) in BRIEFS {
             assert_eq!(
@@ -835,30 +838,30 @@ mod tests {
     /// and its reviewer is the provider's own.
     #[test]
     fn every_pair_names_its_models() {
-        for models in Models::value_variants() {
-            let (_dir, cfg) = written(&[Source::Cloudtrail], *models);
+        for provider in Provider::value_variants() {
+            let (_dir, cfg) = written(&[Source::Cloudtrail], *provider);
             let (judge, reviewer) = (&cfg.inference["judge"], &cfg.inference["reviewer"]);
-            let (backend, url, judges, reviews) = match models {
-                Models::Anthropic => (
+            let (backend, url, judges, reviews) = match provider {
+                Provider::Anthropic => (
                     Backend::Anthropic,
                     None,
                     "claude-haiku-5-5",
                     "claude-sonnet-5-5",
                 ),
-                Models::Bedrock => (
+                Provider::Bedrock => (
                     Backend::Bedrock,
                     None,
                     "us.anthropic.claude-haiku-5-5",
                     "us.anthropic.claude-sonnet-5-5",
                 ),
-                Models::Openrouter => (
+                Provider::Openrouter => (
                     Backend::Openai,
                     Some("https://openrouter.ai/api/v1"),
                     "deepseek/deepseek-v4-flash-0731",
                     "deepseek/deepseek-v4-flash-0731",
                 ),
-                Models::Openai => (Backend::Responses, None, "gpt-6-luna", "gpt-6.1-terra"),
-                Models::Local => (
+                Provider::Openai => (Backend::Responses, None, "gpt-6-luna", "gpt-6.1-terra"),
+                Provider::Local => (
                     Backend::Openai,
                     Some("http://localhost:8080/v1"),
                     "glm-4.7-flash",
@@ -866,8 +869,8 @@ mod tests {
                 ),
             };
             for node in [judge, reviewer] {
-                assert_eq!(node.backend, backend, "{models:?}");
-                assert_eq!(node.url.as_deref(), url, "{models:?}");
+                assert_eq!(node.backend, backend, "{provider:?}");
+                assert_eq!(node.url.as_deref(), url, "{provider:?}");
             }
             assert_eq!(
                 (judge.model.as_str(), reviewer.model.as_str()),
@@ -875,9 +878,9 @@ mod tests {
             );
             assert!(
                 reviewer.inputs.is_empty(),
-                "{models:?}: the plugin calls it"
+                "{provider:?}: the plugin calls it"
             );
-            assert_eq!(reviewer.max_tokens, 8000, "{models:?}");
+            assert_eq!(reviewer.max_tokens, 8000, "{provider:?}");
         }
     }
 
@@ -886,18 +889,18 @@ mod tests {
     /// local model's and, as its pair was measured, OpenRouter's.
     #[test]
     fn a_hosted_model_is_sent_no_local_settings() {
-        for models in Models::value_variants() {
-            let (_dir, cfg) = written(&[Source::Cloudtrail], *models);
+        for provider in Provider::value_variants() {
+            let (_dir, cfg) = written(&[Source::Cloudtrail], *provider);
             let judge = &cfg.inference["judge"];
-            let local = *models == Models::Local;
+            let local = *provider == Provider::Local;
             assert_eq!(
                 judge.extra.contains_key("chat_template_kwargs"),
                 local,
-                "{models:?}"
+                "{provider:?}"
             );
-            let sampled = matches!(models, Models::Local | Models::Openrouter);
-            assert_eq!(judge.temperature.is_some(), sampled, "{models:?}");
-            assert_eq!(judge.extra.contains_key("top_p"), sampled, "{models:?}");
+            let sampled = matches!(provider, Provider::Local | Provider::Openrouter);
+            assert_eq!(judge.temperature.is_some(), sampled, "{provider:?}");
+            assert_eq!(judge.extra.contains_key("top_p"), sampled, "{provider:?}");
         }
     }
 
@@ -915,7 +918,7 @@ mod tests {
     /// the shell's, and the models are called in a US region.
     #[test]
     fn on_bedrock_the_models_use_the_sources_profile() {
-        let (_dir, cfg) = written(&[Source::Cloudtrail], Models::Bedrock);
+        let (_dir, cfg) = written(&[Source::Cloudtrail], Provider::Bedrock);
         let SourceConfig::Cloudtrail(source) = &cfg.sources["aws_audit"] else {
             panic!("aws_audit is not a cloudtrail source");
         };
@@ -933,7 +936,7 @@ mod tests {
     #[test]
     fn the_commands_are_the_ones_that_read_what_is_watched() {
         let commands = |watch: &[Source]| -> Vec<&'static str> {
-            let choices = Choices::new(watch.to_vec(), Models::Anthropic).unwrap();
+            let choices = Choices::new(watch.to_vec(), Provider::Anthropic).unwrap();
             let config = choices.config();
             let lines = choices.commands();
             for line in &lines {
@@ -951,7 +954,7 @@ mod tests {
         assert_eq!(commands(&[Source::Cloudtrail]), [REPLAY]);
         assert_eq!(commands(&[Source::Okta, Source::Github]), [RUN]);
         assert_eq!(commands(&EVERY), [REPLAY, RUN]);
-        let all = Choices::new(EVERY.to_vec(), Models::Anthropic).unwrap();
+        let all = Choices::new(EVERY.to_vec(), Provider::Anthropic).unwrap();
         assert!(
             all.commands()[1].ends_with(
                 "# GitHub, Okta, Google Workspace, Supabase, from an hour back and as it happens"
@@ -967,11 +970,11 @@ mod tests {
     fn the_sources_are_each_once_and_at_least_one() {
         let named = Choices::new(
             vec![Source::Okta, Source::Cloudtrail, Source::Okta],
-            Models::Local,
+            Provider::Local,
         )
         .unwrap();
         assert_eq!(named.watch, [Source::Cloudtrail, Source::Okta]);
-        let err = Choices::new(Vec::new(), Models::Local).unwrap_err();
+        let err = Choices::new(Vec::new(), Provider::Local).unwrap_err();
         assert!(format!("{err:#}").contains("nothing to watch"), "{err:#}");
         assert_eq!(
             names::<Source>(","),
@@ -983,10 +986,10 @@ mod tests {
     /// the two columns the list's own marker takes.
     #[test]
     fn a_pairs_line_fits_a_terminal() {
-        for models in Models::value_variants() {
-            let line = models.to_string();
-            assert!(line.chars().count() <= 78, "{models:?}: {line}");
-            assert!(models.pair().choice.len() <= 48, "{models:?}");
+        for provider in Provider::value_variants() {
+            let line = provider.to_string();
+            assert!(line.chars().count() <= 78, "{provider:?}: {line}");
+            assert!(provider.pair().choice.len() <= 48, "{provider:?}");
         }
     }
 
@@ -994,10 +997,10 @@ mod tests {
     /// that reads CloudTrail is the one that calls the models.
     #[test]
     fn a_variable_is_named_once() {
-        let choices = Choices::new(vec![Source::Cloudtrail], Models::Bedrock).unwrap();
+        let choices = Choices::new(vec![Source::Cloudtrail], Provider::Bedrock).unwrap();
         let vars: Vec<&str> = choices.needs().into_iter().map(|(var, _)| var).collect();
         assert_eq!(vars, ["AWS_PROFILE"]);
-        let choices = Choices::new(vec![Source::Github], Models::Anthropic).unwrap();
+        let choices = Choices::new(vec![Source::Github], Provider::Anthropic).unwrap();
         let vars: Vec<&str> = choices.needs().into_iter().map(|(var, _)| var).collect();
         assert_eq!(vars, ["ANTHROPIC_API_KEY", "GITHUB_ORG", "GITHUB_TOKEN"]);
     }
@@ -1006,7 +1009,7 @@ mod tests {
     /// one, and every file is left as it was.
     #[test]
     fn refuses_a_file_already_there_and_writes_nothing() {
-        let choices = Choices::new(vec![Source::Cloudtrail], Models::Anthropic).unwrap();
+        let choices = Choices::new(vec![Source::Cloudtrail], Provider::Anthropic).unwrap();
         for (taken, _) in choices.files() {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(taken), "mine").unwrap();
