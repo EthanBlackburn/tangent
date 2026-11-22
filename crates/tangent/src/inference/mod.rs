@@ -316,26 +316,47 @@ impl InferenceNode {
         slots
     }
 
-    /// Records in one request; an unreadable reply is asked again in halves,
-    /// and the records a readable reply skipped are asked again without the
-    /// ones it answered.
+    /// Records in one request. A reply with nothing to read for any of them
+    /// (not JSON, or JSON that answers none) is asked again in halves, and
+    /// for one record, which has no halves, again as it is, `retries` times;
+    /// the records a reply skipped are asked again without the ones it
+    /// answered.
     async fn annotate(&self, records: Vec<Value>) -> Vec<Value> {
         let n = records.len();
         let start = Instant::now();
-        let answers = match self.user(&records) {
-            Ok(user) => self.ask(user, n).await,
-            Err(e) => Err(e),
+        let mut attempt = 0;
+        let answers = loop {
+            attempt += 1;
+            let answers = match self.user(&records) {
+                Ok(user) => self.ask(user, n).await.and_then(|reply| {
+                    let said = head(&reply.to_string(), 200);
+                    let answers = spread(reply, n, matches!(self.cfg.encoding, Encoding::Ndjson));
+                    match answers.iter().any(Option::is_some) {
+                        true => Ok(answers),
+                        false => bail!("reply answers no record: {said}"),
+                    }
+                }),
+                Err(e) => Err(e),
+            };
+            match &answers {
+                Err(e)
+                    if n == 1
+                        && attempt <= self.cfg.retries
+                        && e.to_string().starts_with("reply ") =>
+                {
+                    tracing::warn!(node = %self.name, attempt, "asking again: {e:#}");
+                }
+                _ => break answers,
+            }
         };
         let answers = match answers {
-            Ok(reply) => {
-                let answers = spread(reply, n, matches!(self.cfg.encoding, Encoding::Ndjson));
+            Ok(answers) => {
                 // A model given several records now and then answers some and
-                // stops: the reply is whole JSON, so nothing was retried, and
-                // each skipped record went on with an error where its verdict
-                // should be. Fewer records each time, so this ends; a reply
-                // that skipped every record is left as it is.
-                let skipped: Vec<usize> = (0..n).filter(|k| unanswered(&answers[*k])).collect();
-                if !skipped.is_empty() && skipped.len() < n {
+                // stops: the reply is whole JSON, and each skipped record
+                // would go on with an error where its verdict should be.
+                // Fewer records each time, so this ends.
+                let skipped: Vec<usize> = (0..n).filter(|k| answers[*k].is_none()).collect();
+                if !skipped.is_empty() {
                     tracing::warn!(
                         node = %self.name,
                         records = n,
@@ -347,14 +368,13 @@ impl InferenceNode {
                     return records
                         .into_iter()
                         .zip(answers)
-                        .enumerate()
-                        .map(|(k, (v, a))| match skipped.contains(&k) {
-                            true => redone.next().unwrap_or_else(|| attach(&self.name, v, a)),
-                            false => attach(&self.name, v, a),
+                        .map(|(v, a)| match a {
+                            Some(a) => attach(&self.name, v, a),
+                            None => redone.next().unwrap_or(v),
                         })
                         .collect();
                 }
-                answers
+                answers.into_iter().flatten().collect()
             }
             // a failed request would fail the same in halves
             Err(e) if n > 1 && e.to_string().starts_with("reply ") => {
@@ -646,23 +666,15 @@ fn attach(name: &str, v: Value, reply: Value) -> Value {
     Value::Object(obj)
 }
 
-/// Whether [`spread`] found no answer for a record in a reply that was read.
-fn unanswered(answer: &Value) -> bool {
-    answer["error"]
-        .as_str()
-        .is_some_and(|e| e.starts_with("no answer for record"))
-}
-
-/// Answers by their `i`; by position when none is missing one and the text
-/// is in index order (`in_order`; logfmt groups its rows).
-fn spread(reply: Value, n: usize, in_order: bool) -> Vec<Value> {
-    let Some(items) = reply.get("answers").and_then(Value::as_array).cloned() else {
-        let err = format!(
-            "reply has no `answers` array: {}",
-            head(&reply.to_string(), 200)
-        );
-        return vec![json!({"error": err}); n];
-    };
+/// Each record's answer, by its `i`; by position when none is missing one
+/// and the text is in index order (`in_order`; logfmt groups its rows). None
+/// for a record the reply has no JSON object for.
+fn spread(reply: Value, n: usize, in_order: bool) -> Vec<Option<Value>> {
+    let items = reply
+        .get("answers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let indexed = !in_order
         || !items.is_empty()
             && items
@@ -681,14 +693,12 @@ fn spread(reply: Value, n: usize, in_order: bool) -> Vec<Value> {
     }
     slots
         .into_iter()
-        .enumerate()
-        .map(|(k, slot)| match slot {
+        .map(|slot| match slot {
             Some(Value::Object(mut m)) => {
                 m.remove("i");
-                Value::Object(m)
+                Some(Value::Object(m))
             }
-            Some(other) => json!({"error": format!("answer {k} is not a JSON object: {}", head(&other.to_string(), 200))}),
-            None => json!({"error": format!("no answer for record {k} in a reply to {n}")}),
+            _ => None,
         })
         .collect()
 }
@@ -815,11 +825,13 @@ pub(crate) mod stub {
         let log = Arc::clone(&seen);
         let flaky_failures = Arc::new(AtomicUsize::new(0));
         let quiet_turns = Arc::new(AtomicUsize::new(0));
+        let empty_replies = Arc::new(AtomicUsize::new(0));
         tokio::spawn(async move {
             while let Ok((mut sock, _)) = listener.accept().await {
                 let log = Arc::clone(&log);
                 let flaky_failures = Arc::clone(&flaky_failures);
                 let quiet_turns = Arc::clone(&quiet_turns);
+                let empty_replies = Arc::clone(&empty_replies);
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut tmp = [0u8; 4096];
@@ -908,6 +920,10 @@ pub(crate) mod stub {
                     let user = text(&req["messages"][1]["content"]);
                     let content = if body.contains("prose") {
                         "Looks fine to me, nothing to flag.".to_string()
+                    } else if body.contains("empty at first")
+                        && empty_replies.fetch_add(1, Ordering::SeqCst) < 2
+                    {
+                        "{\"answers\": []}".to_string()
                     } else if user.matches("loop").count() >= 3 {
                         "{\"answers\": [{\"flag\": false, \"one_line\": \"a7a7a7a7".to_string()
                     } else {
@@ -926,10 +942,13 @@ pub(crate) mod stub {
                         // a `shy` record gets no answer beside others, as a
                         // model that stops early leaves one out
                         let skips = records.len() > 1 && records.iter().any(|r| r.contains("shy"));
+                        // and `crowded` ones none at all unless asked alone
+                        let mute =
+                            records.len() > 1 && records.iter().any(|r| r.contains("crowded"));
                         let answers: Vec<_> = records
                             .iter()
                             .enumerate()
-                            .filter(|(_, r)| !(skips && r.contains("shy")))
+                            .filter(|(_, r)| !(mute || skips && r.contains("shy")))
                             .map(|(k, r)| {
                                 let mut a = verdict(r);
                                 if logfmt || skips {
@@ -1531,11 +1550,51 @@ mod tests {
             err.contains("not JSON") && err.contains("Looks fine"),
             "{err}"
         );
-        assert_eq!(
-            seen.lock().await.len(),
-            1,
-            "a reply that came back is not retried"
-        );
+        assert_eq!(seen.lock().await.len(), 1, "no `retries`: one request");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// One record's reply with nothing in it for the record is asked for
+    /// again, `retries` times, as a request that got no reply is.
+    #[tokio::test]
+    async fn a_reply_with_no_answer_for_its_one_record_is_asked_again() {
+        let (url, seen) = stub::model().await;
+        let dir = stub::dir("empty-reply");
+        let mut cfg = stub::config(&url);
+        cfg.retries = 2;
+        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        // Two empty lists, then the verdict.
+        let out = node
+            .annotate_all(vec![json!({"id": 3, "msg": "empty at first, bad"})])
+            .await;
+        assert_eq!(out[0]["judge"]["flag"], true, "{out:?}");
+        assert_eq!(seen.lock().await.len(), 3);
+        // A reply that is never JSON: three tries, then the error.
+        let out = node
+            .annotate_all(vec![json!({"id": 7, "msg": "prose please"})])
+            .await;
+        let err = out[0]["judge"]["error"].as_str().unwrap();
+        assert!(err.contains("not JSON"), "{err}");
+        assert_eq!(seen.lock().await.len(), 6);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A reply that answers none of several records is asked again in
+    /// halves, as one that is not JSON is.
+    #[tokio::test]
+    async fn a_reply_that_answers_no_record_is_asked_in_halves() {
+        let (url, seen) = stub::model().await;
+        let dir = stub::dir("no-answers");
+        let node = InferenceNode::new(Arc::from("judge"), stub::config(&url), &dir).unwrap();
+        let outs = node
+            .annotate_all(vec![
+                json!({"id": 1, "msg": "crowded and bad"}),
+                json!({"id": 2, "msg": "fine"}),
+            ])
+            .await;
+        let flags: Vec<&Value> = outs.iter().map(|o| &o["judge"]["flag"]).collect();
+        assert_eq!(flags, [&json!(true), &json!(false)], "{outs:?}");
+        assert_eq!(seen.lock().await.len(), 3, "the two, then each alone");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1691,25 +1750,31 @@ mod tests {
     }
 
     #[test]
-    fn spread_errors_missing_answers() {
+    fn spread_leaves_none_where_the_reply_has_no_answer() {
         let out = spread(
             json!({"answers": [{"i": 1, "flag": true}, {"i": 0, "flag": false}]}),
             3,
             true,
         );
-        assert_eq!(out[0], json!({"flag": false}));
-        assert_eq!(out[1], json!({"flag": true}));
-        assert!(out[2]["error"]
-            .as_str()
-            .unwrap()
-            .contains("no answer for record 2"));
+        assert_eq!(
+            out,
+            [
+                Some(json!({"flag": false})),
+                Some(json!({"flag": true})),
+                None
+            ]
+        );
+        // an answer that is no object is none
+        let out = spread(json!({"answers": ["x", {"flag": true}]}), 2, true);
+        assert_eq!(out, [None, Some(json!({"flag": true}))]);
+        assert_eq!(spread(json!({"verdict": true}), 1, true), [None]);
         // logfmt's rows are not in index order: an answer without `i` lands nowhere
         let out = spread(
             json!({"answers": [{"flag": true}, {"flag": false}]}),
             2,
             false,
         );
-        assert!(out.iter().all(|a| a["error"].is_string()), "{out:?}");
+        assert_eq!(out, [None, None]);
     }
 
     #[tokio::test]
