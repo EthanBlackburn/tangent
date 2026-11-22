@@ -716,7 +716,10 @@ fn answers_schema(item: &schemars::Schema) -> schemars::Schema {
         "title": "Answers",
         "type": "object",
         "properties": {
-            "answers": {"type": "array", "items": item}
+            // At least one: a list closed empty is whole JSON with no answer
+            // in it. Not the count, which backends refuse (Anthropic's and
+            // Bedrock's take 0 or 1 here).
+            "answers": {"type": "array", "minItems": 1, "items": item}
         },
         "required": ["answers"],
         "additionalProperties": false
@@ -1735,7 +1738,7 @@ mod tests {
         assert_eq!(req["response_format"]["json_schema"]["name"], "Answers");
         assert_eq!(req["temperature"], 0.0);
         let answers = &req["response_format"]["json_schema"]["schema"]["properties"]["answers"];
-        assert!(answers.get("minItems").is_none(), "backends reject bounds");
+        assert_eq!(answers["minItems"], 1, "an empty list is no reply");
         let item = &answers["items"];
         assert_eq!(item["properties"]["flag"]["type"], "boolean", "{item}");
         let first = item["properties"].as_object().unwrap().keys().next();
