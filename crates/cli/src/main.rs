@@ -95,15 +95,22 @@ enum Commands {
 
     /// Write tangent.yaml here, the whole pipeline in the one file: the
     /// sources you watch, a model that judges every record and one that
-    /// reviews what it flagged. At a terminal it asks what a flag leaves
-    /// out. It fetches the plugins the config names, and writes over nothing
+    /// reviews what it flagged. It asks nothing, fetches the plugins the
+    /// config names, and writes over nothing
     Init {
-        /// What to watch, one or more: --sources cloudtrail,github
+        /// What to watch, one or more: --sources cloudtrail,github. Without
+        /// it the pipeline is written with no source yet
         #[arg(long, value_enum, value_delimiter = ',')]
         sources: Vec<init::Source>,
-        /// Who serves the models; each brings its pair, a judge and a reviewer
-        #[arg(long, value_enum)]
+        /// Who serves the model, with --model. Without the two, Claude
+        /// Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through
+        /// Anthropic's API
+        #[arg(long, value_enum, requires = "model")]
         provider: Option<init::Provider>,
+        /// The model that judges and reviews, by the exact name its
+        /// provider takes, with --provider
+        #[arg(long, requires = "provider")]
+        model: Option<String>,
     },
 
     /// Read a past range of the config's sources through it, as fast as it
@@ -274,9 +281,11 @@ async fn main() -> Result<()> {
 
         Commands::Config { config } => print!("{}", show_config(&config)?),
 
-        Commands::Init { sources, provider } => {
-            init::run(Path::new("."), sources, provider).await?
-        }
+        Commands::Init {
+            sources,
+            provider,
+            model,
+        } => init::run(Path::new("."), sources, provider, model).await?,
 
         Commands::Replay { config, from, to } => {
             let config = config.canonicalize().unwrap_or(config);
@@ -437,6 +446,18 @@ fn sort_keys(v: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Init's provider and its model are named together or not at all.
+    #[test]
+    fn init_takes_a_provider_and_its_model_together() {
+        let parses =
+            |args: &[&str]| Cli::try_parse_from([&["tangent", "init"], args].concat()).is_ok();
+        assert!(parses(&[]));
+        assert!(parses(&["--sources", "okta,github"]));
+        assert!(parses(&["--provider", "openai", "--model", "gpt-6-luna"]));
+        assert!(!parses(&["--provider", "openai"]));
+        assert!(!parses(&["--model", "gpt-6-luna"]));
+    }
 
     #[test]
     fn config_fails_on_a_required_table_without_its_file() {

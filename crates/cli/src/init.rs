@@ -1,22 +1,22 @@
-//! `tangent init`: asks what to watch and which models judge it, and writes
-//! the whole pipeline to tangent.yaml, with what the two models are told
-//! beside it (judge.md, judge.schema.json, review.md). Nothing is left in a
-//! file tangent keeps: every node, its settings and its `inputs` are in the
-//! file written, to read and to edit.
+//! `tangent init`: writes the whole pipeline to tangent.yaml, with what the
+//! two models are told beside it (judge.md, judge.schema.json, review.md).
+//! Nothing is left in a file tangent keeps: every node, its settings and its
+//! `inputs` are in the file written, to read and to edit.
 //!
-//! `--sources` and `--provider` answer the two questions, for a script or an
-//! agent: a question is asked only at a terminal, and only when its flag was
-//! left out. The plugins the config names are fetched, and the attestation
-//! of each build checked, before a file is written: init leaves a pipeline
-//! that runs, or nothing.
+//! It asks nothing. `--sources` names what to watch, and without it the
+//! pipeline is written with no source yet. `--provider` and `--model`, given
+//! together, name who serves the model and the model, which judges and
+//! reviews; without them it is the two models measured on Anthropic's API.
+//! docs/config.md says how to change either in the file by hand. The plugins
+//! the config names are fetched, and the attestation of each build checked,
+//! before a file is written: init leaves a pipeline that loads, or nothing.
 
 use std::fmt;
 use std::fs::OpenOptions;
-use std::io::{ErrorKind, IsTerminal as _, Write as _};
+use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use clap::ValueEnum as _;
 use tangent_shared::packs;
 
 use crate::fetch;
@@ -34,6 +34,9 @@ const PREBUILT: &str =
 /// as they are written.
 const REPLAY: &str = "tangent replay --config tangent.yaml --from 1d";
 const RUN: &str = "tangent run --config tangent.yaml";
+
+/// Where the directions for changing a written config by hand are.
+const DIRECTIONS: &str = "https://github.com/EthanBlackburn/tangent/blob/main/docs/config.md";
 
 /// What the judge and the reviewer are told, written beside tangent.yaml as
 /// the judge pack has them: the file's name, and its path under packs/.
@@ -66,7 +69,7 @@ type Needs = &'static [(&'static str, &'static str)];
 struct Pack {
     /// The pack, and its plugin: what `--sources` takes.
     name: &'static str,
-    /// What the question calls it.
+    /// What it reads, in words.
     label: &'static str,
     /// The source node's name.
     source: &'static str,
@@ -212,9 +215,8 @@ impl fmt::Display for Source {
     }
 }
 
-/// Who serves the models. Each brings its pair, the model that judges and
-/// the one that reviews what it flagged, measured together, with the
-/// settings it was measured with.
+/// Who serves the models. Each brings the settings its models were measured
+/// with: a model that judges and one that reviews what it flagged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Provider {
     /// Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API, with ANTHROPIC_API_KEY
@@ -233,11 +235,8 @@ pub enum Provider {
 struct Pair {
     /// Who judges, who reviews, and who serves them, as the file says it.
     label: &'static str,
-    /// The same as the question lists it, in a line with `measured`.
-    choice: &'static str,
-    /// What the pair did over tangent-eval's cloud logs: attacks caught of
-    /// 71, and ordinary records still flagged after review, of 5,304.
-    measured: &'static str,
+    /// Who serves them, as the file says it of a model named with `--model`.
+    host: &'static str,
     /// The judge's model, under `models.judge`: where it is served.
     judge_model: &'static str,
     /// What the judge is asked with, under `inference.judge`.
@@ -254,8 +253,7 @@ impl Provider {
         match self {
             Provider::Anthropic => Pair {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Anthropic's API)",
-                choice: "Claude Haiku 5.5, Sonnet 5.5 reviews (Anthropic)",
-                measured: "70 of 71, 40 flagged",
+                host: "Anthropic's API",
                 judge_model: r#"    type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"   # a key from console.anthropic.com
     model: claude-haiku-5-5
@@ -275,8 +273,7 @@ impl Provider {
             },
             Provider::Bedrock => Pair {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Amazon Bedrock)",
-                choice: "Claude Haiku 5.5, Sonnet 5.5 reviews (Bedrock)",
-                measured: "the same pair",
+                host: "Amazon Bedrock",
                 judge_model: r#"    type: bedrock
     model: us.anthropic.claude-haiku-5-5
     aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }   # a US region: Bedrock serves this model there
@@ -299,8 +296,7 @@ impl Provider {
             },
             Provider::Openrouter => Pair {
                 label: "DeepSeek V4 Flash, open weights, judges and reviews (OpenRouter)",
-                choice: "DeepSeek V4 Flash, reviews itself (OpenRouter)",
-                measured: "71 of 71, 10 to 13 flagged",
+                host: "OpenRouter",
                 judge_model: r#"    type: openai                 # an OpenAI-compatible server
     url: https://openrouter.ai/api/v1
     api_key: "${OPENROUTER_API_KEY}"   # a key from openrouter.ai/keys
@@ -325,8 +321,7 @@ impl Provider {
             },
             Provider::Openai => Pair {
                 label: "GPT-6 Luna judges, GPT-6.1 Terra reviews (OpenAI's API)",
-                choice: "GPT-6 Luna, GPT-6.1 Terra reviews (OpenAI)",
-                measured: "71 of 71, 20 flagged",
+                host: "OpenAI's API",
                 judge_model: r#"    type: responses              # OpenAI's Responses API
     api_key: "${OPENAI_API_KEY}"   # a key from platform.openai.com
     model: gpt-6-luna
@@ -346,8 +341,7 @@ impl Provider {
             },
             Provider::Local => Pair {
                 label: "A model on this machine judges and reviews (llama-server, mlx_lm.server, Ollama, vLLM)",
-                choice: "A model on this machine, reviews itself",
-                measured: "not measured",
+                host: "a server on this machine",
                 judge_model: r#"    type: openai                 # an OpenAI-compatible server
     url: http://localhost:8080/v1   # llama-server, mlx_lm.server or vLLM; Ollama is http://localhost:11434/v1
     model: glm-4.7-flash         # EDIT to the name your server gives its model
@@ -369,33 +363,64 @@ impl Provider {
     }
 }
 
-impl fmt::Display for Provider {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let pair = self.pair();
-        write!(f, "{:48}  {}", pair.choice, pair.measured)
-    }
-}
-
 /// What a config is written for: the sources, in the order `Source` lists
-/// them and each once, and the pair of models.
+/// them and each once, who serves the models, and the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choices {
     watch: Vec<Source>,
     provider: Provider,
+    /// The one model that judges and reviews, by the name its provider
+    /// takes. Without it, the provider's two as they were measured.
+    model: Option<String>,
+}
+
+/// `block` with its `model` line naming `model`.
+fn named(block: &str, model: &str) -> String {
+    let name = serde_json::Value::from(model).to_string();
+    let lines: Vec<String> = block
+        .lines()
+        .map(|line| match line.split_once("model:") {
+            Some((indent, _)) if indent.trim().is_empty() => format!("{indent}model: {name}"),
+            _ => line.to_string(),
+        })
+        .collect();
+    lines.join("\n")
 }
 
 impl Choices {
-    /// `watch` must name a source: a pipeline with none reads nothing.
-    pub fn new(mut watch: Vec<Source>, provider: Provider) -> Result<Self> {
-        if watch.is_empty() {
-            bail!(
-                "nothing to watch: name a source, as --sources {}",
-                names::<Source>("|")
-            );
-        }
+    pub fn new(mut watch: Vec<Source>, provider: Provider, model: Option<String>) -> Self {
         watch.sort();
         watch.dedup();
-        Ok(Self { watch, provider })
+        Self {
+            watch,
+            provider,
+            model,
+        }
+    }
+
+    /// Who judges, who reviews, and who serves them, as the file says it.
+    fn models(&self) -> String {
+        let pair = self.provider.pair();
+        match &self.model {
+            Some(model) => format!("{model} judges and reviews ({})", pair.host),
+            None => pair.label.to_string(),
+        }
+    }
+
+    /// The judge's model and the reviewer's, under `models`, with the model
+    /// named.
+    fn served(&self) -> (String, String) {
+        let pair = self.provider.pair();
+        match &self.model {
+            Some(model) => (
+                named(pair.judge_model, model),
+                named(pair.reviewer_model, model),
+            ),
+            None => (
+                pair.judge_model.to_string(),
+                pair.reviewer_model.to_string(),
+            ),
+        }
     }
 
     fn replays(&self) -> bool {
@@ -447,21 +472,26 @@ impl Choices {
     /// The file's first lines: what it watches, who judges, how to run it
     /// and where the answers go.
     fn header(&self) -> String {
-        let pair = self.provider.pair();
         let mut header = String::from("# tangent.yaml, written by `tangent init`.\n#\n");
+        if self.watch.is_empty() {
+            header.push_str("#   watches  nothing yet\n");
+        }
         for (i, w) in self.watch.iter().enumerate() {
             let lead = if i == 0 { "watches" } else { "" };
             header.push_str(&format!("#   {lead:7}  {}\n", w.pack().label));
         }
-        header.push_str(&format!("#   models   {}\n#\n", pair.label));
-        for command in self.commands() {
-            header.push_str(&format!("#   {command}\n"));
+        header.push_str(&format!("#   models   {}\n", self.models()));
+        for (i, command) in self.commands().iter().enumerate() {
+            let gap = if i == 0 { "#\n" } else { "" };
+            header.push_str(&format!("{gap}#   {command}\n"));
         }
         header.push_str(
             "#\n# What the judge flagged is in alerts.ndjson, each alert with its review in\n\
              # reviews.ndjson (those are the ones to read), and every verdict in\n\
-             # verdicts.ndjson.\n#",
+             # verdicts.ndjson.\n#\n\
+             # To watch something else, or have other models judge it, edit this file as\n",
         );
+        header.push_str(&format!("# {DIRECTIONS} says.\n#"));
         header
     }
 
@@ -476,25 +506,33 @@ impl Choices {
         let inputs: Vec<&str> = packs.iter().map(|p| p.name).collect();
         let plugins: String = self.watch.iter().map(|w| w.plugin()).collect();
         let pair = self.provider.pair();
+        let (judge_model, reviewer_model) = self.served();
         // Each part ends its last line, and so does the line it stands on.
-        let block = |text: &str| text.trim_end().to_string();
+        // With no source yet, a part says so where its nodes would be.
+        let block = |text: &str, none: &str| match text.trim_end() {
+            "" => none.to_string(),
+            text => text.to_string(),
+        };
         [
             ("{{header}}", self.header()),
-            ("{{flow}}", flow.join("\n#   ")),
-            ("{{sources}}", block(&join(|p| p.node))),
-            ("{{packs}}", block(&plugins)),
+            ("{{flow}}", block(&flow.join("\n#   "), "(no source yet)")),
+            ("{{sources}}", block(&join(|p| p.node), "  {}   # none yet")),
+            ("{{packs}}", block(&plugins, "  # (none yet)")),
             ("{{inputs}}", inputs.join(", ")),
-            ("{{judge_model}}", block(pair.judge_model)),
-            ("{{reviewer_model}}", block(pair.reviewer_model)),
-            ("{{judge}}", block(pair.judge)),
-            ("{{rows}}", block(&join(|p| p.rows))),
-            ("{{reviewer}}", block(pair.reviewer)),
+            ("{{judge_model}}", block(&judge_model, "")),
+            ("{{reviewer_model}}", block(&reviewer_model, "")),
+            ("{{judge}}", block(pair.judge, "")),
+            (
+                "{{rows}}",
+                block(&join(|p| p.rows), "        {}   # none yet"),
+            ),
+            ("{{reviewer}}", block(pair.reviewer, "")),
         ]
         .into_iter()
         .fold(CONFIG.to_string(), |config, (place, part)| {
-            // a part with nothing in it takes no line
+            // a part with nothing in it takes no line of its own
             match part.is_empty() {
-                true => config.replace(&format!("{place}\n"), ""),
+                true => config.replace(&format!("{place}\n"), "").replace(place, ""),
                 false => config.replace(place, &part),
             }
         })
@@ -565,48 +603,16 @@ fn names<T: clap::ValueEnum>(sep: &str) -> String {
     names.join(sep)
 }
 
-/// The choices: each flag's, and at a terminal a question for a flag left
-/// out. Away from a terminal a flag left out is an error that names it.
-fn choices(watch: Vec<Source>, provider: Option<Provider>) -> Result<Choices> {
-    let asks = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-    let watch = match (watch.is_empty(), asks) {
-        (false, _) => watch,
-        (true, true) => inquire::MultiSelect::new(
-            "What do you want to watch?",
-            Source::value_variants().to_vec(),
-        )
-        .with_validator(inquire::min_length!(1, "Pick at least one, with space"))
-        .prompt()
-        .context("nothing is written")?,
-        (true, false) => bail!(
-            "what to watch? This is not a terminal, so say it with --sources, one or more of {} (as --sources cloudtrail,github)",
-            names::<Source>(", ")
-        ),
-    };
-    let provider = match (provider, asks) {
-        (Some(provider), _) => provider,
-        (None, true) => inquire::Select::new(
-            "Which models judge it, and review what is flagged?",
-            Provider::value_variants().to_vec(),
-        )
-        .with_help_message(
-            "attacks caught, and ordinary records flagged of 5,304, in tangent's evals",
-        )
-        .prompt()
-        .context("nothing is written")?,
-        (None, false) => bail!(
-            "who serves the models? This is not a terminal, so say it with --provider, one of {}",
-            names::<Provider>(", ")
-        ),
-    };
-    Choices::new(watch, provider)
-}
-
-/// `tangent init` in `dir`: the choices, the files, and the plugins the
-/// config names, fetched and checked. A fetch that fails takes the files
-/// with it, so what is left runs or is nothing.
-pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> Result<()> {
-    let choices = choices(watch, provider)?;
+/// `tangent init` in `dir`: the files for what the flags name, and the
+/// plugins the config names, fetched and checked. A fetch that fails takes
+/// the files with it, so what is left loads or is nothing.
+pub async fn run(
+    dir: &Path,
+    watch: Vec<Source>,
+    provider: Option<Provider>,
+    model: Option<String>,
+) -> Result<()> {
+    let choices = Choices::new(watch, provider.unwrap_or(Provider::Anthropic), model);
     let written = choices.write(dir)?;
     let config = dir.join("tangent.yaml");
     if let Err(e) = fetch::missing(&config.canonicalize().unwrap_or(config)).await {
@@ -616,12 +622,12 @@ pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> 
         );
     }
 
-    let names: Vec<String> = written
+    let wrote: Vec<String> = written
         .iter()
         .filter_map(|p| p.file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .collect();
-    println!("\nWrote {}.", names.join(", "));
+    println!("\nWrote {}.", wrote.join(", "));
     let needs = choices.needs();
     if !needs.is_empty() {
         println!("\nIt reads these from the environment:");
@@ -633,7 +639,14 @@ pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> 
         }
     }
     if choices.provider == Provider::Local {
-        println!("\nStart your model's server first; the lines marked EDIT in tangent.yaml name its model.");
+        println!("\nStart your model's server first.");
+    }
+    if choices.watch.is_empty() {
+        println!(
+            "\nIt watches nothing yet. In an empty directory, `tangent init --sources` with one or more of {} writes it with them in; {DIRECTIONS} says how to add one to this file.",
+            names::<Source>(", ")
+        );
+        return Ok(());
     }
     println!("\nThen:");
     for command in choices.commands() {
@@ -650,6 +663,7 @@ pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::ValueEnum as _;
     use serde_yaml::Value;
     use tangent_shared::models::ModelKind;
     use tangent_shared::sources::common::SourceConfig;
@@ -667,7 +681,7 @@ mod tests {
     /// config as it loads.
     fn written(watch: &[Source], provider: Provider) -> (tempfile::TempDir, Config) {
         let dir = tempfile::tempdir().unwrap();
-        let choices = Choices::new(watch.to_vec(), provider).unwrap();
+        let choices = Choices::new(watch.to_vec(), provider, None);
         choices.write(dir.path()).unwrap();
         let cfg = Config::load(&dir.path().join("tangent.yaml"))
             .unwrap_or_else(|e| panic!("{watch:?}, {provider:?}: {e:#}"))
@@ -715,7 +729,7 @@ mod tests {
     #[test]
     fn every_place_in_the_file_is_filled() {
         for provider in Provider::value_variants() {
-            let config = Choices::new(EVERY.to_vec(), *provider).unwrap().config();
+            let config = Choices::new(EVERY.to_vec(), *provider, None).config();
             assert!(!config.contains("{{"), "{provider:?}:\n{config}");
             assert!(
                 !config.contains("\n\n\n"),
@@ -767,7 +781,7 @@ mod tests {
         ] {
             let (_dir, ours) = written(&EVERY, provider);
 
-            let choices = Choices::new(EVERY.to_vec(), provider).unwrap();
+            let choices = Choices::new(EVERY.to_vec(), provider, None);
             let packs: Vec<Pack> = EVERY.iter().map(|w| w.pack()).collect();
             let names: Vec<&str> = packs.iter().map(|p| p.name).collect();
             let includes: Vec<String> = names.iter().map(|n| format!("pack:{n}")).collect();
@@ -958,7 +972,7 @@ mod tests {
     #[test]
     fn the_commands_are_the_ones_that_read_what_is_watched() {
         let commands = |watch: &[Source]| -> Vec<&'static str> {
-            let choices = Choices::new(watch.to_vec(), Provider::Anthropic).unwrap();
+            let choices = Choices::new(watch.to_vec(), Provider::Anthropic, None);
             let config = choices.config();
             let lines = choices.commands();
             for line in &lines {
@@ -976,7 +990,7 @@ mod tests {
         assert_eq!(commands(&[Source::Cloudtrail]), [REPLAY]);
         assert_eq!(commands(&[Source::Okta, Source::Github]), [RUN]);
         assert_eq!(commands(&EVERY), [REPLAY, RUN]);
-        let all = Choices::new(EVERY.to_vec(), Provider::Anthropic).unwrap();
+        let all = Choices::new(EVERY.to_vec(), Provider::Anthropic, None);
         assert!(
             all.commands()[1].ends_with(
                 "# GitHub, Okta, Google Workspace, Supabase, from an hour back and as it happens"
@@ -987,42 +1001,118 @@ mod tests {
     }
 
     /// The sources are written once each, in one order, however the flag
-    /// named them; and a pipeline needs one.
+    /// named them.
     #[test]
-    fn the_sources_are_each_once_and_at_least_one() {
+    fn the_sources_are_each_once() {
         let named = Choices::new(
             vec![Source::Okta, Source::Cloudtrail, Source::Okta],
             Provider::Local,
-        )
-        .unwrap();
+            None,
+        );
         assert_eq!(named.watch, [Source::Cloudtrail, Source::Okta]);
-        let err = Choices::new(Vec::new(), Provider::Local).unwrap_err();
-        assert!(format!("{err:#}").contains("nothing to watch"), "{err:#}");
         assert_eq!(
             names::<Source>(","),
             "cloudtrail,github,okta,google_workspace,supabase"
         );
     }
 
-    /// Each pair's line in the question fits an 80-column terminal, with
-    /// the two columns the list's own marker takes.
+    /// With no source named, the file is the pipeline without one: it loads,
+    /// and says where its sources go.
     #[test]
-    fn a_pairs_line_fits_a_terminal() {
+    fn with_no_source_it_is_the_pipeline_without_one() {
         for provider in Provider::value_variants() {
-            let line = provider.to_string();
-            assert!(line.chars().count() <= 78, "{provider:?}: {line}");
-            assert!(provider.pair().choice.len() <= 48, "{provider:?}");
+            let dir = tempfile::tempdir().unwrap();
+            let choices = Choices::new(Vec::new(), *provider, None);
+            choices.write(dir.path()).unwrap();
+            let config = choices.config();
+            assert!(!config.contains("{{"), "{provider:?}:\n{config}");
+            assert!(
+                !config.contains("\n\n\n"),
+                "{provider:?}: a part left a gap"
+            );
+            assert!(config.contains("#   watches  nothing yet"), "{config}");
+            let cfg = Config::load(&dir.path().join("tangent.yaml"))
+                .unwrap_or_else(|e| panic!("{provider:?}: {e:#}"))
+                .config;
+            assert!(cfg.sources.is_empty(), "{provider:?}");
+            assert_eq!(cfg.inference.len(), 2, "{provider:?}");
         }
+    }
+
+    /// A model named with its provider is the judge's and the reviewer's,
+    /// by that name, with the provider's settings around it.
+    #[test]
+    fn a_model_named_is_the_judge_and_the_reviewer() {
+        let names = [
+            (Provider::Anthropic, "claude-sonnet-5-5"),
+            (Provider::Bedrock, "us.anthropic.claude-haiku-5-5"),
+            (Provider::Openrouter, "z-ai/glm-4.7-flash"),
+            (Provider::Openai, "gpt-6-luna"),
+            (Provider::Local, "qwen3.5:122b"),
+        ];
+        for (provider, name) in names {
+            let dir = tempfile::tempdir().unwrap();
+            let choices = Choices::new(vec![Source::Github], provider, Some(name.to_string()));
+            choices.write(dir.path()).unwrap();
+            let cfg = Config::load(&dir.path().join("tangent.yaml"))
+                .unwrap_or_else(|e| panic!("{provider:?}: {e:#}"))
+                .config;
+            let (_dir, measured) = written(&[Source::Github], provider);
+            let shape_of =
+                |cfg: &Config, node: &str| serde_yaml::to_value(&cfg.inference[node]).unwrap();
+            for node in ["judge", "reviewer"] {
+                assert_eq!(cfg.models[node].model, name, "{provider:?} {node}");
+                let mut as_measured = shape_of(&cfg, node);
+                as_measured["model"] = shape_of(&measured, node)["model"].clone();
+                assert_eq!(
+                    as_measured,
+                    shape_of(&measured, node),
+                    "{provider:?} {node}: only the model differs"
+                );
+            }
+            let header = choices.header();
+            assert!(
+                header.contains(&format!("{name} judges and reviews (")),
+                "{header}"
+            );
+        }
+    }
+
+    /// docs/config.md holds every part a source or a provider puts in the
+    /// file, as init writes it: the directions are for doing by hand what
+    /// the flags do.
+    #[test]
+    fn the_directions_hold_every_part_init_writes() {
+        let directions = include_str!("../../../docs/config.md");
+        for source in Source::value_variants() {
+            let pack = source.pack();
+            for part in [pack.node, &source.plugin(), pack.rows] {
+                assert!(directions.contains(part.trim_end()), "{source:?}:\n{part}");
+            }
+            for (var, _) in pack.needs {
+                assert!(directions.contains(var), "{source:?}: {var}");
+            }
+        }
+        for provider in Provider::value_variants() {
+            let pair = provider.pair();
+            for part in [pair.judge, pair.reviewer] {
+                assert!(
+                    directions.contains(part.trim_end()),
+                    "{provider:?}:\n{part}"
+                );
+            }
+        }
+        assert!(DIRECTIONS.ends_with("docs/config.md"));
     }
 
     /// A variable two parts read is asked for once: on Bedrock, the profile
     /// that reads CloudTrail is the one that calls the models.
     #[test]
     fn a_variable_is_named_once() {
-        let choices = Choices::new(vec![Source::Cloudtrail], Provider::Bedrock).unwrap();
+        let choices = Choices::new(vec![Source::Cloudtrail], Provider::Bedrock, None);
         let vars: Vec<&str> = choices.needs().into_iter().map(|(var, _)| var).collect();
         assert_eq!(vars, ["AWS_PROFILE"]);
-        let choices = Choices::new(vec![Source::Github], Provider::Anthropic).unwrap();
+        let choices = Choices::new(vec![Source::Github], Provider::Anthropic, None);
         let vars: Vec<&str> = choices.needs().into_iter().map(|(var, _)| var).collect();
         assert_eq!(vars, ["ANTHROPIC_API_KEY", "GITHUB_ORG", "GITHUB_TOKEN"]);
     }
@@ -1031,7 +1121,7 @@ mod tests {
     /// one, and every file is left as it was.
     #[test]
     fn refuses_a_file_already_there_and_writes_nothing() {
-        let choices = Choices::new(vec![Source::Cloudtrail], Provider::Anthropic).unwrap();
+        let choices = Choices::new(vec![Source::Cloudtrail], Provider::Anthropic, None);
         for (taken, _) in choices.files() {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(taken), "mine").unwrap();
