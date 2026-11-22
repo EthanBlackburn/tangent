@@ -89,10 +89,11 @@ pub struct InferenceConfig {
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
 
-    /// Attempts after the first for a request that got no reply: a timeout, a
-    /// connection or server error, an empty reply. They back off 1 s, 2 s,
-    /// 4 s, ... A reply that came back but is not JSON is not retried; it
-    /// lands as the error.
+    /// Attempts after the first for a request that got no reply (a timeout, a
+    /// connection or server error), which back off 1 s, 2 s, 4 s, ..., and
+    /// for one record's reply with no answer in it (no text, not JSON, an
+    /// empty list). A reply to several records that answers none is asked
+    /// again in halves instead.
     #[serde(default = "default_retries")]
     pub retries: u32,
 
