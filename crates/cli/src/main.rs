@@ -95,15 +95,15 @@ enum Commands {
 
     /// Write tangent.yaml here, the whole pipeline in the one file: the
     /// sources you watch, a model that judges every record and one that
-    /// reviews what it flagged. At a terminal it asks what a flag leaves
-    /// out. It fetches the plugins the config names, and writes over nothing
+    /// reviews what it flagged. It asks what to watch and who serves the
+    /// models, in menus at a terminal. It fetches the plugins the config
+    /// names, and writes over nothing
     Init {
-        /// What to watch, one or more: --sources cloudtrail,github
-        #[arg(long, value_enum, value_delimiter = ',')]
-        sources: Vec<init::Source>,
-        /// Who serves the models; each brings its pair, a judge and a reviewer
-        #[arg(long, value_enum)]
-        provider: Option<init::Provider>,
+        /// For an agent, which has no terminal for the menus: ask nothing
+        /// and write the default pipeline (CloudTrail, judged and reviewed
+        /// through Anthropic's API), to edit as docs/config.md says
+        #[arg(long)]
+        skip_tui: bool,
     },
 
     /// Read a past range of the config's sources through it, as fast as it
@@ -274,9 +274,7 @@ async fn main() -> Result<()> {
 
         Commands::Config { config } => print!("{}", show_config(&config)?),
 
-        Commands::Init { sources, provider } => {
-            init::run(Path::new("."), sources, provider).await?
-        }
+        Commands::Init { skip_tui } => init::run(Path::new("."), skip_tui).await?,
 
         Commands::Replay { config, from, to } => {
             let config = config.canonicalize().unwrap_or(config);

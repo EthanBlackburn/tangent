@@ -4,11 +4,12 @@
 //! file tangent keeps: every node, its settings and its `inputs` are in the
 //! file written, to read and to edit.
 //!
-//! `--sources` and `--provider` answer the two questions, for a script or an
-//! agent: a question is asked only at a terminal, and only when its flag was
-//! left out. The plugins the config names are fetched, and the attestation
-//! of each build checked, before a file is written: init leaves a pipeline
-//! that runs, or nothing.
+//! The questions are menus, so init asks them only at a terminal. An agent
+//! runs `tangent init --skip-tui`: nothing is asked, the default pipeline is
+//! written, and docs/config.md says how to change what it watches and who
+//! serves the models. The plugins the config names are fetched, and the
+//! attestation of each build checked, before a file is written: init leaves
+//! a pipeline that runs, or nothing.
 
 use std::fmt;
 use std::fs::OpenOptions;
@@ -34,6 +35,9 @@ const PREBUILT: &str =
 /// as they are written.
 const REPLAY: &str = "tangent replay --config tangent.yaml --from 1d";
 const RUN: &str = "tangent run --config tangent.yaml";
+
+/// Where the directions for changing a written config are.
+const DIRECTIONS: &str = "https://github.com/EthanBlackburn/tangent/blob/main/docs/config.md";
 
 /// What the judge and the reviewer are told, written beside tangent.yaml as
 /// the judge pack has them: the file's name, and its path under packs/.
@@ -64,7 +68,7 @@ type Needs = &'static [(&'static str, &'static str)];
 
 /// What a source brings to the config.
 struct Pack {
-    /// The pack, and its plugin: what `--sources` takes.
+    /// The pack, and its plugin.
     name: &'static str,
     /// What the question calls it.
     label: &'static str,
@@ -370,14 +374,19 @@ impl Choices {
     /// `watch` must name a source: a pipeline with none reads nothing.
     pub fn new(mut watch: Vec<Source>, provider: Provider) -> Result<Self> {
         if watch.is_empty() {
-            bail!(
-                "nothing to watch: name a source, as --sources {}",
-                names::<Source>("|")
-            );
+            bail!("nothing to watch: a pipeline needs a source");
         }
         watch.sort();
         watch.dedup();
         Ok(Self { watch, provider })
+    }
+
+    /// What is written when nothing is asked: each question's first answer.
+    fn unasked() -> Self {
+        Self {
+            watch: vec![Source::Cloudtrail],
+            provider: Provider::Anthropic,
+        }
     }
 
     fn replays(&self) -> bool {
@@ -442,8 +451,10 @@ impl Choices {
         header.push_str(
             "#\n# What the judge flagged is in alerts.ndjson, each alert with its review in\n\
              # reviews.ndjson (those are the ones to read), and every verdict in\n\
-             # verdicts.ndjson.\n#",
+             # verdicts.ndjson.\n#\n\
+             # To watch something else, or have other models judge it, edit this file as\n",
         );
+        header.push_str(&format!("# {DIRECTIONS} says.\n#"));
         header
     }
 
@@ -531,58 +542,42 @@ fn remove(paths: &[PathBuf]) {
     }
 }
 
-/// Every value of a flag, as it is written, joined by `sep`.
-fn names<T: clap::ValueEnum>(sep: &str) -> String {
-    let names: Vec<String> = T::value_variants()
-        .iter()
-        .filter_map(|v| v.to_possible_value())
-        .map(|v| v.get_name().to_string())
-        .collect();
-    names.join(sep)
-}
-
-/// The choices: each flag's, and at a terminal a question for a flag left
-/// out. Away from a terminal a flag left out is an error that names it.
-fn choices(watch: Vec<Source>, provider: Option<Provider>) -> Result<Choices> {
-    let asks = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-    let watch = match (watch.is_empty(), asks) {
-        (false, _) => watch,
-        (true, true) => inquire::MultiSelect::new(
-            "What do you want to watch?",
-            Source::value_variants().to_vec(),
-        )
-        .with_validator(inquire::min_length!(1, "Pick at least one, with space"))
-        .prompt()
-        .context("nothing is written")?,
-        (true, false) => bail!(
-            "what to watch? This is not a terminal, so say it with --sources, one or more of {} (as --sources cloudtrail,github)",
-            names::<Source>(", ")
-        ),
-    };
-    let provider = match (provider, asks) {
-        (Some(provider), _) => provider,
-        (None, true) => inquire::Select::new(
-            "Which models judge it, and review what is flagged?",
-            Provider::value_variants().to_vec(),
-        )
-        .with_help_message(
-            "attacks caught, and ordinary records flagged of 5,304, in tangent's evals",
-        )
-        .prompt()
-        .context("nothing is written")?,
-        (None, false) => bail!(
-            "who serves the models? This is not a terminal, so say it with --provider, one of {}",
-            names::<Provider>(", ")
-        ),
-    };
+/// The choices: at a terminal a menu for each question, and with
+/// `skip_tui` the default, with nothing asked. Away from a terminal there is
+/// no menu to draw, so without `skip_tui` it is an error that names it.
+fn choices(skip_tui: bool) -> Result<Choices> {
+    if skip_tui {
+        return Ok(Choices::unasked());
+    }
+    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        bail!(
+            "init asks its two questions in menus, and this is not a terminal. An agent runs `tangent init --skip-tui`: it asks nothing and writes the default pipeline ({}; {}), to edit as {DIRECTIONS} says",
+            Source::Cloudtrail,
+            Provider::Anthropic.pair().label
+        );
+    }
+    let watch = inquire::MultiSelect::new(
+        "What do you want to watch?",
+        Source::value_variants().to_vec(),
+    )
+    .with_validator(inquire::min_length!(1, "Pick at least one, with space"))
+    .prompt()
+    .context("nothing is written")?;
+    let provider = inquire::Select::new(
+        "Which models judge it, and review what is flagged?",
+        Provider::value_variants().to_vec(),
+    )
+    .with_help_message("attacks caught, and ordinary records flagged of 5,304, in tangent's evals")
+    .prompt()
+    .context("nothing is written")?;
     Choices::new(watch, provider)
 }
 
 /// `tangent init` in `dir`: the choices, the files, and the plugins the
 /// config names, fetched and checked. A fetch that fails takes the files
 /// with it, so what is left runs or is nothing.
-pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> Result<()> {
-    let choices = choices(watch, provider)?;
+pub async fn run(dir: &Path, skip_tui: bool) -> Result<()> {
+    let choices = choices(skip_tui)?;
     let written = choices.write(dir)?;
     let config = dir.join("tangent.yaml");
     if let Err(e) = fetch::missing(&config.canonicalize().unwrap_or(config)).await {
@@ -610,6 +605,13 @@ pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> 
     }
     if choices.provider == Provider::Local {
         println!("\nStart your model's server first; the lines marked EDIT in tangent.yaml name its model.");
+    }
+    if skip_tui {
+        println!(
+            "\nNothing was asked: this is the default, {} and {}. To watch something else, or have other models judge it, edit tangent.yaml as {DIRECTIONS} says.",
+            Source::Cloudtrail,
+            choices.provider.pair().label
+        );
     }
     println!("\nThen:");
     for command in choices.commands() {
@@ -976,10 +978,41 @@ mod tests {
         assert_eq!(named.watch, [Source::Cloudtrail, Source::Okta]);
         let err = Choices::new(Vec::new(), Provider::Local).unwrap_err();
         assert!(format!("{err:#}").contains("nothing to watch"), "{err:#}");
-        assert_eq!(
-            names::<Source>(","),
-            "cloudtrail,github,okta,google_workspace,supabase"
-        );
+    }
+
+    /// With nothing asked, the config is each question's first answer.
+    #[test]
+    fn unasked_it_is_each_questions_first_answer() {
+        let unasked = Choices::unasked();
+        assert_eq!(unasked.watch, [Source::value_variants()[0]]);
+        assert_eq!(unasked.provider, Provider::value_variants()[0]);
+    }
+
+    /// docs/config.md holds every part a source or a provider puts in the
+    /// file, as init writes it: the directions are for editing by hand what
+    /// a menu would have chosen.
+    #[test]
+    fn the_directions_hold_every_part_init_writes() {
+        let directions = include_str!("../../../docs/config.md");
+        for source in Source::value_variants() {
+            let pack = source.pack();
+            for part in [pack.node, &source.plugin(), pack.rows] {
+                assert!(directions.contains(part.trim_end()), "{source:?}:\n{part}");
+            }
+            for (var, _) in pack.needs {
+                assert!(directions.contains(var), "{source:?}: {var}");
+            }
+        }
+        for provider in Provider::value_variants() {
+            let pair = provider.pair();
+            for part in [pair.judge, pair.reviewer] {
+                assert!(
+                    directions.contains(part.trim_end()),
+                    "{provider:?}:\n{part}"
+                );
+            }
+        }
+        assert!(DIRECTIONS.ends_with("docs/config.md"));
     }
 
     /// Each pair's line in the question fits an 80-column terminal, with
