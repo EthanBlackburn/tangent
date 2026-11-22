@@ -127,16 +127,13 @@ or a project's node_modules, not a global install), `unsigned` and
 `rename_over`. A command line is kept whole, to 32,000 bytes (24,000 an
 argument): what the lake holds is the command, so padding one hides nothing
 from a reader of the lake. One longer than that is kept by its start and
-its end with what is between counted. A secret given on a command line is
-taken out before the record is built, and what it was given as stays:
-`--password [secret: 7 bytes]`, `Authorization: Bearer [secret: 40 bytes]`.
-That is the value of a credential header, of a flag or a variable named for
-a secret (`--token`, `GITHUB_TOKEN=`, `"password":`), the password in a
-URL, a signed URL's signature, and a key in its vendor's own format
-(`ghp_…`, `sk-ant-…`, `AKIA…`, a JSON Web Token), whose start is kept. A
-value the shell fills in or runs a command for (`$TOKEN`, `$(…)`) is not
-the secret and is kept. It reads shapes (`src/secrets.rs`), so a secret
-written some other way is kept as written. About 800 bytes a record.
+its end with what is between counted. A key in its vendor's own format
+(`ghp_…`, `sk-ant-…`, `AKIA…`, a JSON Web Token) is taken out before the
+record is built, and its start stays, which says whose it is:
+`ghp_[secret: 36 bytes]`. Nothing else on a line is taken out: a password,
+or a value under a name like `--token` or `PASSWORD=`, is kept as written.
+Whoever writes the line picks the name, so taking out what follows one
+would hide a command put there (`src/secrets.rs`). About 800 bytes a record.
 
 ## What was already running
 
