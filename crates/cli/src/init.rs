@@ -5,8 +5,9 @@
 //!
 //! It asks nothing. `--sources` names what to watch, and without it the
 //! pipeline is written with no source yet. `--provider` and `--model`, given
-//! together, name who serves the model and the model, which judges and
-//! reviews; without them it is the two models measured on Anthropic's API.
+//! together, name who serves the models and the models: one name judges and
+//! reviews, and two, with a comma, are the judge's and then the reviewer's.
+//! Without them it is the two models measured on Anthropic's API.
 //! docs/config.md says how to change either in the file by hand. The plugins
 //! the config names are fetched, and the attestation of each build checked,
 //! before a file is written: init leaves a pipeline that loads, or nothing.
@@ -369,9 +370,24 @@ impl Provider {
 pub struct Choices {
     watch: Vec<Source>,
     provider: Provider,
-    /// The one model that judges and reviews, by the name its provider
-    /// takes. Without it, the provider's two as they were measured.
-    model: Option<String>,
+    /// The model that judges and the one that reviews, each by the name
+    /// its provider takes. Without them, the provider's two as measured.
+    models: Option<(String, String)>,
+}
+
+/// What `--model` names: one model, which judges and reviews, or the
+/// judge's and then the reviewer's, with a comma.
+pub fn models(flag: &str) -> Result<(String, String)> {
+    let names: Vec<&str> = flag.split(',').map(str::trim).collect();
+    match names[..] {
+        [both] if !both.is_empty() => Ok((both.to_string(), both.to_string())),
+        [judge, reviewer] if !judge.is_empty() && !reviewer.is_empty() => {
+            Ok((judge.to_string(), reviewer.to_string()))
+        }
+        _ => bail!(
+            "--model takes one model's name, or the judge's and then the reviewer's with a comma, and `{flag}` is neither"
+        ),
+    }
 }
 
 /// `block` with its `model` line naming `model`.
@@ -388,33 +404,42 @@ fn named(block: &str, model: &str) -> String {
 }
 
 impl Choices {
-    pub fn new(mut watch: Vec<Source>, provider: Provider, model: Option<String>) -> Self {
+    pub fn new(
+        mut watch: Vec<Source>,
+        provider: Provider,
+        models: Option<(String, String)>,
+    ) -> Self {
         watch.sort();
         watch.dedup();
         Self {
             watch,
             provider,
-            model,
+            models,
         }
     }
 
     /// Who judges, who reviews, and who serves them, as the file says it.
     fn models(&self) -> String {
         let pair = self.provider.pair();
-        match &self.model {
-            Some(model) => format!("{model} judges and reviews ({})", pair.host),
+        match &self.models {
+            Some((judge, reviewer)) if judge == reviewer => {
+                format!("{judge} judges and reviews ({})", pair.host)
+            }
+            Some((judge, reviewer)) => {
+                format!("{judge} judges, {reviewer} reviews ({})", pair.host)
+            }
             None => pair.label.to_string(),
         }
     }
 
-    /// The judge's model and the reviewer's, under `models`, with the model
-    /// named.
+    /// The judge's model and the reviewer's, under `models`, with each
+    /// model named.
     fn served(&self) -> (String, String) {
         let pair = self.provider.pair();
-        match &self.model {
-            Some(model) => (
-                named(pair.judge_model, model),
-                named(pair.reviewer_model, model),
+        match &self.models {
+            Some((judge, reviewer)) => (
+                named(pair.judge_model, judge),
+                named(pair.reviewer_model, reviewer),
             ),
             None => (
                 pair.judge_model.to_string(),
@@ -612,7 +637,8 @@ pub async fn run(
     provider: Option<Provider>,
     model: Option<String>,
 ) -> Result<()> {
-    let choices = Choices::new(watch, provider.unwrap_or(Provider::Anthropic), model);
+    let models = model.as_deref().map(models).transpose()?;
+    let choices = Choices::new(watch, provider.unwrap_or(Provider::Anthropic), models);
     let written = choices.write(dir)?;
     let config = dir.join("tangent.yaml");
     if let Err(e) = fetch::missing(&config.canonicalize().unwrap_or(config)).await {
@@ -1039,20 +1065,46 @@ mod tests {
         }
     }
 
-    /// A model named with its provider is the judge's and the reviewer's,
-    /// by that name, with the provider's settings around it.
+    /// The models named with a provider are the judge's and the reviewer's,
+    /// by those names, with the provider's settings around each: one name
+    /// is both, and two are the judge's and then the reviewer's.
     #[test]
-    fn a_model_named_is_the_judge_and_the_reviewer() {
-        let names = [
-            (Provider::Anthropic, "claude-sonnet-5-5"),
-            (Provider::Bedrock, "us.anthropic.claude-haiku-5-5"),
-            (Provider::Openrouter, "z-ai/glm-4.7-flash"),
-            (Provider::Openai, "gpt-6-luna"),
-            (Provider::Local, "qwen3.5:122b"),
+    fn the_models_named_are_the_judge_and_the_reviewer() {
+        let named = [
+            (
+                Provider::Anthropic,
+                "claude-sonnet-5-5",
+                "judges and reviews",
+            ),
+            (
+                Provider::Bedrock,
+                "us.anthropic.claude-haiku-5-5",
+                "judges and reviews",
+            ),
+            (
+                Provider::Openrouter,
+                "z-ai/glm-4.7-flash",
+                "judges and reviews",
+            ),
+            (
+                Provider::Openai,
+                "gpt-6-luna, gpt-6.1-terra",
+                "gpt-6-luna judges, gpt-6.1-terra reviews",
+            ),
+            (
+                Provider::Local,
+                "qwen3.5:122b,glm-4.7-flash",
+                "qwen3.5:122b judges, glm-4.7-flash reviews",
+            ),
         ];
-        for (provider, name) in names {
+        for (provider, flag, says) in named {
+            let (judge, reviewer) = models(flag).unwrap();
             let dir = tempfile::tempdir().unwrap();
-            let choices = Choices::new(vec![Source::Github], provider, Some(name.to_string()));
+            let choices = Choices::new(
+                vec![Source::Github],
+                provider,
+                Some((judge.clone(), reviewer.clone())),
+            );
             choices.write(dir.path()).unwrap();
             let cfg = Config::load(&dir.path().join("tangent.yaml"))
                 .unwrap_or_else(|e| panic!("{provider:?}: {e:#}"))
@@ -1060,8 +1112,8 @@ mod tests {
             let (_dir, measured) = written(&[Source::Github], provider);
             let shape_of =
                 |cfg: &Config, node: &str| serde_yaml::to_value(&cfg.inference[node]).unwrap();
-            for node in ["judge", "reviewer"] {
-                assert_eq!(cfg.models[node].model, name, "{provider:?} {node}");
+            for (node, name) in [("judge", &judge), ("reviewer", &reviewer)] {
+                assert_eq!(&cfg.models[node].model, name, "{provider:?} {node}");
                 let mut as_measured = shape_of(&cfg, node);
                 as_measured["model"] = shape_of(&measured, node)["model"].clone();
                 assert_eq!(
@@ -1071,9 +1123,20 @@ mod tests {
                 );
             }
             let header = choices.header();
+            assert!(header.contains(says), "{provider:?}: {header}");
+        }
+    }
+
+    /// `--model` is one name or two: anything else is an error that says so.
+    #[test]
+    fn a_model_flag_is_one_name_or_two() {
+        assert_eq!(models("a").unwrap(), ("a".to_string(), "a".to_string()));
+        assert_eq!(models("a, b").unwrap(), ("a".to_string(), "b".to_string()));
+        for flag in ["", "a,", ",b", "a,b,c"] {
+            let err = format!("{:#}", models(flag).unwrap_err());
             assert!(
-                header.contains(&format!("{name} judges and reviews (")),
-                "{header}"
+                err.contains("one model's name, or the judge's"),
+                "{flag}: {err}"
             );
         }
     }

@@ -102,13 +102,14 @@ enum Commands {
         /// it the pipeline is written with no source yet
         #[arg(long, value_enum, value_delimiter = ',')]
         sources: Vec<init::Source>,
-        /// Who serves the model, with --model. Without the two, Claude
+        /// Who serves the models, with --model. Without the two, Claude
         /// Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through
         /// Anthropic's API
         #[arg(long, value_enum, requires = "model")]
         provider: Option<init::Provider>,
-        /// The model that judges and reviews, by the exact name its
-        /// provider takes, with --provider
+        /// The model, by the exact name its provider takes, with
+        /// --provider: one judges and reviews, and two with a comma are
+        /// the judge's, then the reviewer's (--model gpt-6-luna,gpt-6.1-terra)
         #[arg(long, requires = "provider")]
         model: Option<String>,
     },
