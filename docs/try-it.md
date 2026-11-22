@@ -16,7 +16,7 @@ tangent init
 
 It asks two questions. The first is what to watch, one or more of:
 
-| `--sources` | reads | it needs |
+| source | reads | it needs |
 |---|---|---|
 | `cloudtrail` | AWS: CloudTrail | an AWS profile that can read CloudTrail (`cloudtrail:LookupEvents`): `$AWS_PROFILE`, or `default` |
 | `github` | GitHub: an organization's audit log | `GITHUB_ORG`, and `GITHUB_TOKEN` with `read:audit_log` |
@@ -26,7 +26,7 @@ It asks two questions. The first is what to watch, one or more of:
 
 The second is who serves the models. Each provider brings its pair: one judges every record and flags freely, and the other reviews each actor's alerts, with the records to query, and clears what turns out to be ordinary work. Each pair is written with the settings it was measured with, over the logs [tangent-eval](https://github.com/EthanBlackburn/tangent-eval) builds: 71 attacks, and 5,304 ordinary records a model reads.
 
-| `--provider` | judge, then reviewer | attacks caught, of 71 | ordinary records flagged after review, of 5,304 | it needs |
+| provider | judge, then reviewer | attacks caught, of 71 | ordinary records flagged after review, of 5,304 | it needs |
 |---|---|---|---|---|
 | `anthropic` | Claude Haiku 5.5, Claude Sonnet 5.5, through Anthropic's API | 70 (one run) | 40 | `ANTHROPIC_API_KEY` |
 | `bedrock` | the same pair on Amazon Bedrock | | | an AWS profile with Bedrock access to both models in every US region: the models are called in us-west-2, and their `us.` profiles may serve a call from another |
@@ -36,11 +36,13 @@ The second is who serves the models. Each provider brings its pair: one judges e
 
 The corpus is one made-up company, and 36 of its attacks are cases the judge's brief was written against: it says nothing of how much a pair flags on your logs.
 
-The flags answer the questions instead, for a script or an agent, which init asks nothing:
+The questions are menus, so init asks them only at a terminal. An agent, which has none, skips them:
 
 ```bash
-tangent init --sources cloudtrail,github --provider anthropic
+tangent init --skip-tui
 ```
+
+That asks nothing and writes the default, CloudTrail with the `anthropic` pair. [Editing tangent.yaml by hand](config.md) is how to change what it watches and who serves the models: it has every block the menus would have written.
 
 Init then fetches the plugins the config names, checks each against the attestation of its build, and writes four files:
 
