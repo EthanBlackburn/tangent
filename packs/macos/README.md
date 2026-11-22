@@ -124,11 +124,10 @@ identity, and an ad hoc signature is the binary's hash). `_norm.target` is
 the file; `_facts` adds `steering_env`,
 `scratch_program` (it, or the script it runs, is in /tmp, a cache, Downloads
 or a project's node_modules, not a global install), `unsigned` and
-`rename_over`. Command lines are cut, to about 400 bytes an argument and
-1,500 in all, and kept by their start and their end with what is between
-counted: what a command is given last (the address it sends to, the end of
-a script on its line) is past where a cut from the right stops. About 700
-bytes a record.
+`rename_over`. A command line is kept whole, to 32,000 bytes (24,000 an
+argument): what the lake holds is the command, so padding one hides nothing
+from a reader of the lake. One longer than that is kept by its start and
+its end with what is between counted. About 800 bytes a record.
 
 ## What was already running
 
