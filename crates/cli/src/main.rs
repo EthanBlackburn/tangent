@@ -95,16 +95,11 @@ enum Commands {
 
     /// Write tangent.yaml here, the whole pipeline in the one file: the
     /// sources you watch, a model that judges every record and one that
-    /// reviews what it flagged. At a terminal it asks what a flag leaves
-    /// out. It fetches the plugins the config names, and writes over nothing
-    Init {
-        /// What to watch, one or more: --sources cloudtrail,github
-        #[arg(long, value_enum, value_delimiter = ',')]
-        sources: Vec<init::Source>,
-        /// Who serves the models; each brings its pair, a judge and a reviewer
-        #[arg(long, value_enum)]
-        provider: Option<init::Provider>,
-    },
+    /// reviews what it flagged. It asks what to watch and who serves the
+    /// models: at a terminal as menus, and away from one it prints the two
+    /// questions and reads the answers from stdin, a line each. It fetches
+    /// the plugins the config names, and writes over nothing
+    Init,
 
     /// Read a past range of the config's sources through it, as fast as it
     /// is read, then close every group and wait for the judge. Each source
@@ -274,9 +269,7 @@ async fn main() -> Result<()> {
 
         Commands::Config { config } => print!("{}", show_config(&config)?),
 
-        Commands::Init { sources, provider } => {
-            init::run(Path::new("."), sources, provider).await?
-        }
+        Commands::Init => init::run(Path::new(".")).await?,
 
         Commands::Replay { config, from, to } => {
             let config = config.canonicalize().unwrap_or(config);

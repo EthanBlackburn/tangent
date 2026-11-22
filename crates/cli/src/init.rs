@@ -4,18 +4,18 @@
 //! file tangent keeps: every node, its settings and its `inputs` are in the
 //! file written, to read and to edit.
 //!
-//! `--sources` and `--provider` answer the two questions, for a script or an
-//! agent: a question is asked only at a terminal, and only when its flag was
-//! left out. The plugins the config names are fetched, and the attestation
-//! of each build checked, before a file is written: init leaves a pipeline
-//! that runs, or nothing.
+//! At a terminal the two questions are menus. Away from one, for a script or
+//! an agent, init prints them with every answer's name and reads the answers
+//! from stdin, a line each. The plugins the config names are fetched, and
+//! the attestation of each build checked, before a file is written: init
+//! leaves a pipeline that runs, or nothing.
 
 use std::fmt;
 use std::fs::OpenOptions;
-use std::io::{ErrorKind, IsTerminal as _, Write as _};
+use std::io::{BufRead, ErrorKind, IsTerminal as _, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::ValueEnum as _;
 use tangent_shared::packs;
 
@@ -64,7 +64,7 @@ type Needs = &'static [(&'static str, &'static str)];
 
 /// What a source brings to the config.
 struct Pack {
-    /// The pack, and its plugin: what `--sources` takes.
+    /// The pack, and its plugin: the name the source is answered by.
     name: &'static str,
     /// What the question calls it.
     label: &'static str,
@@ -371,8 +371,8 @@ impl Choices {
     pub fn new(mut watch: Vec<Source>, provider: Provider) -> Result<Self> {
         if watch.is_empty() {
             bail!(
-                "nothing to watch: name a source, as --sources {}",
-                names::<Source>("|")
+                "nothing to watch: name a source, one or more of {}",
+                names::<Source>(", ")
             );
         }
         watch.sort();
@@ -531,58 +531,109 @@ fn remove(paths: &[PathBuf]) {
     }
 }
 
-/// Every value of a flag, as it is written, joined by `sep`.
-fn names<T: clap::ValueEnum>(sep: &str) -> String {
-    let names: Vec<String> = T::value_variants()
-        .iter()
-        .filter_map(|v| v.to_possible_value())
+/// The name an answer is given by.
+fn name<T: clap::ValueEnum>(value: &T) -> String {
+    value
+        .to_possible_value()
         .map(|v| v.get_name().to_string())
-        .collect();
+        .unwrap_or_default()
+}
+
+/// Every answer to a question, by name, joined by `sep`.
+fn names<T: clap::ValueEnum>(sep: &str) -> String {
+    let names: Vec<String> = T::value_variants().iter().map(name).collect();
     names.join(sep)
 }
 
-/// The choices: each flag's, and at a terminal a question for a flag left
-/// out. Away from a terminal a flag left out is an error that names it.
-fn choices(watch: Vec<Source>, provider: Option<Provider>) -> Result<Choices> {
-    let asks = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-    let watch = match (watch.is_empty(), asks) {
-        (false, _) => watch,
-        (true, true) => inquire::MultiSelect::new(
-            "What do you want to watch?",
-            Source::value_variants().to_vec(),
-        )
-        .with_validator(inquire::min_length!(1, "Pick at least one, with space"))
-        .prompt()
-        .context("nothing is written")?,
-        (true, false) => bail!(
-            "what to watch? This is not a terminal, so say it with --sources, one or more of {} (as --sources cloudtrail,github)",
-            names::<Source>(", ")
-        ),
+/// The two questions as text, each answer by its name: what init prints
+/// away from a terminal, where it can draw no menu.
+fn questions() -> String {
+    let mut text = String::from(
+        "tangent init writes tangent.yaml from two answers. This is not a terminal, so it reads them from stdin, a line each:\n\
+         \n  printf 'cloudtrail,github\\nanthropic\\n' | tangent init\n\
+         \n1. What do you want to watch? One or more of these names, with commas between:\n\n",
+    );
+    for source in Source::value_variants() {
+        text += &format!("  {:18}{source}\n", name(source));
+    }
+    text += "\n2. Who serves the models? One of these names. Each brings a model that judges every record and one that reviews what it flagged; in brackets, the attacks the two caught and the ordinary records they flagged, of 5,304, in tangent's evals:\n\n";
+    for provider in Provider::value_variants() {
+        let pair = provider.pair();
+        text += &format!(
+            "  {:12}{} [{}]\n",
+            name(provider),
+            pair.label,
+            pair.measured
+        );
+    }
+    text
+}
+
+/// The choices away from a terminal: the questions are written to `asked`,
+/// and a line of `answers` is read for each.
+fn answered(answers: impl BufRead, mut asked: impl Write) -> Result<Choices> {
+    let _ = writeln!(asked, "{}", questions());
+    let mut lines = answers.lines();
+    let mut answer = |question: &str| -> Result<String> {
+        match lines
+            .next()
+            .transpose()
+            .context("stdin could not be read")?
+        {
+            Some(line) if !line.trim().is_empty() => Ok(line.trim().to_string()),
+            _ => bail!("{question} has no answer on stdin: answer both, a line each, as above"),
+        }
     };
-    let provider = match (provider, asks) {
-        (Some(provider), _) => provider,
-        (None, true) => inquire::Select::new(
-            "Which models judge it, and review what is flagged?",
-            Provider::value_variants().to_vec(),
-        )
-        .with_help_message(
-            "attacks caught, and ordinary records flagged of 5,304, in tangent's evals",
-        )
-        .prompt()
-        .context("nothing is written")?,
-        (None, false) => bail!(
-            "who serves the models? This is not a terminal, so say it with --provider, one of {}",
+    let watch = answer("question 1, what to watch,")?
+        .split(',')
+        .map(|name| {
+            Source::from_str(name.trim(), true).map_err(|_| {
+                anyhow!(
+                    "`{}` is not a source: question 1 takes one or more of {}",
+                    name.trim(),
+                    names::<Source>(", ")
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let provider = answer("question 2, who serves the models,")?;
+    let provider = Provider::from_str(&provider, true).map_err(|_| {
+        anyhow!(
+            "`{provider}` does not serve the models: question 2 takes one of {}",
             names::<Provider>(", ")
-        ),
-    };
+        )
+    })?;
+    Choices::new(watch, provider)
+}
+
+/// The choices: at a terminal a menu for each question, and away from one
+/// the questions as text and the answers from stdin.
+fn choices() -> Result<Choices> {
+    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        return answered(std::io::stdin().lock(), std::io::stderr());
+    }
+    let watch = inquire::MultiSelect::new(
+        "What do you want to watch?",
+        Source::value_variants().to_vec(),
+    )
+    .with_validator(inquire::min_length!(1, "Pick at least one, with space"))
+    .prompt()
+    .context("nothing is written")?;
+    let provider = inquire::Select::new(
+        "Which models judge it, and review what is flagged?",
+        Provider::value_variants().to_vec(),
+    )
+    .with_help_message("attacks caught, and ordinary records flagged of 5,304, in tangent's evals")
+    .prompt()
+    .context("nothing is written")?;
     Choices::new(watch, provider)
 }
 
 /// `tangent init` in `dir`: the choices, the files, and the plugins the
 /// config names, fetched and checked. A fetch that fails takes the files
 /// with it, so what is left runs or is nothing.
-pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> Result<()> {
-    let choices = choices(watch, provider)?;
+pub async fn run(dir: &Path) -> Result<()> {
+    let choices = choices()?;
     let written = choices.write(dir)?;
     let config = dir.join("tangent.yaml");
     if let Err(e) = fetch::missing(&config.canonicalize().unwrap_or(config)).await {
@@ -980,6 +1031,49 @@ mod tests {
             names::<Source>(","),
             "cloudtrail,github,okta,google_workspace,supabase"
         );
+    }
+
+    /// Away from a terminal the questions are text that names every answer,
+    /// and the answers are lines.
+    #[test]
+    fn away_from_a_terminal_the_answers_are_lines() {
+        let mut asked = Vec::new();
+        let choices = answered("okta, cloudtrail\nlocal\n".as_bytes(), &mut asked).unwrap();
+        assert_eq!(choices.watch, [Source::Cloudtrail, Source::Okta]);
+        assert_eq!(choices.provider, Provider::Local);
+        let asked = String::from_utf8(asked).unwrap();
+        for answer in names::<Source>(",")
+            .split(',')
+            .chain(names::<Provider>(",").split(','))
+        {
+            assert!(
+                asked.contains(&format!("\n  {answer} ")),
+                "{answer}: {asked}"
+            );
+        }
+        assert!(asked.contains("| tangent init"), "{asked}");
+    }
+
+    /// An answer left out or misnamed is an error that says which question,
+    /// and what it takes.
+    #[test]
+    fn an_answer_left_out_or_misnamed_says_which() {
+        let error = |answers: &str| {
+            let err = answered(answers.as_bytes(), std::io::sink()).unwrap_err();
+            format!("{err:#}")
+        };
+        assert!(error("").contains("question 1"), "{}", error(""));
+        assert!(error("\nlocal\n").contains("question 1"));
+        assert!(error("cloudtrail\n").contains("question 2"));
+        let misnamed = error("cloudtrail,splunk\nlocal\n");
+        assert!(misnamed.contains("`splunk` is not a source"), "{misnamed}");
+        assert!(misnamed.contains("google_workspace"), "{misnamed}");
+        let misnamed = error("cloudtrail\nclaude\n");
+        assert!(
+            misnamed.contains("`claude` does not serve the models"),
+            "{misnamed}"
+        );
+        assert!(misnamed.contains("openrouter"), "{misnamed}");
     }
 
     /// Each pair's line in the question fits an 80-column terminal, with
