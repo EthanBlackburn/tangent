@@ -28,25 +28,26 @@ Without it, init writes the pipeline with no source yet.
 
 Two models read the records: one judges every record and flags freely, and the other reviews each actor's alerts, with the records to query, and clears what turns out to be ordinary work. Init writes Claude Haiku 5.5 as the judge and Claude Sonnet 5.5 as the reviewer, through Anthropic's API, with `ANTHROPIC_API_KEY`.
 
-`--provider` and `--model`, given together, name another: who serves the model, and the model by the exact name the provider takes. That one model judges and reviews:
+`--provider` and `--model`, given together, name others: who serves the models, and each model by the exact name the provider takes. One name judges and reviews, and two with a comma are the judge's, then the reviewer's:
 
 ```bash
 tangent init --sources okta --provider openrouter --model deepseek/deepseek-v4-flash-0731
+tangent init --sources okta --provider openai --model gpt-6-luna,gpt-6.1-terra
 ```
 
 Each provider's settings were measured with the models below, over the logs [tangent-eval](https://github.com/EthanBlackburn/tangent-eval) builds: 71 attacks, and 5,304 ordinary records a model reads.
 
-| `--provider` | measured with: judge, then reviewer | attacks caught, of 71 | ordinary records flagged after review, of 5,304 | it needs |
+| `--provider` | measured with: judge, then reviewer, and their names for `--model` | attacks caught, of 71 | ordinary records flagged after review, of 5,304 | it needs |
 |---|---|---|---|---|
-| `anthropic` | Claude Haiku 5.5, Claude Sonnet 5.5, through Anthropic's API: what init writes without the two flags | 70 (one run) | 40 | `ANTHROPIC_API_KEY` |
-| `bedrock` | the same two on Amazon Bedrock | | | an AWS profile with Bedrock access to both models in every US region: the models are called in us-west-2, and their `us.` profiles may serve a call from another |
-| `openrouter` | DeepSeek V4 Flash, open weights, as both, through OpenRouter | 71 (two runs) | 10 to 13 | `OPENROUTER_API_KEY` |
-| `openai` | GPT-6 Luna, GPT-6.1 Terra, through OpenAI's API | 71 (one run) | 20 | `OPENAI_API_KEY` |
-| `local` | a model on this machine as both: a server you run at `http://localhost:8080/v1` (llama-server, mlx_lm.server, Ollama, vLLM) | not measured | | the server running; nothing leaves the machine |
+| `anthropic` | Claude Haiku 5.5, Claude Sonnet 5.5, through Anthropic's API: `claude-haiku-5-5,claude-sonnet-5-5`, and what init writes without the two flags | 70 (one run) | 40 | `ANTHROPIC_API_KEY` |
+| `bedrock` | the same two on Amazon Bedrock: `us.anthropic.claude-haiku-5-5,us.anthropic.claude-sonnet-5-5` | | | an AWS profile with Bedrock access to both models in every US region: the models are called in us-west-2, and their `us.` profiles may serve a call from another |
+| `openrouter` | DeepSeek V4 Flash, open weights, as both, through OpenRouter: `deepseek/deepseek-v4-flash-0731` | 71 (two runs) | 10 to 13 | `OPENROUTER_API_KEY` |
+| `openai` | GPT-6 Luna, GPT-6.1 Terra, through OpenAI's API: `gpt-6-luna,gpt-6.1-terra` | 71 (one run) | 20 | `OPENAI_API_KEY` |
+| `local` | a model on this machine: a server you run at `http://localhost:8080/v1` (llama-server, mlx_lm.server, Ollama, vLLM), and the name it gives its model | not measured | | the server running; nothing leaves the machine |
 
 The corpus is one made-up company, and 36 of its attacks are cases the judge's brief was written against: it says nothing of how much a model flags on your logs.
 
-`--model` names one model, so the flags cannot write a judge and a reviewer that differ. [Editing tangent.yaml by hand](config.md) has each provider's two as they were measured, and how to add a source to a file already written.
+Init writes over nothing, so the flags are for a new file. [Editing tangent.yaml by hand](config.md) is how to change one already written: to add a source, or change who serves the models.
 
 Init then fetches the plugins the config names, checks each against the attestation of its build, and writes four files:
 

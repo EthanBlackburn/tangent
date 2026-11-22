@@ -6,14 +6,15 @@
 tangent init                                # the pipeline, with no source yet
 tangent init --sources cloudtrail,github    # with those two watched
 tangent init --sources okta --provider openrouter --model deepseek/deepseek-v4-flash-0731
+tangent init --sources okta --provider openai --model gpt-6-luna,gpt-6.1-terra
 ```
 
 | flag | names | without it |
 |---|---|---|
 | `--sources` | what to watch, one or more of `cloudtrail`, `github`, `okta`, `google_workspace`, `supabase` | the pipeline has no source yet |
-| `--provider` and `--model`, together | who serves the model (`anthropic`, `bedrock`, `openrouter`, `openai`, `local`), and the model by the exact name the provider takes: it judges and reviews | Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API |
+| `--provider` and `--model`, together | who serves the models (`anthropic`, `bedrock`, `openrouter`, `openai`, `local`), and each model by the exact name the provider takes: one name judges and reviews, and two with a comma are the judge's, then the reviewer's | Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API |
 
-Init writes over nothing, so the flags are for a new file. This page is how to change one already written: to add or take out a source, and to change who serves the models, including to a judge and a reviewer that differ, which the flags cannot name.
+Init writes over nothing, so the flags are for a new file. This page is how to change one already written: to add or take out a source, and to change who serves the models.
 
 Every block below is what init writes, with its indentation: paste it as it is. To check an edit, `tangent config --config tangent.yaml` loads the file and prints it, or says what is wrong with it. A plugin the file names is fetched, and its build's attestation checked, the first time `tangent replay` or `tangent run` reads the file.
 
@@ -219,7 +220,7 @@ Two nodes under `inference:` are the models: `judge` reads every record, and `re
 - In `judge`, the lines between `inputs: [baseline_renderer]` and `prompt_file: judge.md`.
 - In `reviewer`, the lines between `reviewer:` and `prompt_file: review.md`.
 
-Replace those lines with the blocks below, and leave the rest of each node as it is. Each block has the model its provider was measured with: for another, change its `model` line, which is all `--model` does. A block is whole: a line the old one had and the new one has not, such as `backend`, goes. judge.md, judge.schema.json and review.md, beside the file, are the same whoever serves the models.
+Replace those lines with the blocks below, and leave the rest of each node as it is. Each block has the model its provider was measured with: for another, change its `model` line, which is all `--model` does: the judge's line for its first name, the reviewer's for its second. A block is whole: a line the old one had and the new one has not, such as `backend`, goes. judge.md, judge.schema.json and review.md, beside the file, are the same whoever serves the models.
 
 [Try it](try-it.md) has what each pair caught and flagged in tangent's evals.
 
