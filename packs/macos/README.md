@@ -262,7 +262,9 @@ environment or did something rarer, then the busiest; one program under two
 different parents is two), what it is (path, signing
 identity, team, platform, tty), what started it (`parents`, the whole chain,
 and `responsible`), the commands it
-ran with how often, what it did to the files in the groups above (created,
+ran with how often (each whole to 2,000 bytes until the summary has spent
+16,000 on them, then by its first 140 and last 100 with the bytes between
+counted; the lake holds each whole), what it did to the files in the groups above (created,
 written, read, deleted, replaced, renamed into place; each file named, or for
 many under one directory the directory with a count and a few names), the
 agent-steering variables it set, and its rarer events. The files are listed
