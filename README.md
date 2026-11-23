@@ -239,34 +239,41 @@ A write is acked once it is in the open WAL file; that file is synced only when 
 `tangent_sink_bytes_total` counts a file's bytes when it is in place, and `tangent_sink_bytes_uncompressed_total` the records' NDJSON bytes it holds; a write acked into the WAL counts only once its file is sealed and written.
 
 ## Inference
-An `inference` node asks a model about each record. Nodes are configured under `inference:`, each with its own model and prompt, and sit in the DAG by name, as every node does:
+An `inference` node asks a model about each record. Models are configured under `models:`, each with where it is served and how it is reached, and nodes under `inference:`, each with its own prompt and its `model`, an entry under `models` by name. Nodes sit in the DAG by name, as every node does:
 
 ```yaml
+models:
+  glm:
+    type: openai                           # any OpenAI-compatible chat endpoint
+    url: http://localhost:8080/v1
+    model: mlx-community/GLM-4.7-Flash-4bit
 inference:
   judge:
-    url: http://localhost:8080/v1          # any OpenAI-compatible chat endpoint
-    model: mlx-community/GLM-4.7-Flash-4bit
+    model: glm                             # the entry under `models`
     prompt_file: judge.md                  # the system message
     extra: { chat_template_kwargs: { enable_thinking: false } }
 ```
 
-The model is reached through [rig](https://github.com/0xPlaygrounds/rig): `backend: openai` (the default) for any OpenAI-compatible chat endpoint such as OpenAI, mlx_lm.server, llama-server, vLLM, OpenRouter or Bedrock's OpenAI endpoint; `backend: anthropic` for Anthropic's own Messages API with `api_key`; `backend: responses` for OpenAI's Responses API with `api_key`, which a model of OpenAI's that thinks needs before it will take a plugin's tools (chat completions refuses them); and `backend: bedrock` for Amazon Bedrock's Converse API with the AWS credential chain (`aws: { region, profile }`).
+The model is reached through [rig](https://github.com/0xPlaygrounds/rig): `type: openai` for any OpenAI-compatible chat endpoint such as OpenAI, mlx_lm.server, llama-server, vLLM, OpenRouter or Bedrock's OpenAI endpoint; `type: anthropic` for Anthropic's own Messages API with `api_key`; `type: responses` for OpenAI's Responses API with `api_key`, which a model of OpenAI's that thinks needs before it will take a plugin's tools (chat completions refuses them); and `type: bedrock` for Amazon Bedrock's Converse API with the AWS credential chain (`aws: { region, profile }`).
 
 The records the node is handed are the user message, one JSON object per line (the record, or its `fields`) with its index `i`, or with `encoding: {type: logfmt}` a logfmt line each, and the reply is `{"answers": [...]}`: each answer, a JSON object, lands on its record under the node's name (`judge` above); a failure lands there as `{"error": ...}`. The node adds and forwards, never drops. What goes on from there is a plugin's decision, and a plugin's `probe()` is already that filter: [examples/inference-local/flagged](/examples/inference-local/flagged/src/lib.rs) keeps `judge.flag == true` (and anything the judge could not read) with a pass-through body.
 
-The reply is read as JSON and nothing else, and the backend is asked to make it so: with `schema_file` (a JSON Schema next to the prompt) through `response_format` on an OpenAI-compatible server or structured output on Anthropic and Bedrock; without one, an `openai` server is put in JSON mode. A server that ignores both (mlx_lm.server does) is held to the prompt, and a reply that is not a JSON object is the error.
+The reply is read as JSON and nothing else, and the model's API is asked to make it so: with `schema_file` (a JSON Schema next to the prompt) through `response_format` on an OpenAI-compatible server or structured output on Anthropic and Bedrock; without one, an `openai` server is put in JSON mode. A server that ignores both (mlx_lm.server does) is held to the prompt, and a reply that is not a JSON object is the error.
 
 A request holds the records the node is handed, or with `group_by: [_norm.actor]` those of one value of these fields, and is split past `batch_bytes` (32 KiB of JSON) and, with logfmt, past `budget_tokens` (90k). A `sqlite` source hands over a partition value's records `batch_size` at a time, so with `group_by` on the partition's fields a request is one of its batches. A schema is wrapped around each answer, `max_tokens` is per record, and a reply with no answer in it for any of its records (one that is not JSON, an empty list) is asked again in halves; for one record it is asked again as it is, `retries` times.
 
 `encoding: {type: logfmt, keep: [...], sources: {<source>: {principal, time, keep, ids}}}` writes the records as logfmt lines in about half the tokens of JSON, and the text decodes back to the records: a principal's records are grouped, the fields they share written once above their rows, the `keep` fields on every row, a day's timestamps as times of day; `sidecar: true` swaps a source's `ids` for references the model never sees. The judge pack has a row for each pack's sources ([packs/judge/ingest.yaml](/packs/judge/ingest.yaml)).
 
-A plugin can hold a conversation with a node instead, with `model.chat`: it sends what has been said so far and the tools the model may call, runs the calls the model asks for, and sends their results with the next turn, until the model answers. The node gives the model, its credentials, `prompt_file` as the system prompt, `max_tokens` (here a turn's), `timeout_ms`, `retries`, `concurrency` and `extra`; the plugin's `models` names the nodes it may call, and a node named there needs no inputs:
+A plugin can hold a conversation with a node instead, with `model.chat`: it sends what has been said so far and the tools the model may call, runs the calls the model asks for, and sends their results with the next turn, until the model answers. The node gives `prompt_file` as the system prompt, `max_tokens` (here a turn's) and `extra`, and its model the credentials, `timeout_ms`, `retries` and `concurrency`; the plugin's `models` names the nodes it may call, and a node named there needs no inputs:
 
 ```yaml
+models:
+  sonnet:
+    type: bedrock
+    model: us.anthropic.claude-sonnet-5-5
 inference:
   investigator:
-    backend: bedrock
-    model: us.anthropic.claude-sonnet-5-5
+    model: sonnet
     prompt_file: investigate.md
     max_tokens: 8000
 plugins:
@@ -296,9 +303,9 @@ loop {
 }
 ```
 
-The request and the reply are JSON, described with the call in [assets/wit/processor.wit](/assets/wit/processor.wit). A turn the model did not finish is the call's error, and the plugin decides what its record says then: no reply, or one with neither text nor a call, after the node's retries, a refusal, a provider's error, a call `max_tokens` cut short. So is a turn a signal ended, and any turn while `runtime.disable_remote_calls` is set, as `tangent plugin test` sets it without `--enable-http`. `"cache": true` asks the provider to keep the conversation so far for the next turn; one that cannot at that point answers uncached. On Bedrock that is every turn after a model's first with thinking in it, so what should be kept goes in a `{"role": "system", "text": ...}` message ahead of the others, which is cached with the prompt. [packs/macos/review](/packs/macos/review/src/lib.rs) is such a plugin: it settles an alert by querying the lake.
+The request and the reply are JSON, described with the call in [assets/wit/processor.wit](/assets/wit/processor.wit). A turn the model did not finish is the call's error, and the plugin decides what its record says then: no reply, or one with neither text nor a call, after the model's retries, a refusal, a provider's error, a call `max_tokens` cut short. So is a turn a signal ended, and any turn while `runtime.disable_remote_calls` is set, as `tangent plugin test` sets it without `--enable-http`. `"cache": true` asks the provider to keep the conversation so far for the next turn; one that cannot at that point answers uncached. On Bedrock that is every turn after a model's first with thinking in it, so what should be kept goes in a `{"role": "system", "text": ...}` message ahead of the others, which is cached with the prompt. [packs/macos/review](/packs/macos/review/src/lib.rs) is such a plugin: it settles an alert by querying the lake.
 
-Inference nodes run inside the workers, in DAG order with the plugins: a worker hands a model the records that reached the node, waits for the replies, and carries them on, so a batch's records stay in order and nothing else moves while the model thinks. `concurrency` bounds requests in flight to the node, every worker's together (1 for a laptop GPU, 8 or more for a hosted model); `timeout_ms` (30 s) frees a slot a hung request would otherwise hold; `retries` (2) tries again, backing off, when a request got no reply at all (nothing in time, a dropped connection, a 429 or a 5xx; a request the provider refuses is not sent again), and when the reply to one record has no answer in it. `temperature` is sent only when set. A signal (SIGINT or SIGTERM) ends the calls under way rather than wait out `timeout_ms` and `retries`: records waiting on one go to no sink and are not acked, so a `sqlite` source sends them again at its next start. Another signal, a second or more after the first, exits at once. An example for each place a model is served: [inference-local](/examples/inference-local) (a server of your own), [inference-anthropic](/examples/inference-anthropic), [inference-bedrock](/examples/inference-bedrock), [inference-openrouter](/examples/inference-openrouter) and [inference-openai](/examples/inference-openai).
+Inference nodes run inside the workers, in DAG order with the plugins: a worker hands a model the records that reached the node, waits for the replies, and carries them on, so a batch's records stay in order and nothing else moves while the model thinks. A model's `concurrency` bounds requests in flight to it, every worker's and every node's that names it together (1 for a laptop GPU, 8 or more for a hosted model); `timeout_ms` (30 s) frees a slot a hung request would otherwise hold; `retries` (2) tries again, backing off, when a request got no reply at all (nothing in time, a dropped connection, a 429 or a 5xx; a request the provider refuses is not sent again), and when the reply to one record has no answer in it. `temperature` is sent only when set. A signal (SIGINT or SIGTERM) ends the calls under way rather than wait out `timeout_ms` and `retries`: records waiting on one go to no sink and are not acked, so a `sqlite` source sends them again at its next start. Another signal, a second or more after the first, exits at once. An example for each place a model is served: [inference-local](/examples/inference-local) (a server of your own), [inference-anthropic](/examples/inference-anthropic), [inference-bedrock](/examples/inference-bedrock), [inference-openrouter](/examples/inference-openrouter) and [inference-openai](/examples/inference-openai).
 
 ## Including files
 A config can span several files. `include:` lists files merged into the one that names it, each path relative to that file:
@@ -466,7 +473,7 @@ A month is thirty times as much. The count matters more than the size. A log rea
 Two things the count must include:
 
 - People. A request is one actor's logs: up to thirty new ones, and its latest ten already judged again (`_context`), which the model answers too. A busy actor, a service role or an app server, fills one with new logs. A quiet one, a person, goes an hour after its first new log. Count a person as their logs plus ten for each hour they are active.
-- Throughput. At 2–10 s a Haiku 5.5 request, the judge's `concurrency: 4` keeps up with 35k–170k requests a day, 1.4M–6.8M logs; raise `inference.judge.concurrency` past that.
+- Throughput. At 2–10 s a Haiku 5.5 request, the judge's `concurrency: 4` keeps up with 35k–170k requests a day, 1.4M–6.8M logs; raise `models.judge.concurrency` past that.
 
 #### Per provider
 Rough ranges for a company of 50 people, each active about eight hours a day, priced by the rule above:

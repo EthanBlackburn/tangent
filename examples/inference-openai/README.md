@@ -2,22 +2,26 @@
 
 A model on OpenAI's API reads every record; a plugin keeps what it flagged.
 
-Same pipeline as [../inference-local](../inference-local): the default backend
+Same pipeline as [../inference-local](../inference-local): `type: openai`
 is OpenAI's chat completions API, here at OpenAI's own address with your key.
 The filter is the same [flagged](../inference-local/flagged/src/lib.rs)
 plugin, referenced by path.
 
 ```yaml
-inference:
-  judge:
+models:
+  luna:
+    type: openai
     url: https://api.openai.com/v1
     api_key: "${OPENAI_API_KEY}"
     model: gpt-6-luna
+    concurrency: 8
+    timeout_ms: 60000
+inference:
+  judge:
+    model: luna
     prompt_file: judge.md
     batch_bytes: 4000
     max_tokens: 300
-    concurrency: 8
-    timeout_ms: 60000
     extra:
       reasoning_effort: low
 plugins:

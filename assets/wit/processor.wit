@@ -94,10 +94,10 @@ interface lake {
 /// A model under `inference` in the config, for a plugin that holds a
 /// conversation with it: the plugin sends what has been said and the tools
 /// the model may call, runs the calls it asks for, and sends their results
-/// with the next turn. The config's node gives the model, its credentials,
-/// its system prompt (`prompt_file`), `max_tokens`, `timeout_ms`, `retries`,
-/// `concurrency` and `extra`; the plugin's `models` in the config names the
-/// nodes it may call.
+/// with the next turn. The config's node gives its system prompt
+/// (`prompt_file`), `max_tokens` and `extra`, and its model, an entry under
+/// `models`, the credentials, `timeout_ms`, `retries` and `concurrency`; the
+/// plugin's `models` in the config names the nodes it may call.
 interface model {
   /// One turn with inference node `node`. `request` is JSON:
   ///
@@ -122,7 +122,7 @@ interface model {
   /// `message` is the model's turn, to append to `messages` whole; `stop` is
   /// `stop`, `tool_use` when there are `calls` to run, or `length` when
   /// `max_tokens` cut the text short. An error is a request that is not as
-  /// above, or a turn the model did not finish: no reply after the node's
+  /// above, or a turn the model did not finish: no reply after the model's
   /// retries, a refusal, a provider's failure, a reply with neither text nor
   /// a call, a call `max_tokens` cut. A stop of the pipeline ends the turn
   /// with an error too.

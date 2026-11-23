@@ -17,16 +17,19 @@ read the reply, so a person should), and its body passes them through
 unchanged.
 
 ```yaml
-inference:
-  judge:
-    backend: openai
+models:
+  glm:
+    type: openai
     url: http://localhost:8080/v1
     model: mlx-community/GLM-4.7-Flash-4bit
+    concurrency: 8
+    timeout_ms: 120000
+inference:
+  judge:
+    model: glm
     prompt_file: judge.md
     batch_bytes: 4000
-    concurrency: 8
     max_tokens: 300
-    timeout_ms: 120000
     temperature: 0
     extra:
       chat_template_kwargs: { enable_thinking: false }

@@ -84,11 +84,13 @@ for Claude Haiku 5.5 on Bedrock, your config sets the rest:
 
 ```yaml
 include: [packs/judge/hosted.yaml]
-inference:
+models:
   judge:
-    backend: bedrock
+    type: bedrock
     model: us.anthropic.claude-haiku-5-5
     aws: { region: us-west-2 }               # and `profile`; the SDK's chain when unset
+inference:
+  judge:
     max_tokens: 400                          # per record
     extra: { thinking: { type: disabled } }  # no thinking: the reply is the answer
 ```
@@ -313,8 +315,8 @@ are ordinary work.
 one made-up company: it says nothing of how much either flags on your logs.
 
 Another pair is [reviewed.yaml](reviewed.yaml) (`pack:judge/reviewed`), the
-same with no model named, and your config's `inference.judge` and
-`inference.reviewer`.
+same with no model named, and your config's `models.judge` and
+`models.reviewer`.
 
 ## Changing the judge's chain
 

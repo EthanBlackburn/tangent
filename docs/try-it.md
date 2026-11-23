@@ -46,7 +46,7 @@ Init then fetches the plugins the config names, checks each against the attestat
 
 | | |
 |---|---|
-| `tangent.yaml` | the pipeline: every source, plugin, model and sink with its settings, each naming the nodes it reads from as `inputs` |
+| `tangent.yaml` | the pipeline: every source, plugin, model and sink with its settings, each node naming the nodes it reads from as `inputs` and each model's node the model it asks |
 | `judge.md`, `judge.schema.json` | what the judge is told, and the shape its answer is held to |
 | `review.md` | what the reviewer is told |
 
