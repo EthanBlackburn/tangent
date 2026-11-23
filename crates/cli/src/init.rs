@@ -3,11 +3,15 @@
 //! Nothing is left in a file tangent keeps: every node, its settings and its
 //! `inputs` are in the file written, to read and to edit.
 //!
-//! It asks nothing. `--sources` names what to watch, and without it the
-//! pipeline is written with no source yet. `--provider` and `--model`, given
-//! together, name who serves the models and the models: one name judges and
-//! reviews, and two, with a comma, are the judge's and then the reviewer's.
-//! Without them it is the two models measured on Anthropic's API.
+//! It asks nothing. What is watched is its subcommand: `cloud` is your
+//! cloud and SaaS audit logs, which `--sources` names, and without it the
+//! pipeline is written with no source yet. The models are hosted unless
+//! `--local`: the two measured on Anthropic's API or, with `--provider` and
+//! `--model`, the provider's by name (one name judges and reviews, and two,
+//! with a comma, are the judge's and then the reviewer's). `--local` is a
+//! model on this machine, Inkling 2 Mini on a server tangent starts or, with
+//! `--model`, a server of your own. Hosted, every record is sent to the
+//! provider, so the file and init's last lines say where the records go.
 //! docs/config.md says how to change either in the file by hand. The plugins
 //! the config names are fetched, and the attestation of each build checked,
 //! before a file is written: init leaves a pipeline that loads, or nothing.
@@ -228,8 +232,27 @@ pub enum Provider {
     Openrouter,
     /// GPT-6 Luna judges and GPT-6.1 Terra reviews, through OpenAI's API, with OPENAI_API_KEY
     Openai,
-    /// A model on this machine judges and reviews: a server you run at http://localhost:8080/v1 (llama-server, mlx_lm.server, Ollama, vLLM)
+    /// A model on this machine judges and reviews, on a server you run at
+    /// http://localhost:8080/v1: `--local` with `--model`.
+    #[value(skip)]
     Local,
+    /// Inkling 2 Mini judges and reviews on this Mac, on a server tangent
+    /// starts: `--local`.
+    #[value(skip)]
+    Inkling,
+}
+
+impl Provider {
+    /// Every pair init writes, the ones `--provider` names first.
+    #[cfg(test)]
+    const ALL: [Provider; 6] = [
+        Provider::Anthropic,
+        Provider::Bedrock,
+        Provider::Openrouter,
+        Provider::Openai,
+        Provider::Local,
+        Provider::Inkling,
+    ];
 }
 
 /// What a pair brings to the config.
@@ -238,7 +261,12 @@ struct Pair {
     label: &'static str,
     /// Who serves them, as the file says it of a model named with `--model`.
     host: &'static str,
-    /// The judge's model, under `models.judge`: where it is served.
+    /// The one entry under `models` that both nodes name, when the pair is
+    /// one model on one server; none when the judge and the reviewer have an
+    /// entry each, `judge` and `reviewer`.
+    entry: Option<&'static str>,
+    /// The judge's model, under `models.judge`: where it is served. With
+    /// `entry`, the whole of that entry: its limits and its server too.
     judge_model: &'static str,
     /// What the judge is asked with, under `inference.judge`.
     judge: &'static str,
@@ -246,8 +274,24 @@ struct Pair {
     reviewer_model: &'static str,
     /// What the reviewer is asked with, under `inference.reviewer`.
     reviewer: &'static str,
+    /// The judge's `batch_bytes`, and what the file says of it.
+    batch: &'static str,
     needs: Needs,
 }
+
+/// What the judge's and the reviewer's own entries hold after where each is
+/// served: how hard each may be asked.
+const JUDGE_LIMITS: &str = "    timeout_ms: 90000
+    concurrency: 4               # requests at once
+";
+const REVIEWER_LIMITS: &str =
+    "    timeout_ms: 120000           # reviews go one at a time: two minutes a try,
+    retries: 2                   # three tries, then the review is an error and the alerts stand
+    concurrency: 1
+";
+
+/// The judge's `batch_bytes` where a request may be large.
+const BATCH: &str = "96000           # a request past this is split; an actor's forty records fit";
 
 impl Provider {
     fn pair(self) -> Pair {
@@ -255,6 +299,7 @@ impl Provider {
             Provider::Anthropic => Pair {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Anthropic's API)",
                 host: "Anthropic's API",
+                entry: None,
                 judge_model: r#"    type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"   # a key from console.anthropic.com
     model: claude-haiku-5-5
@@ -270,11 +315,13 @@ impl Provider {
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
 "#,
+                batch: BATCH,
                 needs: &[("ANTHROPIC_API_KEY", "a key from console.anthropic.com")],
             },
             Provider::Bedrock => Pair {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Amazon Bedrock)",
                 host: "Amazon Bedrock",
+                entry: None,
                 judge_model: r#"    type: bedrock
     model: us.anthropic.claude-haiku-5-5
     aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }   # a US region: Bedrock serves this model there
@@ -290,6 +337,7 @@ impl Provider {
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
 "#,
+                batch: BATCH,
                 needs: &[(
                     "AWS_PROFILE",
                     "the AWS profile that calls Bedrock, with access to both models in the US regions; `default` when unset",
@@ -298,6 +346,7 @@ impl Provider {
             Provider::Openrouter => Pair {
                 label: "DeepSeek V4 Flash, open weights, judges and reviews (OpenRouter)",
                 host: "OpenRouter",
+                entry: None,
                 judge_model: r#"    type: openai                 # an OpenAI-compatible server
     url: https://openrouter.ai/api/v1
     api_key: "${OPENROUTER_API_KEY}"   # a key from openrouter.ai/keys
@@ -318,11 +367,13 @@ impl Provider {
                 reviewer: r#"    extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 "#,
+                batch: BATCH,
                 needs: &[("OPENROUTER_API_KEY", "a key from openrouter.ai/keys")],
             },
             Provider::Openai => Pair {
                 label: "GPT-6 Luna judges, GPT-6.1 Terra reviews (OpenAI's API)",
                 host: "OpenAI's API",
+                entry: None,
                 judge_model: r#"    type: responses              # OpenAI's Responses API
     api_key: "${OPENAI_API_KEY}"   # a key from platform.openai.com
     model: gpt-6-luna
@@ -338,11 +389,13 @@ impl Provider {
                 reviewer: r#"    extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 "#,
+                batch: BATCH,
                 needs: &[("OPENAI_API_KEY", "a key from platform.openai.com")],
             },
             Provider::Local => Pair {
                 label: "A model on this machine judges and reviews (llama-server, mlx_lm.server, Ollama, vLLM)",
                 host: "a server on this machine",
+                entry: None,
                 judge_model: r#"    type: openai                 # an OpenAI-compatible server
     url: http://localhost:8080/v1   # llama-server, mlx_lm.server or vLLM; Ollama is http://localhost:11434/v1
     model: glm-4.7-flash         # EDIT to the name your server gives its model
@@ -358,6 +411,41 @@ impl Provider {
     model: glm-4.7-flash         # EDIT, as the judge's
 "#,
                 reviewer: r#""#,
+                batch: BATCH,
+                needs: &[],
+            },
+            // One model on one server, which answers a request at a time:
+            // the settings are the ones measured with MTPLX 2.13 on an M4
+            // Max with 36 GB, where the model leaves about 3.5 GB spare.
+            Provider::Inkling => Pair {
+                label: "Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (MTPLX)",
+                host: "this Mac",
+                entry: Some("inkling"),
+                judge_model: r#"    type: openai                 # MTPLX serves the OpenAI API
+    url: http://127.0.0.1:8000/v1
+    model: mtplx                 # it answers with the model it loaded
+    timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
+    retries: 2
+    concurrency: 1               # one request at a time, the judge's and the reviewer's together
+    # `tangent run` starts this server, waits until it answers and stops it
+    # after; one already answering at `url` is used and left running.
+    serve:
+      command: [mtplx, serve, --model, Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed, --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
+      env:
+        HF_HUB_OFFLINE: "1"                        # the model is read from this Mac, and never fetched here
+        MTPLX_SESSION_BANK_MAX_BYTES: 3G           # what it keeps of prompts it has read, so the judge's brief is read once
+        MTPLX_SYSTEM_MEMORY_SHED_FLOOR_BYTES: 2G   # it drops that only below 2 GB of free memory
+        MTPLX_GDN_BOUNDARY_TAIL_BACKOFF: "768"     # a restore point inside the brief, for the next record
+"#,
+                judge: r#"    max_tokens: 500              # per record
+    temperature: 0.7
+    extra:
+      top_p: 0.95
+      chat_template_kwargs: { enable_thinking: false }   # no thinking: the reply is the answer
+"#,
+                reviewer_model: r#""#,
+                reviewer: r#""#,
+                batch: "32000           # a request past this is split: what the model reads well at once",
                 needs: &[],
             },
         }
@@ -432,19 +520,47 @@ impl Choices {
         }
     }
 
-    /// The judge's model and the reviewer's, under `models`, with each
-    /// model named.
-    fn served(&self) -> (String, String) {
+    /// Where the records go to be judged, as the file and init say it: a
+    /// hosted model is sent every one.
+    fn records(&self) -> String {
+        match self.provider {
+            Provider::Local | Provider::Inkling => {
+                "stay on this machine: the model that judges them runs here".to_string()
+            }
+            hosted => format!(
+                "are sent to {}, every one, to be judged",
+                hosted.pair().host
+            ),
+        }
+    }
+
+    /// What is under `models`, with each model named: the judge's entry and
+    /// the reviewer's, or the one entry both name.
+    fn served(&self) -> String {
         let pair = self.provider.pair();
-        match &self.models {
+        let (judge, reviewer) = match &self.models {
             Some((judge, reviewer)) => (
-                named(pair.judge_model, judge),
-                named(pair.reviewer_model, reviewer),
+                named(pair.judge_model, judge) + "\n",
+                named(pair.reviewer_model, reviewer) + "\n",
             ),
             None => (
                 pair.judge_model.to_string(),
                 pair.reviewer_model.to_string(),
             ),
+        };
+        match pair.entry {
+            Some(entry) => format!("  {entry}:\n{judge}"),
+            None => {
+                format!("  judge:\n{judge}{JUDGE_LIMITS}  reviewer:\n{reviewer}{REVIEWER_LIMITS}")
+            }
+        }
+    }
+
+    /// The entries under `models` the judge and the reviewer name.
+    fn entries(&self) -> (&'static str, &'static str) {
+        match self.provider.pair().entry {
+            Some(entry) => (entry, entry),
+            None => ("judge", "reviewer"),
         }
     }
 
@@ -506,6 +622,7 @@ impl Choices {
             header.push_str(&format!("#   {lead:7}  {}\n", w.pack().label));
         }
         header.push_str(&format!("#   models   {}\n", self.models()));
+        header.push_str(&format!("#   records  {}\n", self.records()));
         for (i, command) in self.commands().iter().enumerate() {
             let gap = if i == 0 { "#\n" } else { "" };
             header.push_str(&format!("{gap}#   {command}\n"));
@@ -531,7 +648,7 @@ impl Choices {
         let inputs: Vec<&str> = packs.iter().map(|p| p.name).collect();
         let plugins: String = self.watch.iter().map(|w| w.plugin()).collect();
         let pair = self.provider.pair();
-        let (judge_model, reviewer_model) = self.served();
+        let (judge_entry, reviewer_entry) = self.entries();
         // Each part ends its last line, and so does the line it stands on.
         // With no source yet, a part says so where its nodes would be.
         let block = |text: &str, none: &str| match text.trim_end() {
@@ -544,8 +661,13 @@ impl Choices {
             ("{{sources}}", block(&join(|p| p.node), "  {}   # none yet")),
             ("{{packs}}", block(&plugins, "  # (none yet)")),
             ("{{inputs}}", inputs.join(", ")),
-            ("{{judge_model}}", block(&judge_model, "")),
-            ("{{reviewer_model}}", block(&reviewer_model, "")),
+            ("{{models}}", block(&self.served(), "")),
+            (
+                "{{judge_entry}}",
+                format!("{judge_entry:<22}# its model, under `models`"),
+            ),
+            ("{{reviewer_entry}}", reviewer_entry.to_string()),
+            ("{{batch_bytes}}", pair.batch.to_string()),
             ("{{judge}}", block(pair.judge, "")),
             (
                 "{{rows}}",
@@ -631,14 +753,87 @@ fn names<T: clap::ValueEnum>(sep: &str) -> String {
 /// `tangent init` in `dir`: the files for what the flags name, and the
 /// plugins the config names, fetched and checked. A fetch that fails takes
 /// the files with it, so what is left loads or is nothing.
+/// The memory under which Inkling is not worth starting, in GiB.
+const INKLING_MEMORY: u64 = 32;
+
+/// The pair `tangent init cloud`'s flags name, and the models named with
+/// it: hosted unless `--local`. Hosted is Anthropic's pair, or `--provider`
+/// with `--model`; `--local` is Inkling on a server tangent starts, or with
+/// `--model` a server of your own.
+pub fn served(
+    local: bool,
+    provider: Option<Provider>,
+    model: Option<&str>,
+) -> Result<(Provider, Option<(String, String)>)> {
+    let named = model.map(models).transpose()?;
+    match (local, provider) {
+        (true, _) if named.is_some() => Ok((Provider::Local, named)),
+        (true, _) => Ok((Provider::Inkling, None)),
+        (false, None) if named.is_some() => bail!(
+            "--model names a hosted model with --provider, or with --local a model server of your own"
+        ),
+        (false, provider) => Ok((provider.unwrap_or(Provider::Anthropic), named)),
+    }
+}
+
+/// This machine's memory in GiB, where it says: a Mac's `hw.memsize`.
+fn memory_gib() -> Option<u64> {
+    let out = std::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    let bytes: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    Some(bytes >> 30)
+}
+
+/// Whether `program` is on the PATH.
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+/// What a model on this machine needs that the file cannot hold, as lines
+/// to print after it is written.
+fn local_needs(provider: Provider) -> Vec<String> {
+    match provider {
+        Provider::Local => vec!["Start your model's server first.".to_string()],
+        Provider::Inkling => {
+            let mut lines = Vec::new();
+            if let Some(memory) = memory_gib().filter(|gib| *gib < INKLING_MEMORY) {
+                lines.push(format!(
+                    "This Mac has {memory} GB of memory. Inkling 2 Mini takes about 20 GB to itself and was measured with 36: under {INKLING_MEMORY} it is slow, or does not load. Without --local, the models are served for you.\n"
+                ));
+            }
+            let found = if on_path("mtplx") {
+                ""
+            } else {
+                " (mtplx is not on your PATH)"
+            };
+            lines.push(format!(
+                "`tangent run` starts the model and stops it. It needs MTPLX and the model on this Mac, which tangent does not fetch yet{found}:"
+            ));
+            lines.push("  brew install youssofal/mtplx/mtplx      # or, with Python 3.11 or newer: python3 -m pip install mtplx".to_string());
+            lines.push(
+                "  mtplx pull Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed   # 17 GB".to_string(),
+            );
+            lines
+        }
+        _ => Vec::new(),
+    }
+}
+
 pub async fn run(
     dir: &Path,
     watch: Vec<Source>,
-    provider: Option<Provider>,
-    model: Option<String>,
+    provider: Provider,
+    models: Option<(String, String)>,
 ) -> Result<()> {
-    let models = model.as_deref().map(models).transpose()?;
-    let choices = Choices::new(watch, provider.unwrap_or(Provider::Anthropic), models);
+    if provider == Provider::Inkling && !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        bail!(
+            "tangent starts Inkling 2 Mini on Apple Silicon Macs only. `--local --model <name>` is a model server of your own, and without --local the models are served for you"
+        );
+    }
+    let choices = Choices::new(watch, provider, models);
     let written = choices.write(dir)?;
     let config = dir.join("tangent.yaml");
     if let Err(e) = fetch::missing(&config.canonicalize().unwrap_or(config)).await {
@@ -654,6 +849,7 @@ pub async fn run(
         .map(|n| n.to_string_lossy().into_owned())
         .collect();
     println!("\nWrote {}.", wrote.join(", "));
+    println!("\nYour records {}.", choices.records());
     let needs = choices.needs();
     if !needs.is_empty() {
         println!("\nIt reads these from the environment:");
@@ -664,12 +860,13 @@ pub async fn run(
             println!("  {var:width$}  {what}{state}");
         }
     }
-    if choices.provider == Provider::Local {
-        println!("\nStart your model's server first.");
+    let local = local_needs(choices.provider);
+    if !local.is_empty() {
+        println!("\n{}", local.join("\n"));
     }
     if choices.watch.is_empty() {
         println!(
-            "\nIt watches nothing yet. In an empty directory, `tangent init --sources` with one or more of {} writes it with them in; {DIRECTIONS} says how to add one to this file.",
+            "\nIt watches nothing yet. In an empty directory, `tangent init cloud` with `--sources` and one or more of {} writes it with them in; {DIRECTIONS} says how to add one to this file.",
             names::<Source>(", ")
         );
         return Ok(());
@@ -725,7 +922,7 @@ mod tests {
         let mut sets: Vec<Vec<Source>> = EVERY.iter().map(|w| vec![*w]).collect();
         sets.push(EVERY.to_vec());
         for watch in &sets {
-            for provider in Provider::value_variants() {
+            for provider in &Provider::ALL {
                 let (_dir, cfg) = written(watch, *provider);
                 assert_eq!(
                     cfg.warnings(),
@@ -754,7 +951,7 @@ mod tests {
     /// No place is left in a config, whatever the choices.
     #[test]
     fn every_place_in_the_file_is_filled() {
-        for provider in Provider::value_variants() {
+        for provider in &Provider::ALL {
             let config = Choices::new(EVERY.to_vec(), *provider, None).config();
             assert!(!config.contains("{{"), "{provider:?}:\n{config}");
             assert!(
@@ -902,7 +1099,7 @@ mod tests {
     /// and its reviewer is the provider's own. Each node names its model.
     #[test]
     fn every_pair_names_its_models() {
-        for provider in Provider::value_variants() {
+        for provider in &Provider::ALL {
             let (_dir, cfg) = written(&[Source::Cloudtrail], *provider);
             let (judge, reviewer) = (&cfg.inference["judge"], &cfg.inference["reviewer"]);
             let (kind, url, judges, reviews) = match provider {
@@ -931,6 +1128,12 @@ mod tests {
                     "glm-4.7-flash",
                     "glm-4.7-flash",
                 ),
+                Provider::Inkling => (
+                    ModelKind::Openai,
+                    Some("http://127.0.0.1:8000/v1"),
+                    "mtplx",
+                    "mtplx",
+                ),
             };
             let models = [judge, reviewer].map(|node| &cfg.models[&node.model]);
             for model in models {
@@ -951,18 +1154,94 @@ mod tests {
     /// local model's and, as its pair was measured, OpenRouter's.
     #[test]
     fn a_hosted_model_is_sent_no_local_settings() {
-        for provider in Provider::value_variants() {
+        for provider in &Provider::ALL {
             let (_dir, cfg) = written(&[Source::Cloudtrail], *provider);
             let judge = &cfg.inference["judge"];
-            let local = *provider == Provider::Local;
+            let local = matches!(provider, Provider::Local | Provider::Inkling);
             assert_eq!(
                 judge.extra.contains_key("chat_template_kwargs"),
                 local,
                 "{provider:?}"
             );
-            let sampled = matches!(provider, Provider::Local | Provider::Openrouter);
+            let sampled = local || *provider == Provider::Openrouter;
             assert_eq!(judge.temperature.is_some(), sampled, "{provider:?}");
             assert_eq!(judge.extra.contains_key("top_p"), sampled, "{provider:?}");
+        }
+    }
+
+    /// `--local` is one model on a server tangent starts: one entry under
+    /// `models`, which the judge and the reviewer both name, asked one
+    /// request at a time, with the command that starts it.
+    #[test]
+    fn inkling_is_one_model_tangent_starts() {
+        let (_dir, cfg) = written(&[Source::Github], Provider::Inkling);
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.models.keys().map(|k| &**k).collect::<Vec<_>>(),
+            ["inkling"]
+        );
+        for node in ["judge", "reviewer"] {
+            assert_eq!(&*cfg.inference[node].model, "inkling", "{node}");
+        }
+        let model = &cfg.models["inkling"];
+        assert_eq!(model.concurrency, 1);
+        assert_eq!(model.timeout_ms, 600_000);
+        let serve = model.serve.as_ref().expect("tangent starts it");
+        assert_eq!(serve.command[..2], ["mtplx", "serve"]);
+        let port = serve.command.iter().position(|a| a == "--port").unwrap();
+        assert!(
+            model
+                .url
+                .as_deref()
+                .unwrap()
+                .contains(&format!(":{}/", serve.command[port + 1])),
+            "the server listens where the model is asked"
+        );
+        assert_eq!(serve.env["HF_HUB_OFFLINE"], "1");
+        assert_eq!(cfg.inference["judge"].batch_bytes, 32_000);
+        // every other pair's judge may be sent an actor's forty records at once
+        let (_dir, hosted) = written(&[Source::Github], Provider::Anthropic);
+        assert_eq!(hosted.inference["judge"].batch_bytes, 96_000);
+    }
+
+    /// The models are hosted unless `--local`: Anthropic's pair or a
+    /// provider's models by name, and with `--local` Inkling or, with a
+    /// model named, a server of your own.
+    #[test]
+    fn the_flags_say_who_judges() {
+        let both = |name: &str| Some((name.to_string(), name.to_string()));
+        assert_eq!(
+            served(false, None, None).unwrap(),
+            (Provider::Anthropic, None)
+        );
+        assert_eq!(
+            served(false, Some(Provider::Openai), Some("gpt-6-luna")).unwrap(),
+            (Provider::Openai, both("gpt-6-luna"))
+        );
+        assert_eq!(served(true, None, None).unwrap(), (Provider::Inkling, None));
+        assert_eq!(
+            served(true, None, Some("glm-4.7-flash")).unwrap(),
+            (Provider::Local, both("glm-4.7-flash"))
+        );
+        assert!(served(false, None, Some("gpt-6-luna")).is_err());
+    }
+
+    /// The file's head and init's last lines say where the records go: a
+    /// hosted model is sent every one, by name, and a model on this machine
+    /// none.
+    #[test]
+    fn the_file_says_where_the_records_go() {
+        for provider in &Provider::ALL {
+            let choices = Choices::new(vec![Source::Okta], *provider, None);
+            let line = format!("#   records  {}\n", choices.records());
+            assert!(choices.header().contains(&line), "{provider:?}");
+            let local = matches!(provider, Provider::Local | Provider::Inkling);
+            assert_eq!(line.contains("stay on this machine"), local, "{provider:?}");
+            assert_eq!(
+                line.contains(&format!("are sent to {}", provider.pair().host)),
+                !local,
+                "{provider:?}"
+            );
         }
     }
 
@@ -1046,7 +1325,7 @@ mod tests {
     /// and says where its sources go.
     #[test]
     fn with_no_source_it_is_the_pipeline_without_one() {
-        for provider in Provider::value_variants() {
+        for provider in &Provider::ALL {
             let dir = tempfile::tempdir().unwrap();
             let choices = Choices::new(Vec::new(), *provider, None);
             choices.write(dir.path()).unwrap();
@@ -1156,7 +1435,7 @@ mod tests {
                 assert!(directions.contains(var), "{source:?}: {var}");
             }
         }
-        for provider in Provider::value_variants() {
+        for provider in &Provider::ALL {
             let pair = provider.pair();
             for part in [
                 pair.judge_model,

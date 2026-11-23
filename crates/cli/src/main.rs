@@ -27,6 +27,39 @@ struct Cli {
     command: Commands,
 }
 
+/// What `tangent init` writes a pipeline for.
+#[derive(Subcommand, Debug)]
+enum Watch {
+    /// Your cloud and SaaS audit logs (CloudTrail, GitHub, Okta, ...)
+    ///
+    /// The models that judge them are served for you unless --local:
+    /// Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through
+    /// Anthropic's API, so every record is sent there. --provider and
+    /// --model name other hosted models, and --local keeps the records on
+    /// this machine.
+    Cloud {
+        /// What to watch, one or more: --sources cloudtrail,github. Without
+        /// it the pipeline is written with no source yet
+        #[arg(long, value_enum, value_delimiter = ',')]
+        sources: Vec<init::Source>,
+        /// A model on this machine in place of a hosted one, so no record
+        /// leaves it: Inkling 2 Mini judges and reviews, on a server
+        /// tangent starts with `tangent run` (Apple Silicon, 32 GB of
+        /// memory or more). With --model, a model server of your own at
+        /// http://localhost:8080/v1 instead, which tangent does not start
+        #[arg(long)]
+        local: bool,
+        /// Who serves the models, with --model
+        #[arg(long, value_enum, requires = "model", conflicts_with = "local")]
+        provider: Option<init::Provider>,
+        /// The model, by the exact name its provider or your server takes:
+        /// one judges and reviews, and two with a comma are the judge's,
+        /// then the reviewer's (--model gpt-6-luna,gpt-6.1-terra)
+        #[arg(long)]
+        model: Option<String>,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     Run {
@@ -93,25 +126,13 @@ enum Commands {
         config: PathBuf,
     },
 
-    /// Write tangent.yaml here, the whole pipeline in the one file: the
-    /// sources you watch, a model that judges every record and one that
-    /// reviews what it flagged. It asks nothing, fetches the plugins the
-    /// config names, and writes over nothing
+    /// Write tangent.yaml here, the whole pipeline in the one file: what
+    /// you watch, a model that judges every record and one that reviews
+    /// what it flagged. It asks nothing, says where your records go,
+    /// fetches the plugins the config names, and writes over nothing
     Init {
-        /// What to watch, one or more: --sources cloudtrail,github. Without
-        /// it the pipeline is written with no source yet
-        #[arg(long, value_enum, value_delimiter = ',')]
-        sources: Vec<init::Source>,
-        /// Who serves the models, with --model. Without the two, Claude
-        /// Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through
-        /// Anthropic's API
-        #[arg(long, value_enum, requires = "model")]
-        provider: Option<init::Provider>,
-        /// The model, by the exact name its provider takes, with
-        /// --provider: one judges and reviews, and two with a comma are
-        /// the judge's, then the reviewer's (--model gpt-6-luna,gpt-6.1-terra)
-        #[arg(long, requires = "provider")]
-        model: Option<String>,
+        #[command(subcommand)]
+        watch: Watch,
     },
 
     /// Read a past range of the config's sources through it, as fast as it
@@ -283,10 +304,17 @@ async fn main() -> Result<()> {
         Commands::Config { config } => print!("{}", show_config(&config)?),
 
         Commands::Init {
-            sources,
-            provider,
-            model,
-        } => init::run(Path::new("."), sources, provider, model).await?,
+            watch:
+                Watch::Cloud {
+                    sources,
+                    local,
+                    provider,
+                    model,
+                },
+        } => {
+            let (provider, models) = init::served(local, provider, model.as_deref())?;
+            init::run(Path::new("."), sources, provider, models).await?
+        }
 
         Commands::Replay { config, from, to } => {
             let config = config.canonicalize().unwrap_or(config);
@@ -448,16 +476,42 @@ fn sort_keys(v: &mut Value) {
 mod tests {
     use super::*;
 
-    /// Init's provider and its model are named together or not at all.
+    /// Init's command line: what to watch is its subcommand, a provider
+    /// goes with its model, and a model on this machine is --local, not a
+    /// provider.
     #[test]
-    fn init_takes_a_provider_and_its_model_together() {
+    fn init_takes_what_to_watch_and_who_judges_it() {
         let parses =
             |args: &[&str]| Cli::try_parse_from([&["tangent", "init"], args].concat()).is_ok();
-        assert!(parses(&[]));
-        assert!(parses(&["--sources", "okta,github"]));
-        assert!(parses(&["--provider", "openai", "--model", "gpt-6-luna"]));
-        assert!(!parses(&["--provider", "openai"]));
-        assert!(!parses(&["--model", "gpt-6-luna"]));
+        assert!(!parses(&[]), "init alone lists what it can watch");
+        assert!(parses(&["cloud"]));
+        assert!(parses(&["cloud", "--sources", "okta,github"]));
+        assert!(parses(&["cloud", "--local"]));
+        assert!(parses(&["cloud", "--local", "--model", "glm-4.7-flash"]));
+        assert!(parses(&[
+            "cloud",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-6-luna"
+        ]));
+        assert!(!parses(&["cloud", "--provider", "openai"]));
+        assert!(!parses(&[
+            "cloud",
+            "--local",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-6-luna"
+        ]));
+        assert!(!parses(&[
+            "cloud",
+            "--provider",
+            "local",
+            "--model",
+            "glm-4.7-flash"
+        ]));
+        assert!(!parses(&["--sources", "okta"]), "the sources are cloud's");
     }
 
     #[test]
