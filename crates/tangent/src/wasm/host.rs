@@ -677,8 +677,7 @@ mod tests {
         use tangent::logs::model::Host as _;
         let (url, taken) = stub::silent().await;
         let dir = stub::dir("chat-stop");
-        let nodes = [(Arc::from("reviewer"), stub::config(&url))];
-        let nodes = crate::inference::nodes(&nodes.into(), &dir).unwrap();
+        let nodes = stub::config(&url).nodes("reviewer", &dir).unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let store = sqlite(tmp.path());
         let request = r#"{"messages": [{"role": "user", "text": "hello"}]}"#;

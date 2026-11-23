@@ -6,20 +6,24 @@
 # ingest.yaml (or hosted.yaml) in a config with a sink `lake`, and route
 # plugin flagged to review, and review to where reviews go
 # (examples/cloud-infra/review.yaml does).
-inference:
-  reviewer:                        # it has no inputs: the plugin calls it
-    backend: bedrock
+models:
+  reviewer:
+    type: bedrock
     model: ${REVIEW_MODEL:-us.anthropic.claude-sonnet-5-5}
     aws:
       region: ${AWS_REGION:-us-west-2}
-    prompt_file: review.md
-    max_tokens: 8000               # a turn: its thinking, and a query or the report
     # Reviews go one at a time, so a turn that hangs holds up every review
     # behind it: two minutes a try and three tries, then the review is an
     # error and the alerts stand.
     timeout_ms: 120000
     retries: 2
     concurrency: 1
+
+inference:
+  reviewer:                        # it has no inputs: the plugin calls it
+    model: reviewer
+    prompt_file: review.md
+    max_tokens: 8000               # a turn: its thinking, and a query or the report
     extra:
       thinking: { type: adaptive }
       output_config: { effort: low }

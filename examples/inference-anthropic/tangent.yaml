@@ -13,17 +13,21 @@ sources:
     type: tcp
     bind_address: 0.0.0.0:9000
 
+models:
+  haiku:
+    type: anthropic                 # Anthropic's Messages API
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: claude-haiku-5-5
+    concurrency: 8                  # a hosted model takes many requests at once
+    timeout_ms: 60000               # time to write ~20 verdicts
+
 inference:
   judge:
     inputs: [events]
-    backend: anthropic              # Anthropic's Messages API
-    api_key: "${ANTHROPIC_API_KEY}"
-    model: claude-haiku-5-5
+    model: haiku                    # the entry under `models` above
     prompt_file: judge.md           # the reply lands on the record as judge
     batch_bytes: 4000               # ~20 of these events to a request
     max_tokens: 300                 # per record; a verdict is ~100 tokens
-    concurrency: 8                  # a hosted model takes many requests at once
-    timeout_ms: 60000               # time to write ~20 verdicts
     extra:
       thinking: { type: disabled }  # no thinking: the reply is the answer
 

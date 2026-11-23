@@ -14,6 +14,7 @@ pub mod dag;
 pub mod enrichment;
 pub mod include;
 pub mod inference;
+pub mod models;
 pub mod packs;
 pub mod plugins;
 pub mod runtime;
@@ -35,8 +36,14 @@ pub struct Config {
     #[serde(default)]
     pub plugins: std::collections::BTreeMap<Arc<str>, plugins::PluginConfig>,
 
-    /// Inference nodes, each with its own model and prompt, named in
-    /// another node's `inputs` as any node is.
+    /// The models, each a server and the model it serves: what an inference
+    /// node names as its `model`. They are no nodes: no record goes to one
+    /// but through a node that names it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub models: std::collections::BTreeMap<Arc<str>, models::ModelConfig>,
+
+    /// Inference nodes, each with its own prompt and the model it names,
+    /// named in another node's `inputs` as any node is.
     #[serde(default)]
     pub inference: std::collections::BTreeMap<Arc<str>, inference::InferenceConfig>,
 
@@ -74,7 +81,7 @@ impl Config {
         if !read.map.contains_key("include") {
             let mut config: Config = serde_yaml::from_str(&read.text)
                 .with_context(|| format!("parsing YAML {}", path.display()))?;
-            config.inference.values_mut().for_each(|n| n.default_url());
+            config.models.values_mut().for_each(|m| m.default_url());
             config
                 .check_names()
                 .with_context(|| format!("loading {}", path.display()))?;
@@ -89,7 +96,7 @@ impl Config {
             serde_path_to_error::deserialize(serde_yaml::Deserializer::from_str(&merged.text))
                 .map_err(|e| merged.explain(e))
                 .with_context(|| format!("loading {}", path.display()))?;
-        config.inference.values_mut().for_each(|n| n.default_url());
+        config.models.values_mut().for_each(|m| m.default_url());
         config
             .check_names()
             .with_context(|| format!("loading {}", path.display()))?;
@@ -240,6 +247,16 @@ impl Config {
             anyhow::bail!("inputs that cannot be:\n  - {}", cannot.join("\n  - "));
         }
 
+        // an inference node's `model` is an entry under `models`
+        for (name, node) in &self.inference {
+            if !self.models.contains_key(&node.model) {
+                anyhow::bail!(
+                    "inference node {name}: model names `{}`, which is no entry under `models`",
+                    node.model
+                );
+            }
+        }
+
         // a plugin's `models` are inference nodes
         for (name, plugin) in &self.plugins {
             for model in &plugin.models {
@@ -305,7 +322,7 @@ impl Config {
     /// inputs never runs, and a source that is no node's input is read and
     /// dropped, its records acked and a polling source's cursor moved past
     /// them. A plugin that is no node's input is fine: it may only write
-    /// state.
+    /// state. And a model no inference node names is never asked.
     pub fn warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         let edges = self.edges();
@@ -324,6 +341,13 @@ impl Config {
             }
             if inputs.is_empty() {
                 warnings.push(format!("{kind} {name}: it has no inputs; it never runs"));
+            }
+        }
+        for name in self.models.keys() {
+            if !self.inference.values().any(|node| node.model == *name) {
+                warnings.push(format!(
+                    "model {name}: no inference node names it; it is never asked"
+                ));
             }
         }
         warnings
@@ -411,6 +435,9 @@ mod tests {
 
     const LINES: &str = "sources:\n  lines: { type: tcp, bind_address: \"127.0.0.1:9\" }\n";
 
+    /// The model the tests' inference nodes name.
+    const MODEL: &str = "models:\n  m: { type: openai, model: m }\n";
+
     /// An input names its node, found in whichever map defines it.
     #[test]
     fn a_name_is_its_node() {
@@ -447,7 +474,7 @@ mod tests {
     #[test]
     fn a_name_is_letters_digits_underscores_and_dashes() {
         let cfg = config(&format!(
-            "{LINES}plugins:\n  ../x: {{ module_type: rust, inputs: [lines] }}\n  \
+            "{LINES}{MODEL}plugins:\n  ../x: {{ module_type: rust, inputs: [lines] }}\n  \
              ok_name-2: {{ module_type: rust, inputs: [lines] }}\n\
              inference:\n  judge.v2: {{ model: m, prompt_file: p.txt, inputs: [lines] }}\n\
              sinks:\n  out: {{ type: blackhole, inputs: [lines] }}\n"
@@ -504,13 +531,14 @@ mod tests {
     /// A walk sends a node's records on to every node that takes them until
     /// a sink: one on a cycle goes round it for good, through a model each
     /// time. An error naming the cycle, through an ungrouped plugin, a
-    /// grouped one or a model; two nodes with one input are no cycle.
+    /// grouped one or an inference node; two nodes with one input are no
+    /// cycle.
     #[test]
     fn the_inputs_make_no_cycle() {
         // each node's inputs, besides the source's lines for a, g and first
         let validate = |a: &str, g: &str, first: &str, second: &str, out: &str| {
             config(&format!(
-                "{LINES}plugins:\n  a: {{ module_type: rust, inputs: [lines{a}] }}\n  \
+                "{LINES}{MODEL}plugins:\n  a: {{ module_type: rust, inputs: [lines{a}] }}\n  \
                  g: {{ module_type: rust, group_by: [actor], inputs: [lines{g}] }}\n\
                  inference:\n  first: {{ model: m, prompt_file: p.txt, inputs: [lines{first}] }}\n  \
                  second: {{ model: m, prompt_file: p.txt, inputs: [{second}] }}\n\
@@ -539,7 +567,7 @@ mod tests {
     fn a_node_with_no_inputs_is_a_warning() {
         let cfg = config(&format!(
             "{LINES}  idle: {{ type: tcp, bind_address: \"127.0.0.1:9\" }}\n\
-             plugins:\n  builder: {{ module_type: rust, inputs: [lines] }}\n  \
+             {MODEL}plugins:\n  builder: {{ module_type: rust, inputs: [lines] }}\n  \
              stray: {{ module_type: rust }}\n\
              inference:\n  lonely: {{ model: m, prompt_file: p.txt }}\n\
              sinks:\n  out: {{ type: blackhole, inputs: [lines] }}\n  never: {{ type: blackhole }}\n"
@@ -597,7 +625,7 @@ mod tests {
     fn a_plugin_s_models_are_inference_nodes_and_need_no_input() {
         let with = |models: &str| {
             config(&format!(
-                "{LINES}plugins:\n  agent: {{ module_type: rust, models: [{models}], inputs: [lines] }}\n\
+                "{LINES}{MODEL}plugins:\n  agent: {{ module_type: rust, models: [{models}], inputs: [lines] }}\n\
                  inference:\n  reviewer: {{ model: m, prompt_file: p.txt }}\n\
                  sinks:\n  out: {{ type: blackhole, inputs: [agent] }}\n"
             ))
@@ -609,6 +637,40 @@ mod tests {
         assert_eq!(
             e,
             "plugin agent: models names `revewer`, which is no inference node"
+        );
+    }
+
+    /// An inference node's `model` is an entry under `models`, by name; a
+    /// name that is no entry is an error.
+    #[test]
+    fn an_inference_node_s_model_is_an_entry_under_models() {
+        let with = |model: &str| {
+            config(&format!(
+                "{LINES}{MODEL}inference:\n  judge: {{ model: {model}, prompt_file: p.txt, inputs: [lines] }}\n\
+                 sinks:\n  out: {{ type: blackhole, inputs: [judge] }}\n"
+            ))
+        };
+        with("m").validate().unwrap();
+        let e = with("n").validate().unwrap_err().to_string();
+        assert_eq!(
+            e,
+            "inference node judge: model names `n`, which is no entry under `models`"
+        );
+    }
+
+    /// A model no inference node names is never asked: it loads, with a
+    /// warning naming it.
+    #[test]
+    fn a_model_no_node_names_is_a_warning() {
+        let cfg = config(&format!(
+            "{LINES}{MODEL}  spare: {{ type: anthropic, model: s }}\n\
+             inference:\n  judge: {{ model: m, prompt_file: p.txt, inputs: [lines] }}\n\
+             sinks:\n  out: {{ type: blackhole, inputs: [judge] }}\n"
+        ));
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.warnings(),
+            ["model spare: no inference node names it; it is never asked"]
         );
     }
 

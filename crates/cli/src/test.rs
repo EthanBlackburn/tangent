@@ -188,18 +188,27 @@ pub async fn run(opts: TestOptions) -> Result<()> {
             let mut plugins = BTreeMap::new();
             plugins.insert(name.clone(), plugin_config);
 
+            // The nodes the plugin holds conversations with, which it
+            // reaches with --enable-http, and the models those name. An
+            // `api_key` is never written to a file, the test config
+            // included, so a model that needs one is asked without it.
+            let inference: BTreeMap<_, _> = cfg
+                .inference
+                .iter()
+                .filter(|(node, _)| plugin_cfg.models.contains(node))
+                .map(|(node, cfg)| (Arc::clone(node), cfg.clone()))
+                .collect();
+            let models = cfg
+                .models
+                .iter()
+                .filter(|(model, _)| inference.values().any(|node| node.model == **model))
+                .map(|(model, cfg)| (Arc::clone(model), cfg.clone()))
+                .collect();
+
             let test_config = tangent_shared::Config {
                 runtime,
-                // The nodes the plugin holds conversations with, which it
-                // reaches with --enable-http. An `api_key` is never written
-                // to a file, the test config included, so a node that needs
-                // one is asked without it.
-                inference: cfg
-                    .inference
-                    .iter()
-                    .filter(|(node, _)| plugin_cfg.models.contains(node))
-                    .map(|(node, cfg)| (Arc::clone(node), cfg.clone()))
-                    .collect(),
+                models,
+                inference,
                 sources,
                 sinks,
                 plugins,

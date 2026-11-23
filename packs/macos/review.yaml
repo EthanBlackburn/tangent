@@ -5,20 +5,24 @@
 # review: malicious, benign or unresolved. Include it with lake.yaml and
 # route plugin macos_verdicts to macos_review, and macos_review to where
 # reviews go (examples/macos does).
-inference:
-  reviewer:                        # it has no inputs: the plugin calls it
-    backend: bedrock
+models:
+  reviewer:
+    type: bedrock
     model: ${REVIEW_MODEL:-us.anthropic.claude-sonnet-5-5}
     aws:
       region: ${AWS_REGION:-us-west-2}
-    prompt_file: review.md
-    max_tokens: 8000               # a turn: its thinking, and a query or the report
     # Reviews go one at a time, so a turn that hangs holds up every alert
     # behind it: two minutes a try and three tries, then the review is an
     # error and the alert stands.
     timeout_ms: 120000
     retries: 2
     concurrency: 1
+
+inference:
+  reviewer:                        # it has no inputs: the plugin calls it
+    model: reviewer
+    prompt_file: review.md
+    max_tokens: 8000               # a turn: its thinking, and a query or the report
     extra:
       thinking: { type: adaptive }
       output_config: { effort: medium }

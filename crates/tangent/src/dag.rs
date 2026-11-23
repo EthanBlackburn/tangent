@@ -112,7 +112,7 @@ impl DagRuntime {
         }
         // One of each inference node, whichever pool runs it and whichever
         // plugin holds a conversation with it.
-        let models = crate::inference::nodes(&cfg.inference, config_dir)?;
+        let models = crate::inference::nodes(&cfg.models, &cfg.inference, config_dir)?;
         let (engines, components) = load(
             &cfg,
             &plugins,

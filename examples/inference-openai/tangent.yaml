@@ -13,17 +13,22 @@ sources:
     type: tcp
     bind_address: 0.0.0.0:9000
 
+models:
+  luna:
+    type: openai                    # OpenAI's chat completions
+    url: https://api.openai.com/v1
+    api_key: "${OPENAI_API_KEY}"
+    model: gpt-6-luna
+    concurrency: 8                  # a hosted model takes many requests at once
+    timeout_ms: 60000               # time to write ~20 verdicts
+
 inference:
   judge:
     inputs: [events]
-    url: https://api.openai.com/v1  # the default backend is OpenAI's chat completions
-    api_key: "${OPENAI_API_KEY}"
-    model: gpt-6-luna
+    model: luna                     # the entry under `models` above
     prompt_file: judge.md           # the reply lands on the record as judge
     batch_bytes: 4000               # ~20 of these events to a request
     max_tokens: 300                 # per record; a verdict is ~100 tokens
-    concurrency: 8                  # a hosted model takes many requests at once
-    timeout_ms: 60000               # time to write ~20 verdicts
     extra:
       reasoning_effort: low         # little thinking: the reply is the answer
 

@@ -2,23 +2,26 @@
 
 Claude on Amazon Bedrock reads every record; a plugin keeps what it flagged.
 
-Same pipeline as [../inference-local](../inference-local), with the `bedrock`
-backend: the `judge` node calls the Converse API with the AWS credential chain
-(environment, profile, SSO, instance or task role), so there is no key to
-configure. The filter is the same [flagged](../inference-local/flagged/src/lib.rs)
+Same pipeline as [../inference-local](../inference-local), with a model of
+`type: bedrock`: the `judge` node calls the Converse API with the AWS
+credential chain (environment, profile, SSO, instance or task role), so there
+is no key to configure. The filter is the same [flagged](../inference-local/flagged/src/lib.rs)
 plugin, referenced by path.
 
 ```yaml
-inference:
-  judge:
-    backend: bedrock
+models:
+  haiku:
+    type: bedrock
     model: us.anthropic.claude-haiku-4-5-20251001-v1:0
     aws: { region: us-west-2 }
+    concurrency: 8
+    timeout_ms: 60000
+inference:
+  judge:
+    model: haiku
     prompt_file: judge.md
     batch_bytes: 4000
     max_tokens: 300
-    concurrency: 8
-    timeout_ms: 60000
 plugins:
   flagged:
     module_type: rust

@@ -5,18 +5,22 @@
 include:
   - reviewed.yaml
 
-inference:
+models:
   judge:
-    backend: anthropic
+    type: anthropic
     url: https://api.anthropic.com
     api_key: "${ANTHROPIC_API_KEY}"
     model: claude-haiku-5-5
+  reviewer:
+    type: anthropic
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: claude-sonnet-5-5
+
+inference:
+  judge:
     max_tokens: 400                                 # per record
     extra: { thinking: { type: disabled } }         # no thinking: the reply is the answer
   reviewer:
-    backend: anthropic
-    api_key: "${ANTHROPIC_API_KEY}"
-    model: claude-sonnet-5-5
     extra:
       thinking: { type: adaptive }                  # it thinks before each query and its report, briefly
       output_config: { effort: low }

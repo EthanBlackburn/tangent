@@ -30,20 +30,25 @@ plugins:
     path: ../../examples/inference-local/flagged
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
 
-inference:
+models:
   judge:
-    inputs: [baseline_renderer]
+    type: openai
     url: ${JUDGE_URL:-http://localhost:8080/v1}
     model: ${JUDGE_MODEL:-glm-4.7-flash}
     api_key: ${JUDGE_API_KEY:-none}
+    timeout_ms: 90000
+    concurrency: 4
+
+inference:
+  judge:
+    inputs: [baseline_renderer]
+    model: judge
     prompt_file: judge.md
     schema_file: judge.schema.json
     group_by: [_norm.org, _norm.actor]
     batch_bytes: 96000           # JSON bytes, `_baseline` counted on every record though logfmt writes it once: an actor's forty fit
     max_tokens: 200
     temperature: 0.7
-    timeout_ms: 90000
-    concurrency: 4
     extra:
       top_p: 0.95
       chat_template_kwargs:

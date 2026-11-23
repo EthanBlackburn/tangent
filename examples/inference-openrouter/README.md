@@ -3,22 +3,26 @@
 A model on OpenRouter reads every record; a plugin keeps what it flagged.
 
 Same pipeline as [../inference-local](../inference-local). OpenRouter speaks
-the OpenAI chat completions API, so this is the default backend at
+the OpenAI chat completions API, so this is `type: openai` at
 OpenRouter's address, with your key, and any model it lists: here DeepSeek V4
 Flash, whose weights are open. The filter is the same
 [flagged](../inference-local/flagged/src/lib.rs) plugin, referenced by path.
 
 ```yaml
-inference:
-  judge:
+models:
+  deepseek:
+    type: openai
     url: https://openrouter.ai/api/v1
     api_key: "${OPENROUTER_API_KEY}"
     model: deepseek/deepseek-v4-flash-0731
+    concurrency: 8
+    timeout_ms: 60000
+inference:
+  judge:
+    model: deepseek
     prompt_file: judge.md
     batch_bytes: 4000
     max_tokens: 300
-    concurrency: 8
-    timeout_ms: 60000
     extra:
       reasoning: { enabled: false }
 plugins:

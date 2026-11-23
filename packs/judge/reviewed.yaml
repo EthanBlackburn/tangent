@@ -6,9 +6,9 @@
 # and baseline_renderer:
 #
 #   include: [pack:judge/reviewed, pack:cloudtrail]
-#   inference:
-#     judge: { url: ..., model: ..., api_key: ... }
-#     reviewer: { url: ..., model: ..., api_key: ... }
+#   models:
+#     judge: { type: ..., url: ..., model: ..., api_key: ... }
+#     reviewer: { type: ..., url: ..., model: ..., api_key: ... }
 #   plugins:
 #     baseline_builder: { inputs: [cloudtrail] }
 #     baseline_renderer: { inputs: [cloudtrail] }
@@ -20,11 +20,14 @@ include:
   - hosted.yaml
   - review.yaml
 
-inference:
+models:
   reviewer:
-    backend: ~
+    type: ~
     model: ~
     aws: ~
+
+inference:
+  reviewer:
     extra: ~
 
 sinks:

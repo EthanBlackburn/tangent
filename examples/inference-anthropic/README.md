@@ -2,22 +2,25 @@
 
 Claude through Anthropic's API reads every record; a plugin keeps what it flagged.
 
-Same pipeline as [../inference-local](../inference-local), with the
-`anthropic` backend: the `judge` node calls Anthropic's Messages API with your
+Same pipeline as [../inference-local](../inference-local), with a model of
+`type: anthropic`: the `judge` node calls Anthropic's Messages API with your
 key. The filter is the same [flagged](../inference-local/flagged/src/lib.rs)
 plugin, referenced by path.
 
 ```yaml
-inference:
-  judge:
-    backend: anthropic
+models:
+  haiku:
+    type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"
     model: claude-haiku-5-5
+    concurrency: 8
+    timeout_ms: 60000
+inference:
+  judge:
+    model: haiku
     prompt_file: judge.md
     batch_bytes: 4000
     max_tokens: 300
-    concurrency: 8
-    timeout_ms: 60000
     extra:
       thinking: { type: disabled }
 plugins:

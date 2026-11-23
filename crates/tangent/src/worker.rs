@@ -760,7 +760,6 @@ mod tests {
     use crate::wasm::engine::WasmEngine;
     use ahash::AHashMap as HashMap;
     use serde_json::Value;
-    use std::collections::BTreeMap;
     use tangent_shared::runtime::StateConfig;
     use tokio::sync::Mutex;
 
@@ -862,9 +861,7 @@ mod tests {
         );
         let router = Arc::new(Router::new(outs, Arc::clone(&sink_manager)));
         let in_flight = router.in_flight_counter();
-        let inference =
-            crate::inference::nodes(&BTreeMap::from([(judge.clone(), stub::config(&url))]), &dir)
-                .unwrap();
+        let inference = stub::config(&url).nodes("judge", &dir).unwrap();
         let (tx, rx) = mpsc::channel(16);
         let store: Arc<dyn StateStore> =
             Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
@@ -962,8 +959,8 @@ mod tests {
         let dir = stub::dir("stop-call");
         let judge: Arc<str> = Arc::from("judge");
         let mut cfg = stub::config(&url);
-        cfg.timeout_ms = 600_000;
-        let nodes = crate::inference::nodes(&BTreeMap::from([(judge.clone(), cfg)]), &dir).unwrap();
+        cfg.model.timeout_ms = 600_000;
+        let nodes = cfg.nodes("judge", &dir).unwrap();
         let views: Views = vec![JsonLogView::from_bytes(BytesMut::from("{\"id\":1}")).unwrap()];
         let stop = CancellationToken::new();
         tokio::spawn({
@@ -1034,9 +1031,8 @@ mod tests {
         let router = Arc::new(Router::new(outs, Arc::clone(&sink_manager)));
         let in_flight = router.in_flight_counter();
         let mut cfg = stub::config(&url);
-        cfg.timeout_ms = 600_000;
-        let inference =
-            crate::inference::nodes(&BTreeMap::from([(judge.clone(), cfg)]), &dir).unwrap();
+        cfg.model.timeout_ms = 600_000;
+        let inference = cfg.nodes("judge", &dir).unwrap();
         let (tx, rx) = mpsc::channel(16);
         let store: Arc<dyn StateStore> =
             Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
