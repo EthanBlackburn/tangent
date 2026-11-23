@@ -32,7 +32,7 @@ pub struct WasmEngine {
     /// as `NAME=PATH`: where the sink each names keeps its records.
     lake: HashMap<Arc<str>, Arc<[String]>>,
     /// The inference nodes plugins hold conversations with, and each
-    /// plugin's own of them (`plugins.<name>.models`).
+    /// plugin's own of them (`plugins.<name>.inference`).
     models: Nodes,
     plugin_models: HashMap<Arc<str>, Nodes>,
     /// Cancelled when the pipeline stops: it ends a model's turn under way.

@@ -63,7 +63,7 @@ pub struct HostEngine {
     /// names none.
     lake: Option<Arc<[String]>>,
     /// The inference nodes this plugin may hold a conversation with
-    /// (`plugins.<name>.models`).
+    /// (`plugins.<name>.inference`).
     models: Nodes,
     /// Cancelled when the pipeline stops: it ends a model's turn under way.
     stop: CancellationToken,
@@ -277,7 +277,7 @@ impl tangent::logs::enrichment::Host for HostEngine {
     }
 }
 
-/// A turn of a conversation with one of the plugin's `models`: the node's
+/// A turn of a conversation with one of the plugin's `inference`: the node's
 /// own request, under its concurrency, timeout and retries. A stop ends the
 /// turn, as it ends an inference node's calls.
 impl tangent::logs::model::Host for HostEngine {
@@ -287,7 +287,7 @@ impl tangent::logs::model::Host for HostEngine {
         }
         let Some(model) = self.models.get(node.as_str()) else {
             return Err(format!(
-                "inference node `{node}` is not among this plugin's `models` in the config"
+                "inference node `{node}` is not among this plugin's `inference` in the config"
             ));
         };
         if self.disable_remote_calls {
@@ -656,9 +656,9 @@ mod tests {
         assert!(e.contains("no `tables`"), "{e}");
     }
 
-    /// `model.chat` reaches the nodes the plugin's `models` names, and no other.
+    /// `model.chat` reaches the nodes the plugin's `inference` names, and no other.
     #[tokio::test]
-    async fn a_plugin_talks_only_to_its_models() {
+    async fn a_plugin_talks_only_to_its_inference_nodes() {
         use tangent::logs::model::Host as _;
         let tmp = tempfile::tempdir().unwrap();
         let store = sqlite(tmp.path());
@@ -666,7 +666,7 @@ mod tests {
             .chat("judge".into(), r#"{"messages": []}"#.into())
             .await
             .unwrap_err();
-        assert!(e.contains("not among this plugin's `models`"), "{e}");
+        assert!(e.contains("not among this plugin's `inference`"), "{e}");
     }
 
     /// A stop ends a turn the model has not answered, and a runtime told to

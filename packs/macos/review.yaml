@@ -32,7 +32,7 @@ plugins:
     module_type: rust
     path: review
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
-    models: [reviewer]
+    inference: [reviewer]
     tables:
       lake: lake                   # table `lake` is what sink `lake` (lake.yaml) has written
     data: /                        # for read_file: the log's paths are absolute. The plugin reads only a file the log gives a reason to, never one kept as credentials or transcripts

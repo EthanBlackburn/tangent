@@ -479,7 +479,7 @@ fn load(
                         plugin_cfg.state_namespace.as_deref(),
                         data_dir.as_deref(),
                         tables,
-                        &plugin_cfg.models,
+                        &plugin_cfg.inference,
                         plugin_cfg.drop_on_error,
                     )
                     .with_context(|| format!("plugin {name}: loading {}", plugin_path.display()))?,

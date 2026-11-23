@@ -1212,7 +1212,7 @@ fn every_path_field_is_rebased() {
         state_namespace: _,
         data: _,   // PATHS
         tables: _, // sinks' names
-        models: _,
+        inference: _,
         drop_on_error: _,
         group_by: _,
         max_events: _,

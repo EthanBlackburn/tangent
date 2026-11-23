@@ -97,7 +97,7 @@ interface lake {
 /// with the next turn. The config's node gives its system prompt
 /// (`prompt_file`), `max_tokens` and `extra`, and its model, an entry under
 /// `models`, the credentials, `timeout_ms`, `retries` and `concurrency`; the
-/// plugin's `models` in the config names the nodes it may call.
+/// plugin's `inference` in the config names the nodes it may call.
 interface model {
   /// One turn with inference node `node`. `request` is JSON:
   ///
