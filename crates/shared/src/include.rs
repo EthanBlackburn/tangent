@@ -43,11 +43,12 @@ use crate::packs;
 
 /// The keys a config file may have at its top, besides the `x-` keys it
 /// keeps for itself.
-pub const TOP_LEVEL: [&str; 7] = [
+pub const TOP_LEVEL: [&str; 8] = [
     "runtime",
     "sources",
     "sinks",
     "plugins",
+    "models",
     "inference",
     "enrichment_tables",
     "include",

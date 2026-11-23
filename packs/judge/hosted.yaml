@@ -8,11 +8,13 @@
 # runs it with these settings):
 #
 #   include: [packs/judge/hosted.yaml]
-#   inference:
+#   models:
 #     judge:
-#       backend: bedrock
+#       type: bedrock
 #       model: us.anthropic.claude-haiku-5-5
 #       aws: { region: us-west-2 }             # and `profile`; the SDK's chain when unset
+#   inference:
+#     judge:
 #       max_tokens: 400                        # per record
 #       extra: { thinking: { type: disabled } }   # no thinking: the reply is the answer
 #

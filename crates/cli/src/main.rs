@@ -491,25 +491,25 @@ mod tests {
         let file = dir.path().join("tangent.yaml");
         std::fs::write(
             &file,
-            "inference:\n  cloud: { backend: bedrock, model: m, prompt_file: p.md }\n  local: { model: m, prompt_file: p.md }\n",
+            "models:\n  cloud: { type: bedrock, model: m }\n  local: { type: openai, model: m }\n",
         )
         .unwrap();
         let shown = show_config(&file).unwrap();
         let value: Value = serde_yaml::from_str(&shown).unwrap();
         assert_eq!(
-            value["inference"]["cloud"].get("url"),
+            value["models"]["cloud"].get("url"),
             None,
             "bedrock reads no url: {shown}"
         );
         assert_eq!(
-            value["inference"]["local"]["url"],
+            value["models"]["local"]["url"],
             Value::from("http://localhost:8080/v1"),
             "{shown}"
         );
     }
 
-    /// Two models wired round in a cycle: `tangent config` fails, as `run`
-    /// does, before a record goes round it.
+    /// Two inference nodes wired round in a cycle: `tangent config` fails, as
+    /// `run` does, before a record goes round it.
     #[test]
     fn config_fails_on_a_cycle() {
         let dir = tempfile::tempdir().unwrap();
@@ -517,6 +517,7 @@ mod tests {
         std::fs::write(
             &file,
             "sources:\n  input: { type: file, path: in.ndjson, decoding: { format: { type: ndjson } } }\n\
+             models:\n  m: { type: openai, model: m }\n\
              inference:\n  first: { model: m, prompt_file: p.txt, inputs: [input, second] }\n  \
              second: { model: m, prompt_file: p.txt, inputs: [first] }\n\
              sinks:\n  looped: { type: file, path: looped.ndjson, inputs: [second] }\n",

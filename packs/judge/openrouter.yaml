@@ -6,11 +6,20 @@
 include:
   - reviewed.yaml
 
-inference:
+models:
   judge:
+    type: openai
     url: https://openrouter.ai/api/v1
     api_key: "${OPENROUTER_API_KEY}"
     model: deepseek/deepseek-v4-flash-0731
+  reviewer:
+    type: openai
+    url: https://openrouter.ai/api/v1
+    api_key: "${OPENROUTER_API_KEY}"
+    model: deepseek/deepseek-v4-flash-0731
+
+inference:
+  judge:
     max_tokens: 200                                 # per record
     temperature: 0.7                                # with top_p, the sampling it was measured with
     extra:
@@ -18,8 +27,5 @@ inference:
       reasoning: { enabled: false }                 # no thinking: the reply is the answer
       provider: { require_parameters: true }        # only hosts that hold the reply to its schema
   reviewer:
-    url: https://openrouter.ai/api/v1
-    api_key: "${OPENROUTER_API_KEY}"
-    model: deepseek/deepseek-v4-flash-0731
     extra:
       reasoning: { effort: low }                    # it thinks before each query and its report, briefly

@@ -238,9 +238,13 @@ struct Pair {
     /// What the pair did over tangent-eval's cloud logs: attacks caught of
     /// 71, and ordinary records still flagged after review, of 5,304.
     measured: &'static str,
-    /// The judge's own settings, under `inference.judge`.
+    /// The judge's model, under `models.judge`: where it is served.
+    judge_model: &'static str,
+    /// What the judge is asked with, under `inference.judge`.
     judge: &'static str,
-    /// The reviewer's, under `inference.reviewer`.
+    /// The reviewer's model, under `models.reviewer`.
+    reviewer_model: &'static str,
+    /// What the reviewer is asked with, under `inference.reviewer`.
     reviewer: &'static str,
     needs: Needs,
 }
@@ -252,16 +256,18 @@ impl Provider {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Anthropic's API)",
                 choice: "Claude Haiku 5.5, Sonnet 5.5 reviews (Anthropic)",
                 measured: "70 of 71, 40 flagged",
-                judge: r#"    backend: anthropic
+                judge_model: r#"    type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"   # a key from console.anthropic.com
     model: claude-haiku-5-5
-    max_tokens: 400              # per record
+"#,
+                judge: r#"    max_tokens: 400              # per record
     extra: { thinking: { type: disabled } }   # no thinking: the reply is the answer
 "#,
-                reviewer: r#"    backend: anthropic
+                reviewer_model: r#"    type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"
     model: claude-sonnet-5-5
-    extra:
+"#,
+                reviewer: r#"    extra:
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
 "#,
@@ -271,16 +277,18 @@ impl Provider {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Amazon Bedrock)",
                 choice: "Claude Haiku 5.5, Sonnet 5.5 reviews (Bedrock)",
                 measured: "the same pair",
-                judge: r#"    backend: bedrock
+                judge_model: r#"    type: bedrock
     model: us.anthropic.claude-haiku-5-5
     aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }   # a US region: Bedrock serves this model there
-    max_tokens: 400              # per record
+"#,
+                judge: r#"    max_tokens: 400              # per record
     extra: { thinking: { type: disabled } }   # no thinking: the reply is the answer
 "#,
-                reviewer: r#"    backend: bedrock
+                reviewer_model: r#"    type: bedrock
     model: us.anthropic.claude-sonnet-5-5
     aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }
-    extra:
+"#,
+                reviewer: r#"    extra:
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
 "#,
@@ -293,20 +301,24 @@ impl Provider {
                 label: "DeepSeek V4 Flash, open weights, judges and reviews (OpenRouter)",
                 choice: "DeepSeek V4 Flash, reviews itself (OpenRouter)",
                 measured: "71 of 71, 10 to 13 flagged",
-                judge: r#"    url: https://openrouter.ai/api/v1
+                judge_model: r#"    type: openai                 # an OpenAI-compatible server
+    url: https://openrouter.ai/api/v1
     api_key: "${OPENROUTER_API_KEY}"   # a key from openrouter.ai/keys
     model: deepseek/deepseek-v4-flash-0731
-    max_tokens: 200              # per record
+"#,
+                judge: r#"    max_tokens: 200              # per record
     temperature: 0.7             # with top_p, the sampling it was measured with
     extra:
       top_p: 0.95
       reasoning: { enabled: false }            # no thinking: the reply is the answer
       provider: { require_parameters: true }   # only hosts that hold the reply to its schema
 "#,
-                reviewer: r#"    url: https://openrouter.ai/api/v1
+                reviewer_model: r#"    type: openai                 # an OpenAI-compatible server
+    url: https://openrouter.ai/api/v1
     api_key: "${OPENROUTER_API_KEY}"
     model: deepseek/deepseek-v4-flash-0731
-    extra:
+"#,
+                reviewer: r#"    extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 "#,
                 needs: &[("OPENROUTER_API_KEY", "a key from openrouter.ai/keys")],
@@ -315,17 +327,19 @@ impl Provider {
                 label: "GPT-6 Luna judges, GPT-6.1 Terra reviews (OpenAI's API)",
                 choice: "GPT-6 Luna, GPT-6.1 Terra reviews (OpenAI)",
                 measured: "71 of 71, 20 flagged",
-                judge: r#"    backend: responses           # OpenAI's Responses API
+                judge_model: r#"    type: responses              # OpenAI's Responses API
     api_key: "${OPENAI_API_KEY}"   # a key from platform.openai.com
     model: gpt-6-luna
-    max_tokens: 400              # per record, its thinking included
+"#,
+                judge: r#"    max_tokens: 400              # per record, its thinking included
     extra:
       reasoning: { effort: low }   # little thinking: the reply is the answer
 "#,
-                reviewer: r#"    backend: responses
+                reviewer_model: r#"    type: responses
     api_key: "${OPENAI_API_KEY}"
     model: gpt-6.1-terra
-    extra:
+"#,
+                reviewer: r#"    extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 "#,
                 needs: &[("OPENAI_API_KEY", "a key from platform.openai.com")],
@@ -334,17 +348,21 @@ impl Provider {
                 label: "A model on this machine judges and reviews (llama-server, mlx_lm.server, Ollama, vLLM)",
                 choice: "A model on this machine, reviews itself",
                 measured: "not measured",
-                judge: r#"    url: http://localhost:8080/v1   # llama-server, mlx_lm.server or vLLM; Ollama is http://localhost:11434/v1
+                judge_model: r#"    type: openai                 # an OpenAI-compatible server
+    url: http://localhost:8080/v1   # llama-server, mlx_lm.server or vLLM; Ollama is http://localhost:11434/v1
     model: glm-4.7-flash         # EDIT to the name your server gives its model
-    max_tokens: 200              # per record
+"#,
+                judge: r#"    max_tokens: 200              # per record
     temperature: 0.7
     extra:
       top_p: 0.95
       chat_template_kwargs: { enable_thinking: false }   # no thinking: the reply is the answer
 "#,
-                reviewer: r#"    url: http://localhost:8080/v1
+                reviewer_model: r#"    type: openai                 # an OpenAI-compatible server
+    url: http://localhost:8080/v1
     model: glm-4.7-flash         # EDIT, as the judge's
 "#,
+                reviewer: r#""#,
                 needs: &[],
             },
         }
@@ -466,13 +484,19 @@ impl Choices {
             ("{{sources}}", block(&join(|p| p.node))),
             ("{{packs}}", block(&plugins)),
             ("{{inputs}}", inputs.join(", ")),
+            ("{{judge_model}}", block(pair.judge_model)),
+            ("{{reviewer_model}}", block(pair.reviewer_model)),
             ("{{judge}}", block(pair.judge)),
             ("{{rows}}", block(&join(|p| p.rows))),
             ("{{reviewer}}", block(pair.reviewer)),
         ]
         .into_iter()
         .fold(CONFIG.to_string(), |config, (place, part)| {
-            config.replace(place, &part)
+            // a part with nothing in it takes no line
+            match part.is_empty() {
+                true => config.replace(&format!("{place}\n"), ""),
+                false => config.replace(place, &part),
+            }
         })
     }
 
@@ -627,7 +651,7 @@ pub async fn run(dir: &Path, watch: Vec<Source>, provider: Option<Provider>) -> 
 mod tests {
     use super::*;
     use serde_yaml::Value;
-    use tangent_shared::inference::Backend;
+    use tangent_shared::models::ModelKind;
     use tangent_shared::sources::common::SourceConfig;
     use tangent_shared::Config;
 
@@ -776,7 +800,7 @@ mod tests {
             // starts from; the file has no address to name over.
             for value in [&mut ours, &mut theirs] {
                 if provider == Provider::Anthropic {
-                    value["inference"]["judge"]
+                    value["models"]["judge"]
                         .as_mapping_mut()
                         .unwrap()
                         .remove("url");
@@ -835,47 +859,45 @@ mod tests {
     }
 
     /// Each pair names the models it says it does, where they are served,
-    /// and its reviewer is the provider's own.
+    /// and its reviewer is the provider's own. Each node names its model.
     #[test]
     fn every_pair_names_its_models() {
         for provider in Provider::value_variants() {
             let (_dir, cfg) = written(&[Source::Cloudtrail], *provider);
             let (judge, reviewer) = (&cfg.inference["judge"], &cfg.inference["reviewer"]);
-            let (backend, url, judges, reviews) = match provider {
+            let (kind, url, judges, reviews) = match provider {
                 Provider::Anthropic => (
-                    Backend::Anthropic,
+                    ModelKind::Anthropic,
                     None,
                     "claude-haiku-5-5",
                     "claude-sonnet-5-5",
                 ),
                 Provider::Bedrock => (
-                    Backend::Bedrock,
+                    ModelKind::Bedrock,
                     None,
                     "us.anthropic.claude-haiku-5-5",
                     "us.anthropic.claude-sonnet-5-5",
                 ),
                 Provider::Openrouter => (
-                    Backend::Openai,
+                    ModelKind::Openai,
                     Some("https://openrouter.ai/api/v1"),
                     "deepseek/deepseek-v4-flash-0731",
                     "deepseek/deepseek-v4-flash-0731",
                 ),
-                Provider::Openai => (Backend::Responses, None, "gpt-6-luna", "gpt-6.1-terra"),
+                Provider::Openai => (ModelKind::Responses, None, "gpt-6-luna", "gpt-6.1-terra"),
                 Provider::Local => (
-                    Backend::Openai,
+                    ModelKind::Openai,
                     Some("http://localhost:8080/v1"),
                     "glm-4.7-flash",
                     "glm-4.7-flash",
                 ),
             };
-            for node in [judge, reviewer] {
-                assert_eq!(node.backend, backend, "{provider:?}");
-                assert_eq!(node.url.as_deref(), url, "{provider:?}");
+            let models = [judge, reviewer].map(|node| &cfg.models[&node.model]);
+            for model in models {
+                assert_eq!(model.kind, kind, "{provider:?}");
+                assert_eq!(model.url.as_deref(), url, "{provider:?}");
             }
-            assert_eq!(
-                (judge.model.as_str(), reviewer.model.as_str()),
-                (judges, reviews)
-            );
+            assert_eq!(models.map(|model| model.model.as_str()), [judges, reviews]);
             assert!(
                 reviewer.inputs.is_empty(),
                 "{provider:?}: the plugin calls it"
@@ -923,10 +945,10 @@ mod tests {
             panic!("aws_audit is not a cloudtrail source");
         };
         assert_eq!(source.profile, profile());
-        for node in ["judge", "reviewer"] {
-            let aws = &cfg.inference[node].aws;
-            assert_eq!(aws.profile, profile(), "{node}");
-            assert_eq!(aws.region.as_deref(), Some("us-west-2"), "{node}");
+        for model in ["judge", "reviewer"] {
+            let aws = &cfg.models[model].aws;
+            assert_eq!(aws.profile, profile(), "{model}");
+            assert_eq!(aws.region.as_deref(), Some("us-west-2"), "{model}");
         }
     }
 

@@ -13,19 +13,23 @@ sources:
     type: tcp
     bind_address: 0.0.0.0:9000
 
-inference:
-  judge:
-    inputs: [events]
-    backend: bedrock                # the Converse API, AWS credential chain
+models:
+  haiku:
+    type: bedrock                   # the Converse API, AWS credential chain
     model: us.anthropic.claude-haiku-4-5-20251001-v1:0
     aws:
       region: us-west-2
       # profile: prod               # an AWS profile; the default chain when unset
+    concurrency: 8                  # a hosted model takes many requests at once
+    timeout_ms: 60000               # time to write ~20 verdicts
+
+inference:
+  judge:
+    inputs: [events]
+    model: haiku                    # the entry under `models` above
     prompt_file: judge.md           # the reply lands on the record as judge
     batch_bytes: 4000               # ~20 of these events to a request
     max_tokens: 300                 # per record; a verdict is ~100 tokens
-    concurrency: 8                  # a hosted model takes many requests at once
-    timeout_ms: 60000               # time to write ~20 verdicts
 
 plugins:
   flagged:                          # the same plugin as inference-local: keeps judge.flag == true

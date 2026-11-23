@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use tangent_shared::enrichment::{TableConfig, TableKind};
 use tangent_shared::inference::InferenceConfig;
+use tangent_shared::models::ModelConfig;
 use tangent_shared::plugins::{PluginConfig, PluginTests};
 use tangent_shared::sources::common::SourceConfig;
 use tangent_shared::{Config, Loaded};
@@ -58,11 +59,15 @@ sources:
     type: github_audit
     org: 12345
     since: 3600
+models:
+  local:
+    type: openai
+    url: ${TANGENT_TEST_UNSET_URL}
+    model:
 inference:
   judge:
     inputs: [gh]
-    url: ${TANGENT_TEST_UNSET_URL}
-    model:
+    model: local
     prompt_file: judge.md
 sinks:
   out: { type: file, path: out.ndjson, inputs: [judge] }
@@ -87,15 +92,15 @@ fn a_root_without_include_loads_as_before() {
         "a bare number is the string a String wants"
     );
     assert_eq!(gh.org.as_deref(), Some("12345"), "an all-digit org");
-    let judge = &cfg.inference["judge"];
-    assert_eq!(judge.model, "", "an empty `model:` is the empty string");
+    let local = &cfg.models["local"];
+    assert_eq!(local.model, "", "an empty `model:` is the empty string");
     assert_eq!(
-        judge.url.as_deref(),
+        local.url.as_deref(),
         Some(""),
         "an unset ${{VAR}} is empty, as before"
     );
     assert_eq!(
-        judge.prompt_file,
+        cfg.inference["judge"].prompt_file,
         PathBuf::from("judge.md"),
         "the root's own paths stay as written"
     );
@@ -111,7 +116,8 @@ fn merged_text_keeps_the_scalars_lenient() {
         ),
         (
             "judge.yaml",
-            "inference:\n  judge: { model: 4, url: 8080, prompt_file: 7.md, temperature: 1 }\n",
+            "models:\n  m: { type: openai, model: 4, url: 8080 }\n\
+             inference:\n  judge: { model: m, prompt_file: 7.md, temperature: 1 }\n",
         ),
         (
             "root.yaml",
@@ -125,13 +131,10 @@ fn merged_text_keeps_the_scalars_lenient() {
     assert_eq!(gh.since, "3600");
     assert_eq!(gh.org.as_deref(), Some("12345"));
     assert_eq!(gh.interval_secs, 30);
-    let judge = &cfg.inference["judge"];
-    assert_eq!(
-        judge.model, "4",
-        "a number where a string goes, as in a file"
-    );
-    assert_eq!(judge.url.as_deref(), Some("8080"));
-    assert_eq!(judge.temperature, Some(1.0));
+    let m = &cfg.models["m"];
+    assert_eq!(m.model, "4", "a number where a string goes, as in a file");
+    assert_eq!(m.url.as_deref(), Some("8080"));
+    assert_eq!(cfg.inference["judge"].temperature, Some(1.0));
 }
 
 /// A bare scalar a string field takes is the text its file wrote, with
@@ -141,7 +144,8 @@ fn merged_text_keeps_the_scalars_lenient() {
 fn a_scalar_reads_as_its_file_wrote_it() {
     for written in ["1.10", "0x1F", "True", "+12", "1e3", "0o17", ".inf", "007"] {
         let judge = format!(
-            "inference:\n  judge: {{ model: {written}, url: {written}, prompt_file: judge.md, temperature: 1.50 }}\n"
+            "models:\n  m: {{ type: openai, model: {written}, url: {written} }}\n\
+             inference:\n  judge: {{ model: m, prompt_file: judge.md, temperature: 1.50 }}\n"
         );
         let dir = tree(&[
             ("plain.yaml", judge.as_str()),
@@ -152,11 +156,11 @@ fn a_scalar_reads_as_its_file_wrote_it() {
         ]);
         for name in ["plain.yaml", "inc.yaml", "root.yaml"] {
             let cfg = load(&dir, name).unwrap().config;
-            let judge = &cfg.inference["judge"];
-            assert_eq!(judge.model, written, "{name}");
-            assert_eq!(judge.url.as_deref(), Some(written), "{name}");
+            let m = &cfg.models["m"];
+            assert_eq!(m.model, written, "{name}");
+            assert_eq!(m.url.as_deref(), Some(written), "{name}");
             assert_eq!(
-                judge.temperature,
+                cfg.inference["judge"].temperature,
                 Some(1.5),
                 "{name}: a number is still one"
             );
@@ -169,20 +173,14 @@ fn a_scalar_reads_as_its_file_wrote_it() {
 #[test]
 fn siblings_agree_on_a_scalar_as_written() {
     let dir = tree(&[
-        (
-            "a.yaml",
-            "inference:\n  judge: { model: 1.10, prompt_file: j.md }\n",
-        ),
-        (
-            "b.yaml",
-            "inference:\n  judge: { model: 1.1, prompt_file: j.md }\n",
-        ),
-        ("c.yaml", "inference:\n  judge: { model: 1.10 }\n"),
+        ("a.yaml", "models:\n  m: { type: openai, model: 1.10 }\n"),
+        ("b.yaml", "models:\n  m: { type: openai, model: 1.1 }\n"),
+        ("c.yaml", "models:\n  m: { model: 1.10 }\n"),
         ("disagree.yaml", "include: [a.yaml, b.yaml]\n"),
         ("agree.yaml", "include: [a.yaml, c.yaml]\n"),
     ]);
     let err = error(&dir, "disagree.yaml");
-    assert!(err.contains("inference.judge.model: "), "{err}");
+    assert!(err.contains("models.m.model: "), "{err}");
     assert!(err.contains("a.yaml has 1.10, "), "{err}");
     assert!(
         err.contains(
@@ -192,7 +190,7 @@ fn siblings_agree_on_a_scalar_as_written() {
         "{err}"
     );
     let cfg = load(&dir, "agree.yaml").unwrap().config;
-    assert_eq!(cfg.inference["judge"].model, "1.10");
+    assert_eq!(cfg.models["m"].model, "1.10");
 }
 
 /// A plugin's `config` and a node's `extra` are handed on as written, so a
@@ -474,9 +472,13 @@ fn a_null_in_an_included_file_is_not_set() {
         (
             "core.yaml",
             "
+models:
+  m:
+    type: openai
+    url: ${TANGENT_TEST_UNSET_JUDGE_URL}
+    model: m
 inference:
   judge:
-    url: ${TANGENT_TEST_UNSET_JUDGE_URL}
     model: m
     prompt_file: judge.md
     temperature:
@@ -486,14 +488,13 @@ inference:
         ("root.yaml", "include: [core.yaml, other.yaml]\n"),
     ]);
     let cfg = load(&dir, "root.yaml").unwrap().config;
-    let judge = &cfg.inference["judge"];
     assert_eq!(
-        judge.url.as_deref(),
+        cfg.models["m"].url.as_deref(),
         Some("http://localhost:8080/v1"),
         "the field's default"
     );
     assert_eq!(
-        judge.temperature,
+        cfg.inference["judge"].temperature,
         Some(0.5),
         "a sibling's value over a null"
     );
@@ -742,23 +743,20 @@ fn env_works_in_include_paths_with_defaults() {
 include:
   - ${TANGENT_TEST_PACKS}/cloudtrail.yaml
   - ${TANGENT_TEST_UNSET_DIR:-packs}/okta.yaml
-inference:
-  judge:
+models:
+  m:
+    type: openai
     model: ${TANGENT_TEST_EMPTY:-glm-4.7-flash}
     url: ${TANGENT_TEST_PACKS:-unused}
-    prompt_file: judge.md
 ",
         ),
     ]);
     let cfg = load(&dir, "root.yaml").unwrap().config;
     assert!(cfg.plugins.contains_key("cloudtrail"));
     assert!(cfg.plugins.contains_key("okta"));
+    assert_eq!(cfg.models["m"].model, "glm-4.7-flash", "empty is unset");
     assert_eq!(
-        cfg.inference["judge"].model, "glm-4.7-flash",
-        "empty is unset"
-    );
-    assert_eq!(
-        cfg.inference["judge"].url.as_deref(),
+        cfg.models["m"].url.as_deref(),
         Some("packs"),
         "a set variable wins"
     );
@@ -768,10 +766,10 @@ inference:
 fn an_unset_model_with_a_default_loads_without_include_too() {
     let dir = tree(&[(
         "judge.yaml",
-        "inference:\n  judge: { model: \"${TANGENT_TEST_UNSET_MODEL:-glm-4.7-flash}\", prompt_file: judge.md }\n",
+        "models:\n  m: { type: openai, model: \"${TANGENT_TEST_UNSET_MODEL:-glm-4.7-flash}\" }\n",
     )]);
     let cfg = load(&dir, "judge.yaml").unwrap().config;
-    assert_eq!(cfg.inference["judge"].model, "glm-4.7-flash");
+    assert_eq!(cfg.models["m"].model, "glm-4.7-flash");
 }
 
 /// Component paths are relative to the file that names them; `runtime`
@@ -888,6 +886,14 @@ fn an_unknown_key_in_a_block_is_an_error() {
         (
             "inference:\n  judge: { model: m, prompt_file: p, max_token: 10 }\n",
             "max_token",
+        ),
+        (
+            "inference:\n  judge: { model: m, prompt_file: p, url: http://localhost:8080/v1 }\n",
+            "url",
+        ),
+        (
+            "models:\n  m: { type: openai, model: m, timeout: 30000 }\n",
+            "timeout",
         ),
         ("runtime: { worker: 2 }\n", "worker"),
         ("runtime: { state: { pth: s.sqlite } }\n", "pth"),
@@ -1226,20 +1232,13 @@ fn every_path_field_is_rebased() {
     let judge: InferenceConfig = serde_yaml::from_str("{ model: m, prompt_file: p }").unwrap();
     let InferenceConfig {
         inputs: _,
-        backend: _,
-        url: _,
-        api_key: _,
         model: _,
-        aws: _,
         prompt_file: _, // PATHS
         schema_file: _, // PATHS
         fields: _,
         batch_bytes: _,
         encoding: _,
         group_by: _,
-        concurrency: _,
-        timeout_ms: _,
-        retries: _,
         max_tokens: _,
         temperature: _,
         extra: _,
@@ -1393,24 +1392,36 @@ sinks:
         loaded.config
     };
     let keys = |node: &InferenceConfig| node.extra.keys().cloned().collect::<Vec<_>>();
+    // the entry under `models` a node names
+    fn model<'a>(cfg: &'a Config, node: &str) -> &'a ModelConfig {
+        &cfg.models[&cfg.inference[node].model]
+    }
 
     let claude = config("anthropic");
-    let (judge, reviewer) = (&claude.inference["judge"], &claude.inference["reviewer"]);
-    assert_eq!(judge.model, "claude-haiku-5-5");
+    let judge = &claude.inference["judge"];
+    assert_eq!(model(&claude, "judge").model, "claude-haiku-5-5");
     assert_eq!(
         (judge.temperature, keys(judge)),
         (None, vec!["thinking".to_string()])
     );
-    assert_eq!(reviewer.model, "claude-sonnet-5-5");
-    assert_eq!(reviewer.aws.region, None, "Bedrock's, gone");
+    assert_eq!(model(&claude, "reviewer").model, "claude-sonnet-5-5");
+    assert_eq!(
+        model(&claude, "reviewer").aws.region,
+        None,
+        "Bedrock's, gone"
+    );
     assert!(claude.sinks.contains_key("lake") && claude.sinks.contains_key("reviews"));
     assert_eq!(claude.plugins["review"].tables["lake"], "lake");
 
     let open = config("openrouter");
-    let (judge, reviewer) = (&open.inference["judge"], &open.inference["reviewer"]);
+    let (judge, reviewer) = (model(&open, "judge"), model(&open, "reviewer"));
     assert_eq!(judge.model, reviewer.model);
     assert_eq!(judge.url, reviewer.url);
-    assert_eq!(keys(reviewer), ["reasoning"], "none of Claude's settings");
+    assert_eq!(
+        keys(&open.inference["reviewer"]),
+        ["reasoning"],
+        "none of Claude's settings"
+    );
 }
 
 /// A pack built in names no plugin source or fixtures, which tangent does

@@ -1,6 +1,7 @@
 //! Inference nodes: a model reads each record. A node lives inside each
 //! worker and runs in DAG order with the plugins: the worker hands it the
-//! records that reached it, waits for the replies (`concurrency` at a time),
+//! records that reached it, waits for the replies (its model's `concurrency` at
+//! a time, [`Model`]),
 //! and carries the annotated records on to the node's outputs. The system
 //! prompt is a file; the user message is the records of one `group_by` value
 //! (or selected fields), a JSON line each; each record's answer is added to
@@ -8,7 +9,7 @@
 //! failure lands as `{"error": ...}` in the same field, and a plugin
 //! downstream decides what goes on.
 //!
-//! The reply is read as JSON and nothing else. The backend is asked to make
+//! The reply is read as JSON and nothing else. The model's API is asked to make
 //! it so: a schema (`schema_file`) through rig's structured output, or JSON
 //! mode on an OpenAI-compatible server. A server that ignores both (mlx_lm)
 //! is held to the prompt, and a reply that is not a JSON object is the error.
@@ -18,32 +19,28 @@ use anyhow::{anyhow, bail, Context, Result};
 use rig_core::completion::message::CallId;
 use rig_core::completion::message::StopReason;
 use rig_core::completion::request::{CompletionRequest, ToolDefinition};
-use rig_core::completion::{
-    AssistantContent, CacheRetention, CompletionResponse, Message, OnUnsupported,
-};
-use rig_core::operation::Completion;
-use rig_core::providers::anthropic::AnthropicConfig;
-use rig_core::providers::openai::{OpenAIConfig, Route};
-use rig_core::{schemars, DynModel};
-use secrecy::ExposeSecret;
+use rig_core::completion::{AssistantContent, CacheRetention, Message, OnUnsupported};
+use rig_core::schemars;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tangent_compact as compact;
-use tangent_shared::inference::{Backend, Encoding, InferenceConfig, DEFAULT_URL};
-use tokio::sync::Semaphore;
+use tangent_shared::inference::{Encoding, InferenceConfig};
+use tangent_shared::models::{ModelConfig, ModelKind};
+
+mod model;
+pub use model::Model;
 
 pub struct InferenceNode {
     pub name: Arc<str>,
     cfg: InferenceConfig,
     prompt: String,
-    /// The shape the backend is asked to enforce, from `schema_file`.
+    /// The shape the model's API is asked to enforce, from `schema_file`.
     schema: Option<schemars::Schema>,
-    model: DynModel<Completion>,
-    /// `concurrency` permits: requests in flight to this node.
-    sem: Arc<Semaphore>,
+    /// The model it asks, which every node that names it shares.
+    model: Arc<Model>,
 }
 
 fn resolve(config_dir: &Path, file: &Path) -> PathBuf {
@@ -54,74 +51,13 @@ fn resolve(config_dir: &Path, file: &Path) -> PathBuf {
     }
 }
 
-/// The key of a backend that needs one. `${VAR}` unset is the empty string:
-/// said when the pipeline is built, not by a 401 on the first request.
-fn key<'a>(cfg: &'a InferenceConfig, backend: &str, var: &str) -> Result<&'a str> {
-    cfg.api_key
-        .as_ref()
-        .map(|k| k.expose_secret())
-        .filter(|k| !k.trim().is_empty())
-        .with_context(|| {
-            format!("backend {backend} needs `api_key`, e.g. \"${{{var}}}\" with that variable set")
-        })
-}
-
-/// The model `cfg` points at, behind rig's erased handle.
-fn model(cfg: &InferenceConfig) -> Result<DynModel<Completion>> {
-    Ok(match cfg.backend {
-        Backend::Openai => {
-            // Local servers accept any key, so none is "none". One that is
-            // set and empty is "${OPENAI_API_KEY}" unset: said here, not by
-            // a 401 on every record.
-            let key = match cfg.api_key.as_ref().map(|k| k.expose_secret()) {
-                None => "none",
-                Some(k) if k.trim().is_empty() => bail!(
-                    "`api_key` is empty: is the variable it names, e.g. \"${{OPENAI_API_KEY}}\", set? \
-                     A server that takes no key needs no `api_key`"
-                ),
-                Some(k) => k,
-            };
-            OpenAIConfig::new(key)
-                .with_base_url(
-                    cfg.url
-                        .as_deref()
-                        .unwrap_or(DEFAULT_URL)
-                        .trim_end_matches('/'),
-                )
-                .with_route(Route::Chat)
-                .client()
-                .chat(&cfg.model)
-                .erase()
-        }
-        Backend::Responses => {
-            let mut provider = OpenAIConfig::new(key(cfg, "responses", "OPENAI_API_KEY")?);
-            if let Some(url) = &cfg.url {
-                provider = provider.with_base_url(url.trim_end_matches('/'));
-            }
-            provider.client().responses(&cfg.model).erase()
-        }
-        Backend::Anthropic => {
-            let mut provider = AnthropicConfig::new(key(cfg, "anthropic", "ANTHROPIC_API_KEY")?);
-            if let Some(url) = &cfg.url {
-                provider = provider.with_base_url(url);
-            }
-            provider.client().completion(&cfg.model).erase()
-        }
-        Backend::Bedrock => {
-            let mut runtime = rig_bedrock::client::BedrockRuntime::builder();
-            if let Some(region) = &cfg.aws.region {
-                runtime = runtime.region(region);
-            }
-            if let Some(profile) = &cfg.aws.profile {
-                runtime = runtime.profile_name(profile);
-            }
-            runtime.build().completion(&cfg.model).erase()
-        }
-    })
-}
-
 impl InferenceNode {
-    pub fn new(name: Arc<str>, cfg: InferenceConfig, config_dir: &Path) -> Result<Self> {
+    pub fn new(
+        name: Arc<str>,
+        cfg: InferenceConfig,
+        model: Arc<Model>,
+        config_dir: &Path,
+    ) -> Result<Self> {
         let prompt_path = resolve(config_dir, &cfg.prompt_file);
         let prompt = std::fs::read_to_string(&prompt_path)
             .with_context(|| format!("reading prompt {}", prompt_path.display()))?;
@@ -142,21 +78,13 @@ impl InferenceNode {
             }
             None => None,
         };
-        let model = model(&cfg)?;
-        let sem = Arc::new(Semaphore::new(cfg.concurrency.max(1)));
-        tracing::info!(
-            node = %name,
-            backend = ?cfg.backend,
-            model = %cfg.model,
-            "inference ready"
-        );
+        tracing::info!(node = %name, model = %cfg.model, "inference ready");
         Ok(Self {
             name,
             cfg,
             prompt,
             schema,
             model,
-            sem,
         })
     }
 
@@ -215,8 +143,8 @@ impl InferenceNode {
         let (reply, content, calls) = loop {
             attempt += 1;
             let reply = {
-                let _permit = self.sem.acquire().await.expect("semaphore is never closed");
-                self.send(turn.clone()).await?
+                let _permit = self.model.permit().await;
+                self.model.send(&self.name, turn.clone()).await?
             };
             // A call the client kept as an item it does not understand is the
             // call it is ([`tool_call`]); the turn then goes back with it so.
@@ -237,7 +165,7 @@ impl InferenceNode {
             let silent = calls.is_empty()
                 && reply.text().trim().is_empty()
                 && !matches!(reply.stop(), StopReason::Error(_) | StopReason::Aborted(_));
-            if !silent || attempt > self.cfg.retries {
+            if !silent || attempt > self.model.cfg.retries {
                 break (reply, content, calls);
             }
             tracing::warn!(
@@ -303,7 +231,7 @@ impl InferenceNode {
             }
         }
         let done = futures::future::join_all(jobs.into_iter().map(|(ids, chunk)| async move {
-            let _permit = self.sem.acquire().await.expect("semaphore is never closed");
+            let _permit = self.model.permit().await;
             (ids, self.annotate(chunk).await)
         }))
         .await;
@@ -341,7 +269,7 @@ impl InferenceNode {
             match &answers {
                 Err(e)
                     if n == 1
-                        && attempt <= self.cfg.retries
+                        && attempt <= self.model.cfg.retries
                         && e.to_string().starts_with("reply ") =>
                 {
                     tracing::warn!(node = %self.name, attempt, "asking again: {e:#}");
@@ -523,16 +451,16 @@ impl InferenceNode {
             request = request.temperature(t);
         }
         let mut params = Map::new();
-        match (&self.schema, self.cfg.backend) {
+        match (&self.schema, self.model.cfg.kind) {
             (Some(schema), _) => {
                 request = request.output_schema(answers_schema(schema));
             }
             // JSON mode: any object. Messages and Converse have no such
             // mode without a schema.
-            (None, Backend::Openai) => {
+            (None, ModelKind::Openai) => {
                 params.insert("response_format".into(), json!({"type": "json_object"}));
             }
-            (None, Backend::Anthropic | Backend::Bedrock | Backend::Responses) => {}
+            (None, ModelKind::Anthropic | ModelKind::Bedrock | ModelKind::Responses) => {}
         }
         for (k, v) in &self.cfg.extra {
             params.insert(k.clone(), v.clone());
@@ -545,7 +473,7 @@ impl InferenceNode {
 
     /// The reply as a JSON object.
     async fn ask(&self, user: String, n: usize) -> Result<Value> {
-        let reply = self.send(self.request(user, n)).await?;
+        let reply = self.model.send(&self.name, self.request(user, n)).await?;
         // Reasoning comes back as its own block, so the text is the answer.
         let text = reply.text();
         if text.trim().is_empty() {
@@ -560,35 +488,6 @@ impl InferenceNode {
             bail!("reply is not a JSON object: {}", head(&text, 200));
         }
         Ok(value)
-    }
-
-    /// One request's reply. A request that got none (nothing within
-    /// `timeout_ms`, a dropped connection, a 429, a 5xx) is sent again,
-    /// `retries` times, a longer wait before each. One the provider would
-    /// refuse the same way again (a key it rejects, a request it cannot
-    /// read) is the error at once.
-    async fn send(&self, request: CompletionRequest) -> Result<CompletionResponse> {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let timeout = Duration::from_millis(self.cfg.timeout_ms);
-            let (e, again) =
-                match tokio::time::timeout(timeout, self.model.call(request.clone())).await {
-                    Ok(Ok(reply)) => return Ok(reply),
-                    Ok(Err(e)) => (anyhow!("{e}"), e.is_retryable()),
-                    Err(_) => (anyhow!("no reply within {} ms", self.cfg.timeout_ms), true),
-                };
-            if !again || attempt > self.cfg.retries {
-                return Err(e);
-            }
-            let wait = Duration::from_secs(1 << (attempt - 1).min(6));
-            tracing::warn!(
-                node = %self.name,
-                attempt,
-                "inference failed, retrying in {wait:?}: {e:#}"
-            );
-            tokio::time::sleep(wait).await;
-        }
     }
 }
 
@@ -727,7 +626,7 @@ fn answers_schema(item: &schemars::Schema) -> schemars::Schema {
         "type": "object",
         "properties": {
             // At least one: a list closed empty is whole JSON with no answer
-            // in it. Not the count, which backends refuse (Anthropic's and
+            // in it. Not the count, which providers refuse (Anthropic's and
             // Bedrock's take 0 or 1 here).
             "answers": {"type": "array", "minItems": 1, "items": item}
         },
@@ -775,10 +674,35 @@ fn head(s: &str, n: usize) -> String {
 /// many workers hand it records and plugins hold conversations with it.
 pub type Nodes = Arc<HashMap<Arc<str>, Arc<InferenceNode>>>;
 
-pub fn nodes(cfgs: &BTreeMap<Arc<str>, InferenceConfig>, config_dir: &Path) -> Result<Nodes> {
+/// The pipeline's inference nodes, each with the model it names: one
+/// [`Model`] for each entry under `models`, whichever nodes ask it.
+pub fn nodes(
+    models: &BTreeMap<Arc<str>, ModelConfig>,
+    cfgs: &BTreeMap<Arc<str>, InferenceConfig>,
+    config_dir: &Path,
+) -> Result<Nodes> {
+    let mut built: HashMap<&Arc<str>, Arc<Model>> = HashMap::default();
     let mut nodes = HashMap::default();
     for (name, cfg) in cfgs {
-        let node = InferenceNode::new(Arc::clone(name), cfg.clone(), config_dir)?;
+        let model = match built.get(&cfg.model) {
+            Some(model) => Arc::clone(model),
+            None => {
+                let (model_name, model_cfg) =
+                    models.get_key_value(&cfg.model).with_context(|| {
+                        format!(
+                            "inference node {name}: model names `{}`, which is no entry under `models`",
+                            cfg.model
+                        )
+                    })?;
+                let model = Arc::new(
+                    Model::new(model_name, model_cfg.clone())
+                        .with_context(|| format!("model {model_name}"))?,
+                );
+                built.insert(model_name, Arc::clone(&model));
+                model
+            }
+        };
+        let node = InferenceNode::new(Arc::clone(name), cfg.clone(), model, config_dir)?;
         nodes.insert(Arc::clone(name), Arc::new(node));
     }
     Ok(Arc::new(nodes))
@@ -1010,33 +934,66 @@ pub(crate) mod stub {
         }
     }
 
-    /// A node config against `url`, with the prompt (and a schema, when
+    /// A node and the model it asks, as a test sets them.
+    #[derive(Clone)]
+    pub struct Asked {
+        pub model: tangent_shared::models::ModelConfig,
+        pub node: tangent_shared::inference::InferenceConfig,
+    }
+
+    impl Asked {
+        /// The node, named `name`, with a model of its own.
+        pub fn node(
+            self,
+            name: &str,
+            dir: &std::path::Path,
+        ) -> anyhow::Result<super::InferenceNode> {
+            let model = super::Model::new(&self.node.model, self.model)?;
+            super::InferenceNode::new(name.into(), self.node, model.into(), dir)
+        }
+
+        /// The pipeline's nodes with this one alone in it, named `name`.
+        pub fn nodes(self, name: &str, dir: &std::path::Path) -> anyhow::Result<super::Nodes> {
+            super::nodes(
+                &[(self.node.model.clone(), self.model)].into(),
+                &[(name.into(), self.node)].into(),
+                dir,
+            )
+        }
+    }
+
+    /// A node against a model at `url`, with the prompt (and a schema, when
     /// given) written under a fresh directory the caller removes.
-    pub fn config(url: &str) -> tangent_shared::inference::InferenceConfig {
+    pub fn config(url: &str) -> Asked {
         let mut extra = serde_json::Map::new();
         extra.insert(
             "chat_template_kwargs".into(),
             json!({"enable_thinking": false}),
         );
-        tangent_shared::inference::InferenceConfig {
-            inputs: Vec::new(),
-            backend: tangent_shared::inference::Backend::Openai,
-            url: Some(url.to_string()),
-            api_key: None,
-            model: "stub".into(),
-            aws: Default::default(),
-            prompt_file: "judge.md".into(),
-            schema_file: None,
-            fields: Vec::new(),
-            batch_bytes: 32_768,
-            encoding: Default::default(),
-            group_by: Vec::new(),
-            concurrency: 2,
-            timeout_ms: 5_000,
-            retries: 0,
-            max_tokens: 50,
-            temperature: None,
-            extra,
+        Asked {
+            model: tangent_shared::models::ModelConfig {
+                kind: tangent_shared::models::ModelKind::Openai,
+                url: Some(url.to_string()),
+                api_key: None,
+                model: "stub".into(),
+                aws: Default::default(),
+                concurrency: 2,
+                timeout_ms: 5_000,
+                retries: 0,
+            },
+            node: tangent_shared::inference::InferenceConfig {
+                inputs: Vec::new(),
+                model: "stub".into(),
+                prompt_file: "judge.md".into(),
+                schema_file: None,
+                fields: Vec::new(),
+                batch_bytes: 32_768,
+                encoding: Default::default(),
+                group_by: Vec::new(),
+                max_tokens: 50,
+                temperature: None,
+                extra,
+            },
         }
     }
 
@@ -1063,6 +1020,7 @@ pub(crate) mod stub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     /// One request to a stand-in for Anthropic's Messages API: answers it
     /// with a flag on record 0, and gives back the request as it came, head
@@ -1130,12 +1088,12 @@ mod tests {
         (url, served)
     }
 
-    /// `backend: anthropic` asks Anthropic's Messages API: the key as
+    /// `type: anthropic` asks Anthropic's Messages API: the key as
     /// `x-api-key`, the prompt as `system`, `extra` in the body, and the
     /// schema as the format the reply must take. The reply's text is read as
-    /// any other backend's.
+    /// any other type's.
     #[tokio::test]
-    async fn the_anthropic_backend_asks_the_messages_api() {
+    async fn an_anthropic_model_is_asked_through_the_messages_api() {
         let (url, served) = messages_api().await;
         let dir = stub::dir("anthropic");
         std::fs::write(
@@ -1145,12 +1103,12 @@ mod tests {
         )
         .unwrap();
         let mut cfg = stub::config(&url);
-        cfg.backend = Backend::Anthropic;
-        cfg.api_key = Some("sk-test".to_string().into());
-        cfg.model = "claude-haiku-5-5".into();
-        cfg.schema_file = Some("verdict.json".into());
-        cfg.extra = serde_json::from_value(json!({"thinking": {"type": "disabled"}})).unwrap();
-        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.model.kind = ModelKind::Anthropic;
+        cfg.model.api_key = Some("sk-test".to_string().into());
+        cfg.model.model = "claude-haiku-5-5".into();
+        cfg.node.schema_file = Some("verdict.json".into());
+        cfg.node.extra = serde_json::from_value(json!({"thinking": {"type": "disabled"}})).unwrap();
+        let node = cfg.node("judge", &dir).unwrap();
         let outs = node
             .annotate_all(vec![json!({"id": 1, "msg": "bad login"})])
             .await;
@@ -1181,11 +1139,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// `backend: responses` asks OpenAI's Responses API: the key as a
+    /// `type: responses` asks OpenAI's Responses API: the key as a
     /// bearer token, the prompt as `instructions`, `extra` in the body, and
     /// the schema as the format the reply's text must take.
     #[tokio::test]
-    async fn the_responses_backend_asks_the_responses_api() {
+    async fn a_responses_model_is_asked_through_the_responses_api() {
         let (url, served) = responses_api().await;
         let dir = stub::dir("responses");
         std::fs::write(
@@ -1195,12 +1153,12 @@ mod tests {
         )
         .unwrap();
         let mut cfg = stub::config(&url);
-        cfg.backend = Backend::Responses;
-        cfg.api_key = Some("sk-test".to_string().into());
-        cfg.model = "gpt-6-luna".into();
-        cfg.schema_file = Some("verdict.json".into());
-        cfg.extra = serde_json::from_value(json!({"reasoning": {"effort": "low"}})).unwrap();
-        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.model.kind = ModelKind::Responses;
+        cfg.model.api_key = Some("sk-test".to_string().into());
+        cfg.model.model = "gpt-6-luna".into();
+        cfg.node.schema_file = Some("verdict.json".into());
+        cfg.node.extra = serde_json::from_value(json!({"reasoning": {"effort": "low"}})).unwrap();
+        let node = cfg.node("judge", &dir).unwrap();
         let outs = node
             .annotate_all(vec![json!({"id": 1, "msg": "bad login"})])
             .await;
@@ -1225,45 +1183,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// An `anthropic` or `responses` node with no key, or one from a
+    /// An `anthropic` or `responses` model with no key, or one from a
     /// variable that is not set, is refused when the pipeline is built,
     /// naming what it needs.
     #[test]
-    fn a_backend_that_needs_a_key_says_so() {
+    fn a_type_that_needs_a_key_says_so() {
         let dir = stub::dir("needs-key");
-        for (backend, var) in [
-            (Backend::Anthropic, "ANTHROPIC_API_KEY"),
-            (Backend::Responses, "OPENAI_API_KEY"),
+        for (kind, var) in [
+            (ModelKind::Anthropic, "ANTHROPIC_API_KEY"),
+            (ModelKind::Responses, "OPENAI_API_KEY"),
         ] {
             for key in [None, Some(String::new())] {
                 let mut cfg = stub::config("http://127.0.0.1:9");
-                cfg.backend = backend;
-                cfg.api_key = key.map(Into::into);
-                let err = InferenceNode::new(Arc::from("judge"), cfg, &dir)
-                    .err()
-                    .unwrap();
+                cfg.model.kind = kind;
+                cfg.model.api_key = key.map(Into::into);
+                let err = cfg.node("judge", &dir).err().unwrap();
                 assert!(format!("{err:#}").contains(var), "{err:#}");
             }
         }
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// An `openai` node whose key comes from a variable that is not set is
+    /// An `openai` model whose key comes from a variable that is not set is
     /// refused when the pipeline is built; one with no `api_key` at all is a
     /// local server's, and is built.
     #[test]
-    fn the_openai_backend_refuses_an_empty_key() {
+    fn an_openai_model_refuses_an_empty_key() {
         let dir = stub::dir("openai-key");
         let mut cfg = stub::config("http://127.0.0.1:9");
         for key in ["", "  "] {
-            cfg.api_key = Some(key.to_string().into());
-            let err = InferenceNode::new(Arc::from("judge"), cfg.clone(), &dir)
-                .err()
-                .unwrap();
+            cfg.model.api_key = Some(key.to_string().into());
+            let err = cfg.clone().node("judge", &dir).err().unwrap();
             assert!(format!("{err:#}").contains("`api_key` is empty"), "{err:#}");
         }
-        cfg.api_key = None;
-        InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.model.api_key = None;
+        cfg.node("judge", &dir).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1271,7 +1225,7 @@ mod tests {
     async fn annotates_every_record_with_the_verdict() {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("verdict");
-        let node = InferenceNode::new(Arc::from("judge"), stub::config(&url), &dir).unwrap();
+        let node = stub::config(&url).node("judge", &dir).unwrap();
         let outs = node
             .annotate_all(vec![
                 json!({"id": 1, "msg": "all good"}),
@@ -1329,12 +1283,9 @@ mod tests {
     #[tokio::test]
     async fn a_conversation_calls_a_tool_and_takes_its_result() {
         let (url, seen) = stub::model().await;
-        let node = InferenceNode::new(
-            Arc::from("reviewer"),
-            stub::config(&url),
-            &stub::dir("chat"),
-        )
-        .unwrap();
+        let node = stub::config(&url)
+            .node("reviewer", &stub::dir("chat"))
+            .unwrap();
         let tools = json!([{"name": "query", "description": "Run SQL.",
             "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}}}]);
         let asked = json!({"role": "user", "text": "count the rows"});
@@ -1403,7 +1354,7 @@ mod tests {
     }
 
     fn reviewer(url: &str, tag: &str) -> InferenceNode {
-        InferenceNode::new(Arc::from("reviewer"), stub::config(url), &stub::dir(tag)).unwrap()
+        stub::config(url).node("reviewer", &stub::dir(tag)).unwrap()
     }
 
     #[tokio::test]
@@ -1473,9 +1424,8 @@ mod tests {
     async fn a_turn_with_nothing_in_it_is_asked_for_again() {
         let (url, seen) = stub::model().await;
         let mut cfg = stub::config(&url);
-        cfg.retries = 2;
-        let node =
-            InferenceNode::new(Arc::from("reviewer"), cfg, &stub::dir("chat-quiet")).unwrap();
+        cfg.model.retries = 2;
+        let node = cfg.node("reviewer", &stub::dir("chat-quiet")).unwrap();
         let tools = json!([{"name": "query", "description": "Run SQL.",
             "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}}}]);
         let request = |asked: &str| {
@@ -1495,8 +1445,8 @@ mod tests {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("refused");
         let mut cfg = stub::config(&url);
-        cfg.retries = 2;
-        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.model.retries = 2;
+        let node = cfg.node("judge", &dir).unwrap();
         let out = node
             .annotate_all(vec![json!({"id": 1, "msg": "refused"})])
             .await;
@@ -1510,8 +1460,8 @@ mod tests {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("logfmt");
         let mut cfg = stub::config(&url);
-        cfg.encoding = serde_yaml::from_str("{type: logfmt, budget_tokens: 60}").unwrap();
-        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.node.encoding = serde_yaml::from_str("{type: logfmt, budget_tokens: 60}").unwrap();
+        let node = cfg.node("judge", &dir).unwrap();
         let records: Vec<Value> = (0..6)
             .map(|k| json!({"source": "app", "user": "ann", "n": k, "msg": if k == 4 { "bad login" } else { "fine" }}))
             .collect();
@@ -1543,7 +1493,7 @@ mod tests {
     async fn a_reply_that_is_not_json_is_the_error() {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("prose");
-        let node = InferenceNode::new(Arc::from("judge"), stub::config(&url), &dir).unwrap();
+        let node = stub::config(&url).node("judge", &dir).unwrap();
         let out = node
             .annotate_all(vec![json!({"id": 7, "msg": "prose please"})])
             .await;
@@ -1564,8 +1514,8 @@ mod tests {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("empty-reply");
         let mut cfg = stub::config(&url);
-        cfg.retries = 2;
-        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.model.retries = 2;
+        let node = cfg.node("judge", &dir).unwrap();
         // Two empty lists, then the verdict.
         let out = node
             .annotate_all(vec![json!({"id": 3, "msg": "empty at first, bad"})])
@@ -1588,7 +1538,7 @@ mod tests {
     async fn a_reply_that_answers_no_record_is_asked_in_halves() {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("no-answers");
-        let node = InferenceNode::new(Arc::from("judge"), stub::config(&url), &dir).unwrap();
+        let node = stub::config(&url).node("judge", &dir).unwrap();
         let outs = node
             .annotate_all(vec![
                 json!({"id": 1, "msg": "crowded and bad"}),
@@ -1606,8 +1556,8 @@ mod tests {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("flaky");
         let mut cfg = stub::config(&url);
-        cfg.retries = 2;
-        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.model.retries = 2;
+        let node = cfg.node("judge", &dir).unwrap();
         // Two 500s, then the verdict: three requests, one answer.
         let out = node
             .annotate_all(vec![json!({"id": 3, "msg": "flaky bad link"})])
@@ -1622,12 +1572,9 @@ mod tests {
         // Nothing listens on port 1. The record still goes on, with the error
         // where the verdict would be, so nothing is lost silently.
         let dir = stub::dir("dead");
-        let node = InferenceNode::new(
-            Arc::from("judge"),
-            stub::config("http://127.0.0.1:1/v1"),
-            &dir,
-        )
-        .unwrap();
+        let node = stub::config("http://127.0.0.1:1/v1")
+            .node("judge", &dir)
+            .unwrap();
         let out = node.annotate_all(vec![json!({"id": 9})]).await;
         assert_eq!(out[0]["id"], 9);
         assert!(
@@ -1649,7 +1596,7 @@ mod tests {
     async fn unreadable_reply_is_asked_in_halves() {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("halves");
-        let node = InferenceNode::new(Arc::from("judge"), stub::config(&url), &dir).unwrap();
+        let node = stub::config(&url).node("judge", &dir).unwrap();
         let outs = node
             .annotate_all(
                 (1..=4)
@@ -1668,7 +1615,7 @@ mod tests {
     async fn a_record_the_reply_skipped_is_asked_again() {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("skipped");
-        let node = InferenceNode::new(Arc::from("judge"), stub::config(&url), &dir).unwrap();
+        let node = stub::config(&url).node("judge", &dir).unwrap();
         let outs = node
             .annotate_all(vec![
                 json!({"id": 1, "msg": "fine"}),
@@ -1699,8 +1646,8 @@ mod tests {
         let (url, taken) = stub::silent().await;
         let dir = stub::dir("shared-permits");
         let mut cfg = stub::config(&url);
-        cfg.concurrency = 1;
-        let nodes = nodes(&BTreeMap::from([(Arc::from("judge"), cfg)]), &dir).unwrap();
+        cfg.model.concurrency = 1;
+        let nodes = cfg.nodes("judge", &dir).unwrap();
         let calls: Vec<_> = (0..2)
             .map(|_| {
                 let node = Arc::clone(&nodes["judge"]);
@@ -1719,13 +1666,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Two nodes that name one model with `concurrency: 1` send one request
+    /// at a time between them: the limit is the model's, whoever asks.
+    #[tokio::test]
+    async fn nodes_that_name_one_model_share_its_concurrency() {
+        let (url, taken) = stub::silent().await;
+        let dir = stub::dir("shared-model");
+        let mut cfg = stub::config(&url);
+        cfg.model.concurrency = 1;
+        let nodes = nodes(
+            &[(cfg.node.model.clone(), cfg.model)].into(),
+            &[
+                ("judge".into(), cfg.node.clone()),
+                ("reviewer".into(), cfg.node),
+            ]
+            .into(),
+            &dir,
+        )
+        .unwrap();
+        let calls = ["judge", "reviewer"].map(|name| {
+            let node = Arc::clone(&nodes[name]);
+            tokio::spawn(async move { node.annotate_all(vec![json!({"id": 1})]).await })
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            taken.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "one request between the two nodes"
+        );
+        for c in calls {
+            c.abort();
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn group_by_keeps_requests_apart() {
         let (url, seen) = stub::model().await;
         let dir = stub::dir("group-by");
         let mut cfg = stub::config(&url);
-        cfg.group_by = vec!["who.actor".into()];
-        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.node.group_by = vec!["who.actor".into()];
+        let node = cfg.node("judge", &dir).unwrap();
         let outs = node
             .annotate_all(vec![
                 json!({"id": 1, "who": {"actor": "a"}}),
@@ -1790,9 +1771,9 @@ mod tests {
         )
         .unwrap();
         let mut cfg = stub::config(&url);
-        cfg.schema_file = Some("verdict.json".into());
-        cfg.temperature = Some(0.0);
-        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.node.schema_file = Some("verdict.json".into());
+        cfg.node.temperature = Some(0.0);
+        let node = cfg.node("judge", &dir).unwrap();
         let outs = node
             .annotate_all(vec![json!({"id": 1, "msg": "bad"}), json!({"id": 2})])
             .await;
@@ -1841,8 +1822,8 @@ mod tests {
     fn batch_bytes_splits_a_group() {
         let dir = stub::dir("chunks");
         let mut cfg = stub::config("http://127.0.0.1:1/v1");
-        cfg.batch_bytes = 80;
-        let node = InferenceNode::new(Arc::from("judge"), cfg, &dir).unwrap();
+        cfg.node.batch_bytes = 80;
+        let node = cfg.node("judge", &dir).unwrap();
         let lens = |v: Value| {
             node.chunks(vec![v; 5])
                 .iter()
@@ -1862,10 +1843,8 @@ mod tests {
     fn a_prompt_file_that_is_missing_is_an_error_at_startup() {
         let dir = stub::dir("missing");
         let mut cfg = stub::config("http://127.0.0.1:1/v1");
-        cfg.prompt_file = "nope.md".into();
-        let err = InferenceNode::new(Arc::from("judge"), cfg, &dir)
-            .err()
-            .unwrap();
+        cfg.node.prompt_file = "nope.md".into();
+        let err = cfg.node("judge", &dir).err().unwrap();
         assert!(format!("{err:#}").contains("nope.md"), "{err:#}");
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -6,16 +6,19 @@ include:
   - tangent.yaml
   - ../../packs/judge/hosted.yaml   # the judge without a local model's sampling settings, which Haiku refuses
 
-inference:
+models:
   judge:
-    backend: bedrock
+    type: bedrock
     model: ${JUDGE_MODEL:-us.anthropic.claude-haiku-5-5}   # the cross-region profile: Converse refuses the bare model id on demand
     aws:
       region: ${AWS_REGION:-us-west-2}
-    max_tokens: 4000                # a session's verdict, and the thinking before it: at 1500 a busy session's answer was cut off
     timeout_ms: 90000
     retries: 6
     concurrency: 16                 # a hosted model takes many at once; one worker sends one (packs/macos/ingest.yaml)
+
+inference:
+  judge:
+    max_tokens: 4000                # a session's verdict, and the thinking before it: at 1500 a busy session's answer was cut off
     extra:
       # It thinks before each verdict, briefly: without, it flagged 13 of the
       # suite's 45 look-alikes, calling them ordinary in the same breath.

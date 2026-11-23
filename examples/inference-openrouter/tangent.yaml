@@ -13,17 +13,22 @@ sources:
     type: tcp
     bind_address: 0.0.0.0:9000
 
+models:
+  deepseek:
+    type: openai                    # OpenRouter is OpenAI-compatible
+    url: https://openrouter.ai/api/v1
+    api_key: "${OPENROUTER_API_KEY}"
+    model: deepseek/deepseek-v4-flash-0731   # open weights; any model OpenRouter lists
+    concurrency: 8                  # a hosted model takes many requests at once
+    timeout_ms: 60000               # time to write ~20 verdicts
+
 inference:
   judge:
     inputs: [events]
-    url: https://openrouter.ai/api/v1   # OpenAI-compatible, so the default backend
-    api_key: "${OPENROUTER_API_KEY}"
-    model: deepseek/deepseek-v4-flash-0731   # open weights; any model OpenRouter lists
+    model: deepseek                 # the entry under `models` above
     prompt_file: judge.md           # the reply lands on the record as judge
     batch_bytes: 4000               # ~20 of these events to a request
     max_tokens: 300                 # per record; a verdict is ~100 tokens
-    concurrency: 8                  # a hosted model takes many requests at once
-    timeout_ms: 60000               # time to write ~20 verdicts
     extra:
       reasoning: { enabled: false } # no thinking: the reply is the answer
 
