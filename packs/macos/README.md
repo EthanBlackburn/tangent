@@ -263,14 +263,12 @@ commands it caused are one summary, or several in a row when the turn runs
 long, never a prompt in one window and its deletes in the next. Thirty-second
 pieces were tried: a nine-minute turn was twenty-three verdicts, each a
 chance to flag what the last had passed. It writes one record a group: the session's entry and time span, and
-for each of its programs (25: those that touched a file, set an agent's
-environment or did something rarer, then the busiest; one program under two
+for each of its programs (those that touched a file, set an agent's
+environment or did something rarer first, then the busiest; one program under two
 different parents is two), what it is (path, signing
 identity, team, platform, tty), what started it (`parents`, the whole chain,
 and `responsible`), the commands it
-ran with how often (each whole to 2,000 bytes until the summary has spent
-16,000 on them, then by its first 140 and last 100 with the bytes between
-counted; the lake holds each whole), what it did to the files in the groups above (created,
+ran with how often (each as the record holds it), what it did to the files in the groups above (created,
 written, read, deleted, replaced, renamed into place; each file named, or for
 many under one directory the directory with a count and a few names), the
 agent-steering variables it set, and its rarer events. The files are listed
@@ -278,6 +276,18 @@ by what was done to them, not by group, and the facts stay out: a model
 reads `persistence` or `credentials` on a file as a verdict, and flagged
 sessions that only read `CLAUDE.md` as agents do at every start. Claude Code's marketplace refresh, two thousand events in a
 second, is one line of it; a session is a few kilobytes.
+
+Nothing is left out of a summary for the session having done a great deal,
+which a session can do on purpose: twenty-five commands run twice once hid
+the one run once. A summary longer than 32,000 bytes goes to the judge in
+parts of about that length, each a record and a request: the session, what
+was asked and the story so far on every one, `session.part` of
+`session.parts`, and the next of the programs. A program with more commands
+than a part holds goes on in the next, `continued`. A part is judged alone,
+and a read in one with the upload in another are one act, so every part
+also carries `across`: the files and destinations of all the parts'
+programs, each with the program that touched it, to 8,000 bytes, with what
+that left out counted. The first part's `so_far` is the one kept.
 
 A session reaches the judge a piece at a time, and a piece alone says
 little: the read that makes an upload a theft was a piece back. With each
