@@ -53,7 +53,7 @@ tangent init cloud --sources okta --local --model glm-4.7-flash   # a model serv
 
 | `--local` | the model | measured | it needs |
 |---|---|---|---|
-| alone | Inkling 2 Mini, open weights, judges and reviews, on MTPLX. `tangent run` starts the server, waits until it answers and stops it after | not on the corpus above | an Apple Silicon Mac with 32 GB of memory or more, and MTPLX and the model on it: init prints the two commands, and warns under 32 GB |
+| alone | Inkling 2 Mini, open weights, judges and reviews, on MTPLX. `tangent run` starts the server, waits until it answers and stops it after | not on the corpus above | an Apple Silicon Mac with 32 GB of memory or more (init warns under it). MTPLX and the model (17 GB) are downloaded into tangent's cache, each file checked: init offers to, and `tangent model fetch` does it later |
 | with `--model` | the model a server you run gives at `http://localhost:8080/v1` (llama-server, mlx_lm.server, Ollama, vLLM), by the name it gives it | not measured | the server running before tangent |
 
 The corpus is one made-up company, and 36 of its attacks are cases the judge's brief was written against: it says nothing of how much a model flags on your logs.

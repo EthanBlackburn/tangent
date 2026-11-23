@@ -419,12 +419,9 @@ The reviewer has no lines of its own under `inference:`: take out the ones that 
 
 ### Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (MTPLX)
 
-`--local` writes this. The judge and the reviewer are one model, so `models:` holds one entry, `inkling`, in place of `judge` and `reviewer`, and both nodes under `inference:` say `model: inkling`. `tangent run` starts the server (`serve`), waits until it answers and stops it after. It needs an Apple Silicon Mac with 32 GB of memory or more, and MTPLX and the model on it:
+`--local` writes this. The judge and the reviewer are one model, so `models:` holds one entry, `inkling`, in place of `judge` and `reviewer`, and both nodes under `inference:` say `model: inkling`. `tangent run` starts the server (`serve`), waits until it answers and stops it after. It needs an Apple Silicon Mac with 32 GB of memory or more.
 
-```bash
-brew install youssofal/mtplx/mtplx      # or, with Python 3.11 or newer: python3 -m pip install mtplx
-mtplx pull Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed   # 17 GB
-```
+MTPLX and the model are tangent's own copies, under its cache, and nothing else on the Mac is touched. Init offers to download them, and `tangent model fetch` does it at any time: uv, a Python, MTPLX 2.13.1 and the model (17 GB), each a pinned version checked against its SHA-256. A fetch that was stopped goes on where it was.
 
 The settings are the ones measured with MTPLX 2.13 on an M4 Max with 36 GB. Nothing leaves the machine.
 
@@ -441,7 +438,8 @@ The whole of `models:`:
     # `tangent run` starts this server, waits until it answers and stops it
     # after; one already answering at `url` is used and left running.
     serve:
-      command: [mtplx, serve, --model, Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed, --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
+      # MTPLX and the model, where `tangent model fetch` keeps them
+      command: ["${HOME}/.cache/tangent/models/mtplx-2.13.1/bin/mtplx", serve, --model, "${HOME}/.cache/tangent/models/Inkling-2-Mini-MTPLX-Optimized-Speed/b7570c070c17", --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
       env:
         HF_HUB_OFFLINE: "1"                        # the model is read from this Mac, and never fetched here
         MTPLX_SESSION_BANK_MAX_BYTES: 3G           # what it keeps of prompts it has read, so the judge's brief is read once
