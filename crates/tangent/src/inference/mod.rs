@@ -31,6 +31,7 @@ use tangent_shared::inference::{Encoding, InferenceConfig};
 use tangent_shared::models::{ModelConfig, ModelKind};
 
 mod model;
+pub mod serve;
 pub use model::Model;
 
 pub struct InferenceNode {
@@ -980,6 +981,7 @@ pub(crate) mod stub {
                 concurrency: 2,
                 timeout_ms: 5_000,
                 retries: 0,
+                serve: None,
             },
             node: tangent_shared::inference::InferenceConfig {
                 inputs: Vec::new(),

@@ -16,7 +16,7 @@ name = "tangentd"
 path = "src/main.rs"
 
 [features]
-alloc-prof = ["dep:libc", "dep:tikv-jemalloc-ctl"]
+alloc-prof = ["dep:tikv-jemalloc-ctl"]
 
 [dependencies]
 tokio = { version = "1.0", features = ["full", "tracing"] }
@@ -79,7 +79,8 @@ datafusion = { version = "52.5.0", default-features = false, features = ["parque
 datafusion-functions-json = "0.52.0"
 tikv-jemallocator = { version = "0.6.1", features = ["profiling"] }
 tikv-jemalloc-ctl = {version = "0.6.1", features = ["stats", "profiling"], optional=true}
-libc = {version = "0.2.177", optional=true}
+# SIGTERM to a model server tangent started (`serve` on a `models` entry).
+libc = "0.2.177"
 reqwest = { version = "0.12.24", features = ["json"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 fs2 = "0.4.3"
