@@ -7,6 +7,7 @@
 //! the sinks have what it said. A range that could not be read to its end is
 //! judged as far as it was read, and the replay then fails with why.
 
+use crate::stop::Stop;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -26,7 +27,6 @@ use tangent_shared::sinks::rolling_file;
 use tangent_shared::sources::common::SourceConfig;
 use tangent_shared::Config;
 use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
 
 use crate::dag::DagRuntime;
 use crate::router::Router;
@@ -174,7 +174,7 @@ async fn sweep(
         println!("  {}: {}{records}", s.name, s.past.size());
     }
 
-    let stop_models = CancellationToken::new();
+    let stop_models = Stop::default();
     let dag = DagRuntime::fed(cfg, path, stop_models.clone()).await?;
 
     // Listened for until replay returns: while the range is read, while the
@@ -190,14 +190,14 @@ async fn sweep(
 
     let swept = tokio::select! {
         r = step(&mut sources, first, &mut hour, to, &dag) => r,
-        () = stop_models.cancelled() => Err(anyhow!(
+        () = stop_models.until_ended() => Err(anyhow!(
             "stopped with the range read to {}: the rest of it, and groups not yet judged, were left out",
             when(hour)
         )),
     };
     // What was read is judged, whether or not that was the whole range: a
     // region that failed at the range's last hour does not cost the rest.
-    let swept = if stop_models.is_cancelled() {
+    let swept = if stop_models.ended() {
         swept
     } else {
         match &swept {
@@ -209,7 +209,7 @@ async fn sweep(
         }
         tokio::select! {
             () = dag.finish() => swept,
-            () = stop_models.cancelled() => Err(match swept {
+            () = stop_models.until_ended() => Err(match swept {
                 Ok(()) => anyhow!("stopped while the last groups were judged: the range was read, but groups not yet judged were left out"),
                 Err(e) => e.context("stopped while the last groups were judged: groups not yet judged were left out"),
             }),

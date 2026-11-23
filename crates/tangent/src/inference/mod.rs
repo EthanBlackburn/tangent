@@ -34,6 +34,8 @@ mod model;
 pub mod serve;
 pub use model::Model;
 
+use crate::stop::Stop;
+
 pub struct InferenceNode {
     pub name: Arc<str>,
     cfg: InferenceConfig,
@@ -145,6 +147,11 @@ impl InferenceNode {
             attempt += 1;
             let reply = {
                 let _permit = self.model.permit().await;
+                // A turn that waited for its place while the run began to
+                // stop is one not yet sent.
+                if self.model.stop().finishing() {
+                    bail!("tangent is stopping: the turn was not sent");
+                }
                 self.model.send(&self.name, turn.clone()).await?
             };
             // A call the client kept as an item it does not understand is the
@@ -209,7 +216,22 @@ impl InferenceNode {
         .to_string())
     }
 
+    /// Every record annotated, in the order given. For tests: a run asks
+    /// with [`Self::annotate_unsent`], which a stop can leave part unsent.
+    #[cfg(test)]
     pub async fn annotate_all(&self, records: Vec<Value>) -> Vec<Value> {
+        let annotated = self.annotate_unsent(records).await;
+        annotated
+            .into_iter()
+            .map(Option::unwrap_or_default)
+            .collect()
+    }
+
+    /// Each record annotated, in the order given, or none for a record
+    /// whose request was not sent: once the run is finishing
+    /// ([`crate::stop::Stop`]) a request still waiting for one of the
+    /// model's places is left unsent, and the ones out are waited for.
+    pub async fn annotate_unsent(&self, records: Vec<Value>) -> Vec<Option<Value>> {
         let n = records.len();
         let mut groups: Vec<(String, Vec<(usize, Value)>)> = Vec::new();
         for (i, v) in records.into_iter().enumerate() {
@@ -233,13 +255,16 @@ impl InferenceNode {
         }
         let done = futures::future::join_all(jobs.into_iter().map(|(ids, chunk)| async move {
             let _permit = self.model.permit().await;
-            (ids, self.annotate(chunk).await)
+            if self.model.stop().finishing() {
+                return (ids, None);
+            }
+            (ids, Some(self.annotate(chunk).await))
         }))
         .await;
-        let mut slots = vec![Value::Null; n];
+        let mut slots = vec![None; n];
         for (ids, out) in done {
-            for (i, v) in ids.into_iter().zip(out) {
-                slots[i] = v;
+            for (i, v) in ids.into_iter().zip(out.into_iter().flatten()) {
+                slots[i] = Some(v);
             }
         }
         slots
@@ -681,6 +706,7 @@ pub fn nodes(
     models: &BTreeMap<Arc<str>, ModelConfig>,
     cfgs: &BTreeMap<Arc<str>, InferenceConfig>,
     config_dir: &Path,
+    stop: &Stop,
 ) -> Result<Nodes> {
     let mut built: HashMap<&Arc<str>, Arc<Model>> = HashMap::default();
     let mut nodes = HashMap::default();
@@ -696,7 +722,7 @@ pub fn nodes(
                         )
                     })?;
                 let model = Arc::new(
-                    Model::new(model_name, model_cfg.clone())
+                    Model::new(model_name, model_cfg.clone(), stop.clone())
                         .with_context(|| format!("model {model_name}"))?,
                 );
                 built.insert(model_name, Arc::clone(&model));
@@ -949,16 +975,27 @@ pub(crate) mod stub {
             name: &str,
             dir: &std::path::Path,
         ) -> anyhow::Result<super::InferenceNode> {
-            let model = super::Model::new(&self.node.model, self.model)?;
+            let model = super::Model::new(&self.node.model, self.model, Default::default())?;
             super::InferenceNode::new(name.into(), self.node, model.into(), dir)
         }
 
         /// The pipeline's nodes with this one alone in it, named `name`.
         pub fn nodes(self, name: &str, dir: &std::path::Path) -> anyhow::Result<super::Nodes> {
+            self.nodes_until(name, dir, &Default::default())
+        }
+
+        /// The same, in a run that `stop` stops.
+        pub fn nodes_until(
+            self,
+            name: &str,
+            dir: &std::path::Path,
+            stop: &crate::stop::Stop,
+        ) -> anyhow::Result<super::Nodes> {
             super::nodes(
                 &[(self.node.model.clone(), self.model)].into(),
                 &[(name.into(), self.node)].into(),
                 dir,
+                stop,
             )
         }
     }
@@ -1684,6 +1721,7 @@ mod tests {
             ]
             .into(),
             &dir,
+            &Stop::default(),
         )
         .unwrap();
         let calls = ["judge", "reviewer"].map(|name| {

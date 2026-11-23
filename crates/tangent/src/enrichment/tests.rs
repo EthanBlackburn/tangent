@@ -649,10 +649,9 @@ sinks:
     let cfg = tangent_shared::Config::from_file(&cfg_path).unwrap();
 
     let shutdown = CancellationToken::new();
-    let rt =
-        crate::dag::DagRuntime::build(cfg, &cfg_path, shutdown.clone(), CancellationToken::new())
-            .await
-            .unwrap();
+    let rt = crate::dag::DagRuntime::build(cfg, &cfg_path, shutdown.clone(), Default::default())
+        .await
+        .unwrap();
     let tables = Arc::clone(&rt.tables);
     assert_eq!(loads(&root.join("data/geo.mmdb")), 1);
     assert_eq!(loads(&root.join("data/networks.csv")), 1);
