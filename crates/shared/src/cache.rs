@@ -25,6 +25,17 @@ pub fn plugins() -> Result<PathBuf> {
     Ok(dir()?.join("plugins").join(format!("{engine:016x}")))
 }
 
+/// Where a model served on this machine is kept, with what serves it
+/// (`tangent model fetch`): `$XDG_CACHE_HOME/tangent/models`, else
+/// `$HOME/.cache/tangent/models`. Not per version, unlike [`dir`]: a model
+/// is tens of gigabytes, each thing there is named for its own version, and
+/// an upgrade of tangent finds it where it was.
+pub fn models() -> Result<PathBuf> {
+    let versioned = dir()?;
+    let tangent = versioned.parent().expect("the cache is under a directory");
+    Ok(tangent.join("models"))
+}
+
 /// [`dir`], with `var` for the environment. A variable that is unset, empty
 /// or relative is not one (as the XDG spec says of a relative path).
 fn dir_from(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf> {

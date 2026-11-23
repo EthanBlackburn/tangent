@@ -11,6 +11,7 @@ use tangent_runtime::RuntimeOptions;
 mod attest;
 mod fetch;
 mod init;
+mod local;
 use tangent_runtime::query;
 mod scaffold;
 mod state;
@@ -58,6 +59,18 @@ enum Watch {
         #[arg(long)]
         model: Option<String>,
     },
+}
+
+/// What `tangent model` does with the model that runs on this machine.
+#[derive(Subcommand, Debug)]
+enum ModelCommand {
+    /// Download MTPLX and Inkling 2 Mini (17 GB) into tangent's cache
+    ///
+    /// What `tangent init cloud --local` offers to do. uv, a Python, MTPLX
+    /// and the model go under ~/.cache/tangent/models and nowhere else,
+    /// each a pinned version checked against its SHA-256. A fetch that was
+    /// stopped goes on where it was.
+    Fetch,
 }
 
 #[derive(Subcommand, Debug)]
@@ -133,6 +146,12 @@ enum Commands {
     Init {
         #[command(subcommand)]
         watch: Watch,
+    },
+
+    /// The model that runs on this machine with `tangent init cloud --local`
+    Model {
+        #[command(subcommand)]
+        command: ModelCommand,
     },
 
     /// Read a past range of the config's sources through it, as fast as it
@@ -315,6 +334,10 @@ async fn main() -> Result<()> {
             let (server, models) = init::served(local, provider, model.as_deref())?;
             init::run(Path::new("."), sources, server, models).await?
         }
+
+        Commands::Model {
+            command: ModelCommand::Fetch,
+        } => local::fetch(&local::root()?).await?,
 
         Commands::Replay { config, from, to } => {
             let config = config.canonicalize().unwrap_or(config);
