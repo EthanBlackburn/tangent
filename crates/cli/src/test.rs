@@ -178,7 +178,7 @@ pub async fn run(opts: TestOptions) -> Result<()> {
                 // Relative to the test config, which sits next to the original.
                 data: plugin_cfg.data.clone(),
                 tables: plugin_cfg.tables.clone(),
-                models: plugin_cfg.models.clone(),
+                inference: plugin_cfg.inference.clone(),
                 // A test sees a failed call as a failure, not a pass-through.
                 drop_on_error: true,
                 // A test hands the plugin its input as it is, ungrouped.
@@ -195,7 +195,7 @@ pub async fn run(opts: TestOptions) -> Result<()> {
             let inference: BTreeMap<_, _> = cfg
                 .inference
                 .iter()
-                .filter(|(node, _)| plugin_cfg.models.contains(node))
+                .filter(|(node, _)| plugin_cfg.inference.contains(node))
                 .map(|(node, cfg)| (Arc::clone(node), cfg.clone()))
                 .collect();
             let models = cfg

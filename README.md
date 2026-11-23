@@ -264,7 +264,7 @@ A request holds the records the node is handed, or with `group_by: [_norm.actor]
 
 `encoding: {type: logfmt, keep: [...], sources: {<source>: {principal, time, keep, ids}}}` writes the records as logfmt lines in about half the tokens of JSON, and the text decodes back to the records: a principal's records are grouped, the fields they share written once above their rows, the `keep` fields on every row, a day's timestamps as times of day; `sidecar: true` swaps a source's `ids` for references the model never sees. The judge pack has a row for each pack's sources ([packs/judge/ingest.yaml](/packs/judge/ingest.yaml)).
 
-A plugin can hold a conversation with a node instead, with `model.chat`: it sends what has been said so far and the tools the model may call, runs the calls the model asks for, and sends their results with the next turn, until the model answers. The node gives `prompt_file` as the system prompt, `max_tokens` (here a turn's) and `extra`, and its model the credentials, `timeout_ms`, `retries` and `concurrency`; the plugin's `models` names the nodes it may call, and a node named there needs no inputs:
+A plugin can hold a conversation with a node instead, with `model.chat`: it sends what has been said so far and the tools the model may call, runs the calls the model asks for, and sends their results with the next turn, until the model answers. The node gives `prompt_file` as the system prompt, `max_tokens` (here a turn's) and `extra`, and its model the credentials, `timeout_ms`, `retries` and `concurrency`; the plugin's `inference` names the nodes it may call, and a node named there needs no inputs:
 
 ```yaml
 models:
@@ -280,7 +280,7 @@ plugins:
   investigate:
     module_type: rust
     path: ./investigate
-    models: [investigator]
+    inference: [investigator]
 ```
 
 ```rust

@@ -59,7 +59,7 @@ plugins:
     inputs: [flagged]
     module_type: rust
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
-    models: [reviewer]
+    inference: [reviewer]
     tables:
       lake: lake                 # table `lake` is what sink `lake` has written
     group_by: [_norm.org, _norm.actor]

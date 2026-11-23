@@ -257,12 +257,12 @@ impl Config {
             }
         }
 
-        // a plugin's `models` are inference nodes
+        // a plugin's `inference` names inference nodes
         for (name, plugin) in &self.plugins {
-            for model in &plugin.models {
+            for model in &plugin.inference {
                 if !self.inference.contains_key(model) {
                     anyhow::bail!(
-                        "plugin {name}: models names `{model}`, which is no inference node"
+                        "plugin {name}: inference names `{model}`, which is no inference node"
                     );
                 }
             }
@@ -334,7 +334,7 @@ impl Config {
             }
         }
         // an inference node a plugin calls runs without an input
-        let called = |name: &Arc<str>| self.plugins.values().any(|p| p.models.contains(name));
+        let called = |name: &Arc<str>| self.plugins.values().any(|p| p.inference.contains(name));
         for Reader { kind, name, inputs } in self.readers() {
             if kind == "inference node" && called(name) {
                 continue;
@@ -618,14 +618,14 @@ mod tests {
         );
     }
 
-    /// An inference node a plugin holds a conversation with (`models`) runs
+    /// An inference node a plugin holds a conversation with (`inference`) runs
     /// without an input, so it draws no warning; a name that is no node is an
     /// error.
     #[test]
-    fn a_plugin_s_models_are_inference_nodes_and_need_no_input() {
-        let with = |models: &str| {
+    fn a_plugin_s_inference_is_inference_nodes_that_need_no_input() {
+        let with = |node: &str| {
             config(&format!(
-                "{LINES}{MODEL}plugins:\n  agent: {{ module_type: rust, models: [{models}], inputs: [lines] }}\n\
+                "{LINES}{MODEL}plugins:\n  agent: {{ module_type: rust, inference: [{node}], inputs: [lines] }}\n\
                  inference:\n  reviewer: {{ model: m, prompt_file: p.txt }}\n\
                  sinks:\n  out: {{ type: blackhole, inputs: [agent] }}\n"
             ))
@@ -636,7 +636,7 @@ mod tests {
         let e = with("revewer").validate().unwrap_err().to_string();
         assert_eq!(
             e,
-            "plugin agent: models names `revewer`, which is no inference node"
+            "plugin agent: inference names `revewer`, which is no inference node"
         );
     }
 

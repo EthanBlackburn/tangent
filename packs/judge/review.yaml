@@ -33,7 +33,7 @@ plugins:
     module_type: rust
     path: review
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }   # the release's component, its build attested (tangent plugin fetch)
-    models: [reviewer]
+    inference: [reviewer]
     tables:
       lake: lake                   # table `lake` is what sink `lake` has written
     # An actor's alerts wait here together until the lake has their records
