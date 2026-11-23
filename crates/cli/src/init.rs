@@ -1158,7 +1158,12 @@ mod tests {
         }
         for provider in Provider::value_variants() {
             let pair = provider.pair();
-            for part in [pair.judge, pair.reviewer] {
+            for part in [
+                pair.judge_model,
+                pair.reviewer_model,
+                pair.judge,
+                pair.reviewer,
+            ] {
                 assert!(
                     directions.contains(part.trim_end()),
                     "{provider:?}:\n{part}"

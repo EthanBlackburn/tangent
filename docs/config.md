@@ -215,12 +215,14 @@ Its rows, under `inference.judge.encoding.sources:`:
 
 ## Have other models judge and review
 
-Two nodes under `inference:` are the models: `judge` reads every record, and `reviewer` settles what the judge flagged. Each begins with the lines that say who serves it and how it is asked:
+Two entries under `models:` say who serves the models, and two nodes under `inference:` say how each is asked: `judge` reads every record, and `reviewer` settles what the judge flagged. A provider's lines are in four places:
 
-- In `judge`, the lines between `inputs: [baseline_renderer]` and `prompt_file: judge.md`.
-- In `reviewer`, the lines between `reviewer:` and `prompt_file: review.md`.
+- Under `models:`, in `judge`, the lines above `timeout_ms: 90000`.
+- Under `models:`, in `reviewer`, the lines above `timeout_ms: 120000`.
+- Under `inference:`, in `judge`, the lines between `model: judge` and `prompt_file: judge.md`.
+- Under `inference:`, in `reviewer`, the lines between `model: reviewer` and `prompt_file: review.md`.
 
-Replace those lines with the blocks below, and leave the rest of each node as it is. Each block has the model its provider was measured with: for another, change its `model` line, which is all `--model` does: the judge's line for its first name, the reviewer's for its second. A block is whole: a line the old one had and the new one has not, such as `backend`, goes. judge.md, judge.schema.json and review.md, beside the file, are the same whoever serves the models.
+Replace those lines with the blocks below, and leave the rest as it is. Each block has the model its provider was measured with: for another, change the `model` line under `models:`, which is all `--model` does: the judge's entry for its first name, the reviewer's for its second. A block is whole: a line the old one had and the new one has not, such as `url`, goes. judge.md, judge.schema.json and review.md, beside the file, are the same whoever serves the models.
 
 [Try it](try-it.md) has what each pair caught and flagged in tangent's evals.
 
@@ -230,22 +232,32 @@ It reads from the environment:
 
 - `ANTHROPIC_API_KEY`: a key from console.anthropic.com
 
-The judge's lines:
+The judge's model, under `models:`:
 
 ```yaml
-    backend: anthropic
+    type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"   # a key from console.anthropic.com
     model: claude-haiku-5-5
+```
+
+The reviewer's model, under `models:`:
+
+```yaml
+    type: anthropic
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: claude-sonnet-5-5
+```
+
+The judge's lines, under `inference:`:
+
+```yaml
     max_tokens: 400              # per record
     extra: { thinking: { type: disabled } }   # no thinking: the reply is the answer
 ```
 
-The reviewer's lines:
+The reviewer's lines, under `inference:`:
 
 ```yaml
-    backend: anthropic
-    api_key: "${ANTHROPIC_API_KEY}"
-    model: claude-sonnet-5-5
     extra:
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
@@ -257,22 +269,32 @@ It reads from the environment:
 
 - `AWS_PROFILE`: the AWS profile that calls Bedrock, with access to both models in the US regions; `default` when unset
 
-The judge's lines:
+The judge's model, under `models:`:
 
 ```yaml
-    backend: bedrock
+    type: bedrock
     model: us.anthropic.claude-haiku-5-5
     aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }   # a US region: Bedrock serves this model there
+```
+
+The reviewer's model, under `models:`:
+
+```yaml
+    type: bedrock
+    model: us.anthropic.claude-sonnet-5-5
+    aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }
+```
+
+The judge's lines, under `inference:`:
+
+```yaml
     max_tokens: 400              # per record
     extra: { thinking: { type: disabled } }   # no thinking: the reply is the answer
 ```
 
-The reviewer's lines:
+The reviewer's lines, under `inference:`:
 
 ```yaml
-    backend: bedrock
-    model: us.anthropic.claude-sonnet-5-5
-    aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }
     extra:
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
@@ -284,12 +306,27 @@ It reads from the environment:
 
 - `OPENROUTER_API_KEY`: a key from openrouter.ai/keys
 
-The judge's lines:
+The judge's model, under `models:`:
 
 ```yaml
+    type: openai                 # an OpenAI-compatible server
     url: https://openrouter.ai/api/v1
     api_key: "${OPENROUTER_API_KEY}"   # a key from openrouter.ai/keys
     model: deepseek/deepseek-v4-flash-0731
+```
+
+The reviewer's model, under `models:`:
+
+```yaml
+    type: openai                 # an OpenAI-compatible server
+    url: https://openrouter.ai/api/v1
+    api_key: "${OPENROUTER_API_KEY}"
+    model: deepseek/deepseek-v4-flash-0731
+```
+
+The judge's lines, under `inference:`:
+
+```yaml
     max_tokens: 200              # per record
     temperature: 0.7             # with top_p, the sampling it was measured with
     extra:
@@ -298,12 +335,9 @@ The judge's lines:
       provider: { require_parameters: true }   # only hosts that hold the reply to its schema
 ```
 
-The reviewer's lines:
+The reviewer's lines, under `inference:`:
 
 ```yaml
-    url: https://openrouter.ai/api/v1
-    api_key: "${OPENROUTER_API_KEY}"
-    model: deepseek/deepseek-v4-flash-0731
     extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 ```
@@ -314,23 +348,33 @@ It reads from the environment:
 
 - `OPENAI_API_KEY`: a key from platform.openai.com
 
-The judge's lines:
+The judge's model, under `models:`:
 
 ```yaml
-    backend: responses           # OpenAI's Responses API
+    type: responses              # OpenAI's Responses API
     api_key: "${OPENAI_API_KEY}"   # a key from platform.openai.com
     model: gpt-6-luna
+```
+
+The reviewer's model, under `models:`:
+
+```yaml
+    type: responses
+    api_key: "${OPENAI_API_KEY}"
+    model: gpt-6.1-terra
+```
+
+The judge's lines, under `inference:`:
+
+```yaml
     max_tokens: 400              # per record, its thinking included
     extra:
       reasoning: { effort: low }   # little thinking: the reply is the answer
 ```
 
-The reviewer's lines:
+The reviewer's lines, under `inference:`:
 
 ```yaml
-    backend: responses
-    api_key: "${OPENAI_API_KEY}"
-    model: gpt-6.1-terra
     extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 ```
@@ -339,11 +383,25 @@ The reviewer's lines:
 
 Start the model's server before tangent, and set the two lines marked EDIT to the name the server gives its model. Nothing leaves the machine.
 
-The judge's lines:
+The judge's model, under `models:`:
 
 ```yaml
+    type: openai                 # an OpenAI-compatible server
     url: http://localhost:8080/v1   # llama-server, mlx_lm.server or vLLM; Ollama is http://localhost:11434/v1
     model: glm-4.7-flash         # EDIT to the name your server gives its model
+```
+
+The reviewer's model, under `models:`:
+
+```yaml
+    type: openai                 # an OpenAI-compatible server
+    url: http://localhost:8080/v1
+    model: glm-4.7-flash         # EDIT, as the judge's
+```
+
+The judge's lines, under `inference:`:
+
+```yaml
     max_tokens: 200              # per record
     temperature: 0.7
     extra:
@@ -351,9 +409,4 @@ The judge's lines:
       chat_template_kwargs: { enable_thinking: false }   # no thinking: the reply is the answer
 ```
 
-The reviewer's lines:
-
-```yaml
-    url: http://localhost:8080/v1
-    model: glm-4.7-flash         # EDIT, as the judge's
-```
+The reviewer has no lines of its own under `inference:`: take out the ones that were there.
