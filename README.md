@@ -256,6 +256,20 @@ inference:
 
 The model is reached through [rig](https://github.com/0xPlaygrounds/rig): `type: openai` for any OpenAI-compatible chat endpoint such as OpenAI, mlx_lm.server, llama-server, vLLM, OpenRouter or Bedrock's OpenAI endpoint; `type: anthropic` for Anthropic's own Messages API with `api_key`; `type: responses` for OpenAI's Responses API with `api_key`, which a model of OpenAI's that thinks needs before it will take a plugin's tools (chat completions refuses them); and `type: bedrock` for Amazon Bedrock's Converse API with the AWS credential chain (`aws: { region, profile }`).
 
+A model's entry can also say how its server is started, and `tangent run` then runs it: `serve` holds the command, and `env` beside it any variables it takes.
+
+```yaml
+models:
+  glm:
+    type: openai
+    url: http://localhost:8080/v1
+    model: mlx-community/GLM-4.7-Flash-4bit
+    serve:
+      command: [mlx_lm.server, --model, mlx-community/GLM-4.7-Flash-4bit, --port, "8080"]
+```
+
+The command is started unless something already answers at `url`, no source is read until it answers there (a GET of `<url>/models`, for up to ten minutes while a model loads), and it is stopped when tangent has shut down. It runs in a process group of its own, so the terminal's Ctrl-C reaches tangent and not the server, which goes on answering while tangent finishes; a Ctrl-C while it is still loading ends both. A server that was already answering is used and left running. A command that ends before it answers is tangent's error, with the last lines it printed; one that ends later is an error in the log, and what it prints meanwhile is tangent's debug log.
+
 The records the node is handed are the user message, one JSON object per line (the record, or its `fields`) with its index `i`, or with `encoding: {type: logfmt}` a logfmt line each, and the reply is `{"answers": [...]}`: each answer, a JSON object, lands on its record under the node's name (`judge` above); a failure lands there as `{"error": ...}`. The node adds and forwards, never drops. What goes on from there is a plugin's decision, and a plugin's `probe()` is already that filter: [examples/inference-local/flagged](/examples/inference-local/flagged/src/lib.rs) keeps `judge.flag == true` (and anything the judge could not read) with a pass-through body.
 
 The reply is read as JSON and nothing else, and the model's API is asked to make it so: with `schema_file` (a JSON Schema next to the prompt) through `response_format` on an OpenAI-compatible server or structured output on Anthropic and Bedrock; without one, an `openai` server is put in JSON mode. A server that ignores both (mlx_lm.server does) is held to the prompt, and a reply that is not a JSON object is the error.

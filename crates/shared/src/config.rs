@@ -257,6 +257,19 @@ impl Config {
             }
         }
 
+        // a model's `serve` is a command, and its `url` where that answers
+        for (name, model) in &self.models {
+            let Some(serve) = &model.serve else { continue };
+            if serve.command.first().is_none_or(String::is_empty) {
+                anyhow::bail!("model {name}: `serve.command` names no program");
+            }
+            if model.url.is_none() {
+                anyhow::bail!(
+                    "model {name}: `serve` starts a server, and `url` is where it answers; it has none"
+                );
+            }
+        }
+
         // a plugin's `inference` names inference nodes
         for (name, plugin) in &self.plugins {
             for model in &plugin.inference {
@@ -655,6 +668,36 @@ mod tests {
         assert_eq!(
             e,
             "inference node judge: model names `n`, which is no entry under `models`"
+        );
+    }
+
+    /// A model's `serve` needs a program to start and a `url` to wait at.
+    #[test]
+    fn a_served_model_has_a_command_and_a_url() {
+        let with = |model: &str| {
+            config(&format!(
+                "{LINES}models:\n  m: {model}\n\
+                 inference:\n  judge: {{ model: m, prompt_file: p.txt, inputs: [lines] }}\n\
+                 sinks:\n  out: {{ type: blackhole, inputs: [judge] }}\n"
+            ))
+        };
+        with("{ type: openai, url: \"http://localhost:1/v1\", model: m, serve: { command: [serve, m], env: { A: b } } }")
+            .validate()
+            .unwrap();
+        let e = with(
+            "{ type: openai, url: \"http://localhost:1/v1\", model: m, serve: { command: [] } }",
+        )
+        .validate()
+        .unwrap_err()
+        .to_string();
+        assert_eq!(e, "model m: `serve.command` names no program");
+        let e = with("{ type: anthropic, api_key: k, model: m, serve: { command: [serve] } }")
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            "model m: `serve` starts a server, and `url` is where it answers; it has none"
         );
     }
 

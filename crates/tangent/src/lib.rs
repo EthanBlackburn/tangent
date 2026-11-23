@@ -175,7 +175,16 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
     #[cfg(feature = "alloc-prof")]
     jemalloc_dump("warm");
 
-    if !opts.once {
+    if opts.once {
+        // Nothing here waits for a signal, so one ends the run's model
+        // calls, as it does a replay's, and the run stops with what it has.
+        let stop_models = stop_models.clone();
+        tokio::spawn(async move {
+            if wait_for_shutdown_signal().await.is_ok() {
+                stopping(&stop_models);
+            }
+        });
+    } else {
         wait_for_shutdown_signal().await?;
         stopping(&stop_models);
     }
@@ -201,6 +210,7 @@ pub(crate) fn stopping(stop_models: &CancellationToken) {
         tokio::time::sleep(Duration::from_secs(1)).await;
         if wait_for_shutdown_signal().await.is_ok() {
             tracing::warn!("second signal; exiting now");
+            inference::serve::end_now();
             std::process::exit(130);
         }
     });

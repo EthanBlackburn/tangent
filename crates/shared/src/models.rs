@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +57,27 @@ pub struct ModelConfig {
     /// again in halves instead.
     #[serde(default = "default_retries")]
     pub retries: u32,
+
+    /// Its server, when tangent is to run it; unset when the server is
+    /// someone else's to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serve: Option<ServeConfig>,
+}
+
+/// A model's server that tangent runs. It is started with the pipeline unless
+/// something already answers at the model's `url`, nothing is read from a
+/// source until it answers there, and it is stopped when tangent stops. One
+/// that was already answering is left as it was found.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServeConfig {
+    /// The program and its arguments, e.g.
+    /// `[llama-server, -m, model.gguf, --port, "8080"]`.
+    pub command: Vec<String>,
+
+    /// Variables it is started with, beside tangent's own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]

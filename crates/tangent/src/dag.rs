@@ -39,6 +39,9 @@ pub struct DagRuntime {
     purge: Option<(CancellationToken, tokio::task::JoinHandle<()>)>,
     /// Each grouped plugin's grouping task, and the pool it hands groups to.
     groups: Vec<(Grouper, tokio::task::JoinHandle<()>, Arc<WorkerPool>)>,
+    /// The model servers this pipeline started (`serve` on a `models`
+    /// entry), stopped when it has shut down.
+    served: Vec<crate::inference::serve::Served>,
     /// The enrichment tables every plugin on every worker reads, here so a
     /// test can count what holds them; the engines keep them alive.
     #[cfg(test)]
@@ -203,6 +206,11 @@ impl DagRuntime {
         }
         router.set_groupers(groupers);
 
+        // A model's own server (`serve`), answering before a record is read.
+        // After the rest that can fail, since a model may take minutes to
+        // load.
+        let served = crate::inference::serve::start(&cfg.models).await?;
+
         // Last, after everything that can fail, so a failed build leaves no
         // task holding the store (and SQLite's lock with it). Expired
         // entries in a store this pipeline only reads are its writer's. It
@@ -232,6 +240,7 @@ impl DagRuntime {
             consumer_handles,
             purge,
             groups,
+            served,
             #[cfg(test)]
             tables,
         })
@@ -273,6 +282,7 @@ impl DagRuntime {
             consumer_handles,
             purge,
             groups,
+            served,
             ..
         } = self;
 
@@ -350,6 +360,9 @@ impl DagRuntime {
             Ok(_) => (),
         }
 
+        for server in served {
+            server.stop().await;
+        }
         Ok(())
     }
 }
@@ -769,6 +782,7 @@ mod tests {
             consumer_handles: vec![],
             purge: None,
             groups: vec![],
+            served: vec![],
             tables: Default::default(),
         };
 
@@ -895,6 +909,7 @@ mod tests {
             consumer_handles: vec![],
             purge: None,
             groups: vec![(grouper, task, Arc::new(WorkerPool::new_for_test(vec![])))],
+            served: vec![],
             tables: Default::default(),
         };
         (runtime, through)
