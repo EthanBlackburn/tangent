@@ -380,7 +380,7 @@ mod tests {
     }
 
     /// A row is a pid, its parent's, when it started and its path: the
-    /// plugin's `ps` line, as packs/macos/ps/ps.py wrote it. A path keeps
+    /// plugin's `ps` line. A path keeps
     /// its spaces, a login shell loses its dash, and a one-digit day, which
     /// ps pads with a space, is read.
     #[test]

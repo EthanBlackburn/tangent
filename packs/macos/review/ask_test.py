@@ -1,5 +1,8 @@
+import io
+import json
 import os
 import stat
+import sys
 import tempfile
 import unittest
 
@@ -13,38 +16,6 @@ def review(verdict="malicious", judge="look", **found):
     if verdict is None:
         made["review"] = {"error": "the model's content filter stopped the review"}
     return made
-
-
-class Follow(unittest.TestCase):
-    def test_whole_lines_added_after_the_start_are_read(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".ndjson", delete=False) as f:
-            f.write('{"old": 1}\n')
-        self.addCleanup(os.remove, f.name)
-        with open(f.name, "a") as more:
-            more.write('{"new": 1}\n{"half":')
-        self.assertEqual(next(ask.lines(f.name, start=11)), '{"new": 1}\n')
-
-    def test_what_was_there_at_the_start_is_not_read_and_a_stop_ends_at_the_file_s_end(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".ndjson", delete=False) as f:
-            f.write('{"old": 1}\n')
-        self.addCleanup(os.remove, f.name)
-        self.assertEqual(list(ask.lines(f.name, stopping=lambda: True)), [])
-
-    def test_a_file_that_was_not_there_yet_is_read_from_its_start(self):
-        path = os.path.join(tempfile.mkdtemp(), "reviews.ndjson")
-        self.addCleanup(os.remove, path)
-        waited = []
-
-        def stopping():   # the file appears while the follower waits for it
-            if not waited:
-                with open(path, "w") as f:
-                    f.write('{"first": 1}\n')
-            waited.append(True)
-            return len(waited) > 1
-
-        real, ask.time.sleep = ask.time.sleep, lambda _: None
-        self.addCleanup(setattr, ask.time, "sleep", real)
-        self.assertEqual(list(ask.lines(path, stopping=stopping)), ['{"first": 1}\n'])
 
 
 class Stands(unittest.TestCase):
@@ -159,6 +130,24 @@ class Dialog(unittest.TestCase):
         self.assertEqual(ask.dialog("t", "x", False, 5, self.stand_in('echo "gave up"\n')), ("none", ""))
         with self.assertRaisesRegex(RuntimeError, "no screen"):
             ask.dialog("t", "x", False, 0, self.stand_in('echo "no screen" >&2; exit 1\n'))
+
+
+class Out(unittest.TestCase):
+    def test_each_answer_is_added_to_the_file_named(self):
+        path = os.path.join(tempfile.mkdtemp(), "feedback.ndjson")
+        self.addCleanup(os.remove, path)
+        with open(path, "w") as f:
+            f.write('{"earlier": 1}\n')
+        lines = [json.dumps(review()), "not json", json.dumps(review("benign")), json.dumps(review("unresolved"))]
+        real = ask.dialog, sys.stdin, sys.argv
+        self.addCleanup(lambda: (setattr(ask, "dialog", real[0]), setattr(sys, "stdin", real[1]), setattr(sys, "argv", real[2])))
+        ask.dialog = lambda *_: ("mine", "the deploy")
+        sys.stdin, sys.argv = io.StringIO("\n".join(lines) + "\n"), ["ask.py", "--out", path]
+        ask.main()
+        with open(path) as f:
+            kept = [json.loads(l) for l in f]
+        self.assertEqual(kept[0], {"earlier": 1})
+        self.assertEqual([(k["review"], k["answer"]) for k in kept[1:]], [("malicious", "mine"), ("unresolved", "mine")])
 
 
 if __name__ == "__main__":

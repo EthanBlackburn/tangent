@@ -9,7 +9,7 @@ PACKS := $(filter $(PACKS),$(patsubst %/ingest.yaml,%,$(wildcard */ingest.yaml))
 # Each pack alone: its plugin compiled and its fixtures run from its own
 # ingest.yaml, against the tables in its tests/, so a pack that leans on
 # another file fails here.
-test: $(addprefix test-,$(PACKS)) test-macos-unit test-macos-net test-macos-ps test-macos-agent test-macos-ask test-judge-review test-baseline test-shared
+test: $(addprefix test-,$(PACKS)) test-macos-unit test-macos-ask test-judge-review test-baseline test-shared
 
 # packs/judge's reviewer, whose loop runs against a made-up model: it has no
 # fixture, since a review is a conversation. The compile writes its
@@ -26,18 +26,6 @@ test-judge-review:
 test-macos-unit: test-macos
 	cd macos && $(TANGENT) plugin compile --config review.yaml
 	for c in . sessions verdicts review; do (cd macos/$$c && cargo test) || exit 1; done
-
-# packs/macos's tcpdump joiner, which is Python, not a plugin.
-test-macos-net:
-	cd macos/net && python3 -m unittest net_test
-
-# packs/macos's snapshot of what was running when the capture began.
-test-macos-ps:
-	cd macos/ps && python3 -m unittest ps_test
-
-# packs/macos's reader of Claude Code's transcripts.
-test-macos-agent:
-	cd macos/agent && python3 -m unittest transcripts_test
 
 # packs/macos's dialog that asks the owner about a review.
 test-macos-ask:
@@ -72,4 +60,4 @@ fixtures-%:
 fixtures-baseline:
 	behavior-baseline/story.sh write
 
-.PHONY: test test-judge-review test-macos-unit test-macos-net test-macos-ps test-macos-agent test-macos-ask test-baseline test-shared dist fixtures-baseline
+.PHONY: test test-judge-review test-macos-unit test-macos-ask test-baseline test-shared dist fixtures-baseline

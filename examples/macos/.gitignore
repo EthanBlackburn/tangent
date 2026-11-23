@@ -3,11 +3,7 @@ state.sqlite*
 alerts.ndjson
 verdicts.ndjson
 lake/
-*.sock
-# run.sh's: tangent's log, and with SAVE=1 the raw capture, which holds every command line
-tangent.log
-es.raw.zst
-net.raw.ndjson
+# a kept capture (packs/macos/README.md), which holds every command line
+raw.ndjson.zst
 reviews.ndjson
 feedback.ndjson
-review.log
