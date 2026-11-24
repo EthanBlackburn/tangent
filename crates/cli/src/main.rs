@@ -82,12 +82,13 @@ enum Watch {
 /// What `tangent model` does with the model that runs on this machine.
 #[derive(Subcommand, Debug)]
 enum ModelCommand {
-    /// Download MTPLX and Inkling 2 Mini (17 GB) into tangent's cache
+    /// Download Ollama and Inkling 2 Mini (20 GB) into tangent's cache
     ///
-    /// What `tangent init cloud --local` offers to do. uv, a Python, MTPLX
-    /// and the model go under ~/.cache/tangent/models and nowhere else,
-    /// each a pinned version checked against its SHA-256. A fetch that was
-    /// stopped goes on where it was.
+    /// What `tangent init cloud --local` offers to do. An Ollama of
+    /// tangent's own and the model it pulls go under ~/.cache/tangent/models,
+    /// apart from any Ollama of yours: the release is pinned and checked
+    /// against its SHA-256, and the model against its digest. A fetch that
+    /// was stopped goes on where it was.
     Fetch,
 }
 

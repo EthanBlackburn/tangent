@@ -192,7 +192,7 @@ async fn start(pipeline: Pipeline) -> Result<()> {
     std::env::set_current_dir(&dir).with_context(|| format!("entering {}", dir.display()))?;
     let config = dir.join("tangent.yaml");
     fetch::missing(&config).await?;
-    if pipeline.server == Server::Mtplx {
+    if pipeline.server == Server::Ollama {
         let root = local::root()?;
         let missing = local::missing(&root);
         if !missing.nothing() {

@@ -245,9 +245,9 @@ pub enum Server {
     /// A server of your own on this machine, at http://localhost:8080/v1,
     /// with the model you name: `--local` with `--model`.
     Yours,
-    /// MTPLX on this Mac, which tangent starts, with Inkling 2 Mini:
+    /// Ollama on this Mac, which tangent starts, with Inkling 2 Mini:
     /// `--local`.
-    Mtplx,
+    Ollama,
 }
 
 impl Server {
@@ -259,7 +259,7 @@ impl Server {
         Server::Hosted(Provider::Openrouter),
         Server::Hosted(Provider::Openai),
         Server::Yours,
-        Server::Mtplx,
+        Server::Ollama,
     ];
 }
 
@@ -298,27 +298,27 @@ const REVIEWER_LIMITS: &str =
     concurrency: 1
 ";
 
-/// Inkling 2 Mini's entry under `models`, whole: where MTPLX serves it, how
-/// hard it may be asked, and how tangent starts it. One model on one
+/// Inkling 2 Mini's entry under `models`, whole: where Ollama serves it,
+/// how hard it may be asked, and how tangent starts it. One model on one
 /// server, which answers a request at a time: the settings are the ones
-/// measured with MTPLX 2.13 on an M4 Max with 36 GB, where the model leaves
-/// about 3.5 GB spare.
-pub const INKLING: &str = r#"    type: openai                 # MTPLX serves the OpenAI API
-    url: http://127.0.0.1:8000/v1
-    model: mtplx                 # it answers with the model it loaded
+/// measured with Ollama 0.40.18 on an M4 Max with 36 GB.
+pub const INKLING: &str = r#"    type: openai                 # Ollama serves the OpenAI API
+    url: http://127.0.0.1:{{port}}/v1
+    model: "{{model}}"   # Ollama's build of it for Apple Silicon
     timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
     retries: 2
     concurrency: 1               # one request at a time, the judge's and the reviewer's together
     # `tangent watch` starts this server, waits until it answers and stops it
     # after; one already answering at `url` is used and left running.
     serve:
-      # MTPLX and the model, where `tangent model fetch` keeps them
-      command: ["{{mtplx}}", serve, --model, "{{inkling}}", --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
+      # tangent's own Ollama, where `tangent model fetch` keeps it
+      command: ["{{ollama}}", serve]
       env:
-        HF_HUB_OFFLINE: "1"                        # the model is read from this Mac, and never fetched here
-        MTPLX_SESSION_BANK_MAX_BYTES: 3G           # what it keeps of prompts it has read, so the judge's brief is read once
-        MTPLX_SYSTEM_MEMORY_SHED_FLOOR_BYTES: 2G   # it drops that only below 2 GB of free memory
-        MTPLX_GDN_BOUNDARY_TAIL_BACKOFF: "768"     # a restore point inside the brief, for the next record
+        # a port and a store of its own: an Ollama of yours is neither used nor in the way
+        OLLAMA_HOST: "127.0.0.1:{{port}}"
+        OLLAMA_MODELS: "{{models}}"
+        OLLAMA_NO_CLOUD: "1"             # none of Ollama's hosted models or web search
+        OLLAMA_CONTEXT_LENGTH: "32768"   # what one request may hold: a review's whole conversation
 "#;
 
 /// The judge's `batch_bytes` where a request may be large.
@@ -445,8 +445,8 @@ impl Server {
                 batch: BATCH,
                 needs: &[],
             },
-            Server::Mtplx => Pair {
-                label: "Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (MTPLX)",
+            Server::Ollama => Pair {
+                label: "Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (Ollama)",
                 host: "this Mac",
                 entry: Some("inkling"),
                 judge_model: INKLING,
@@ -454,7 +454,7 @@ impl Server {
     temperature: 0.7
     extra:
       top_p: 0.95
-      chat_template_kwargs: { enable_thinking: false }   # no thinking: the reply is the answer
+      reasoning_effort: none       # no thinking: the reply is the answer
 "#,
                 reviewer_model: r#""#,
                 reviewer: r#""#,
@@ -547,7 +547,7 @@ impl Choices {
     /// hosted model is sent every one.
     pub fn records(&self) -> String {
         match self.server {
-            Server::Yours | Server::Mtplx => {
+            Server::Yours | Server::Ollama => {
                 "stay on this machine: the model that judges them runs here".to_string()
             }
             hosted => format!(
@@ -827,7 +827,7 @@ pub fn served(
     let named = model.map(models).transpose()?;
     match (local, provider) {
         (true, _) if named.is_some() => Ok((Server::Yours, named)),
-        (true, _) => Ok((Server::Mtplx, None)),
+        (true, _) => Ok((Server::Ollama, None)),
         (false, None) if named.is_some() => bail!(
             "--model names a hosted model with --provider, or with --local a model server of your own"
         ),
@@ -848,12 +848,15 @@ pub fn cache() -> String {
     .to_string()
 }
 
-/// `text` with MTPLX's program and the model's directory under `cache` in
-/// their places.
+/// `text` with what the fetch fixes in its places: Ollama's program and
+/// the directory of its models under `cache`, the port it serves on and the
+/// model's name.
 pub fn placed(text: &str, cache: &str) -> String {
-    let (mtplx, inkling) = local::paths(cache);
-    text.replace("{{mtplx}}", &mtplx)
-        .replace("{{inkling}}", &inkling)
+    let (ollama, models) = local::paths(cache);
+    text.replace("{{ollama}}", &ollama)
+        .replace("{{models}}", &models)
+        .replace("{{port}}", &local::PORT.to_string())
+        .replace("{{model}}", local::MODEL)
 }
 
 /// Asks, at a terminal, whether to download what `missing` lists now. No
@@ -861,10 +864,10 @@ pub fn placed(text: &str, cache: &str) -> String {
 pub fn ask_to_fetch(missing: &local::Missing, root: &Path) -> bool {
     use std::io::IsTerminal as _;
     println!(
-        "\nInkling 2 Mini runs on MTPLX, and {}: {} to download, into {}.",
+        "\nInkling 2 Mini runs on Ollama, one of tangent's own, and {}: {} to download, into {}.",
         match (missing.engine, missing.model > 0) {
             (true, true) => "neither is on this Mac yet",
-            (true, false) => "MTPLX is not on this Mac yet",
+            (true, false) => "that Ollama is not on this Mac yet",
             _ => "the model is not all on this Mac yet",
         },
         local::size(missing.bytes()),
@@ -895,7 +898,7 @@ fn memory_gib() -> Option<u64> {
 pub fn local_needs(server: Server) -> Vec<String> {
     match server {
         Server::Yours => vec!["Start your model's server first.".to_string()],
-        Server::Mtplx => {
+        Server::Ollama => {
             let mut lines = vec![
                 "`tangent watch` starts the model, waits until it answers and stops it after."
                     .to_string(),
@@ -916,7 +919,7 @@ pub fn local_needs(server: Server) -> Vec<String> {
 }
 
 /// Why tangent does not start Inkling on this machine, where it does not:
-/// MTPLX runs on Apple Silicon Macs only, and the model does not fit in
+/// the build Ollama runs is for Apple Silicon, and the model does not fit in
 /// less than [`INKLING_MEMORY`].
 pub fn no_inkling() -> Option<String> {
     unfit(memory_gib())
@@ -929,14 +932,14 @@ fn unfit(memory: Option<u64>) -> Option<String> {
     }
     let memory = memory.filter(|gib| *gib < INKLING_MEMORY)?;
     Some(format!(
-        "this Mac has {memory} GB of memory, and Inkling 2 Mini takes about 20 GB to itself: under {INKLING_MEMORY} GB it is slow or does not load, so tangent does not start it"
+        "this Mac has {memory} GB of memory, and Inkling 2 Mini takes about 24 GB to itself: under {INKLING_MEMORY} GB it is slow or does not load, so tangent does not start it"
     ))
 }
 
 /// Whether this machine can serve the models as `server` would. It is
 /// asked before anything is written or downloaded.
 pub fn runs_here(server: Server) -> Result<()> {
-    if server == Server::Mtplx {
+    if server == Server::Ollama {
         if let Some(why) = no_inkling() {
             bail!(
                 "{why}. `--local --model <name>` is a model server of your own, and without --local the models are served for you"
@@ -965,7 +968,7 @@ pub async fn run(
 
     // The model and what serves it, when it is to run here and is not here.
     let mut fetched = Ok(());
-    if choices.server == Server::Mtplx {
+    if choices.server == Server::Ollama {
         let root = local::root()?;
         let missing = local::missing(&root);
         if !missing.nothing() && ask_to_fetch(&missing, &root) {
@@ -1257,11 +1260,11 @@ pub(crate) mod tests {
                     "glm-4.7-flash",
                     "glm-4.7-flash",
                 ),
-                Server::Mtplx => (
+                Server::Ollama => (
                     ModelKind::Openai,
-                    Some("http://127.0.0.1:8000/v1"),
-                    "mtplx",
-                    "mtplx",
+                    Some("http://127.0.0.1:11435/v1"),
+                    "inkling-2-mini:26b-a5b-nvfp4",
+                    "inkling-2-mini:26b-a5b-nvfp4",
                 ),
             };
             let models = [judge, reviewer].map(|node| &cfg.models[&node.model]);
@@ -1278,18 +1281,25 @@ pub(crate) mod tests {
         }
     }
 
-    /// No hosted model is sent llama.cpp's `chat_template_kwargs`, which it
-    /// would refuse; the local model keeps it. Sampling settings are the
-    /// local model's and, as its pair was measured, OpenRouter's.
+    /// No hosted model is sent llama.cpp's `chat_template_kwargs` or
+    /// Ollama's `reasoning_effort`, which it would refuse; a server of your
+    /// own keeps the first and Inkling on Ollama the second. Sampling
+    /// settings are the local model's and, as its pair was measured,
+    /// OpenRouter's.
     #[test]
     fn a_hosted_model_is_sent_no_local_settings() {
         for server in &Server::ALL {
             let (_dir, cfg) = written(&[Source::Cloudtrail], *server);
             let judge = &cfg.inference["judge"];
-            let local = matches!(server, Server::Yours | Server::Mtplx);
+            let local = matches!(server, Server::Yours | Server::Ollama);
             assert_eq!(
                 judge.extra.contains_key("chat_template_kwargs"),
-                local,
+                *server == Server::Yours,
+                "{server:?}"
+            );
+            assert_eq!(
+                judge.extra.contains_key("reasoning_effort"),
+                *server == Server::Ollama,
                 "{server:?}"
             );
             let sampled = local || *server == Server::Hosted(Provider::Openrouter);
@@ -1303,7 +1313,7 @@ pub(crate) mod tests {
     /// request at a time, with the command that starts it.
     #[test]
     fn inkling_is_one_model_tangent_starts() {
-        let (_dir, cfg) = written(&[Source::Github], Server::Mtplx);
+        let (_dir, cfg) = written(&[Source::Github], Server::Ollama);
         cfg.validate().unwrap();
         assert_eq!(
             cfg.models.keys().map(|k| &**k).collect::<Vec<_>>(),
@@ -1316,29 +1326,24 @@ pub(crate) mod tests {
         assert_eq!(model.concurrency, 1);
         assert_eq!(model.timeout_ms, 600_000);
         let serve = model.serve.as_ref().expect("tangent starts it");
-        // tangent's own MTPLX and the model, under the cache
-        let (mtplx, inkling) = local::paths(&cache());
+        // tangent's own Ollama and its models, under the cache
+        let (ollama, models) = local::paths(&cache());
         let expand = |text: &str| {
             let home = std::env::var("HOME").unwrap_or_default();
             let xdg = std::env::var("XDG_CACHE_HOME").unwrap_or_default();
             text.replace("${HOME}", &home)
                 .replace("${XDG_CACHE_HOME}", &xdg)
         };
-        assert_eq!(serve.command[0], expand(&mtplx));
+        assert_eq!(serve.command, [expand(&ollama), "serve".to_string()]);
+        assert_eq!(serve.env["OLLAMA_MODELS"], expand(&models));
         assert_eq!(
-            serve.command[1..4],
-            ["serve".to_string(), "--model".to_string(), expand(&inkling)]
-        );
-        let port = serve.command.iter().position(|a| a == "--port").unwrap();
-        assert!(
-            model
-                .url
-                .as_deref()
-                .unwrap()
-                .contains(&format!(":{}/", serve.command[port + 1])),
+            model.url.as_deref().unwrap(),
+            format!("http://{}/v1", serve.env["OLLAMA_HOST"]),
             "the server listens where the model is asked"
         );
-        assert_eq!(serve.env["HF_HUB_OFFLINE"], "1");
+        assert_eq!(serve.env["OLLAMA_HOST"], "127.0.0.1:11435");
+        assert_eq!(&*model.model, local::MODEL, "the model the fetch pulls");
+        assert_eq!(serve.env["OLLAMA_NO_CLOUD"], "1");
         assert_eq!(cfg.inference["judge"].batch_bytes, 32_000);
         // every other pair's judge may be sent an actor's forty records at once
         let (_dir, hosted) = written(&[Source::Github], Server::Hosted(Provider::Anthropic));
@@ -1373,7 +1378,7 @@ pub(crate) mod tests {
             served(false, Some(Provider::Openai), Some("gpt-6-luna")).unwrap(),
             (Server::Hosted(Provider::Openai), both("gpt-6-luna"))
         );
-        assert_eq!(served(true, None, None).unwrap(), (Server::Mtplx, None));
+        assert_eq!(served(true, None, None).unwrap(), (Server::Ollama, None));
         assert_eq!(
             served(true, None, Some("glm-4.7-flash")).unwrap(),
             (Server::Yours, both("glm-4.7-flash"))
@@ -1390,7 +1395,7 @@ pub(crate) mod tests {
             let choices = Choices::new(vec![Source::Okta], *server, None);
             let line = format!("#   records  {}\n", choices.records());
             assert!(choices.header().contains(&line), "{server:?}");
-            let local = matches!(server, Server::Yours | Server::Mtplx);
+            let local = matches!(server, Server::Yours | Server::Ollama);
             assert_eq!(line.contains("stay on this machine"), local, "{server:?}");
             assert_eq!(
                 line.contains(&format!("are sent to {}", server.pair().host)),
