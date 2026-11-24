@@ -156,7 +156,7 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
     if std::env::var("DEBUG").is_ok_and(|x| x == "1") {
         console_subscriber::init();
     }
-    tracing::info!(target = "startup", config = ?cfg);
+    tracing::debug!(target = "startup", config = ?cfg);
 
     let ingest_shutdown = CancellationToken::new();
     let stop = Stop::default();

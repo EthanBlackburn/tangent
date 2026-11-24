@@ -308,14 +308,7 @@ enum PluginCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    // `tangent watch` says what its pipeline finds itself, so the runtime's
-    // lines are its warnings, and not the ones for the files watch has
-    // already said are absent. RUST_LOG names another level, as ever.
-    let level = match cli.command {
-        Commands::Watch { .. } => "warn,tangent_runtime::enrichment=error",
-        _ => "info",
-    };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     match cli.command {
