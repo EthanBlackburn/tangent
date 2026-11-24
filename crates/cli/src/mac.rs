@@ -222,15 +222,24 @@ impl Mac {
 }
 
 /// Whether this machine is one the pipeline can watch, with these models:
-/// a Mac, and for Inkling one with Apple Silicon.
+/// a Mac, and for Inkling one with Apple Silicon and the memory for it. It
+/// is asked before anything is written or downloaded, and where Inkling is
+/// not started it says the command that has Claude judge instead: where
+/// the records go is the person's to say, so it is not done for them.
 pub fn runs_here(mac: &Mac) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("this watches a Mac, with macOS's Endpoint Security, and this machine is not one");
     }
-    if mac.server == Server::Mtplx && !cfg!(target_arch = "aarch64") {
-        bail!(
-            "tangent starts Inkling 2 Mini on Apple Silicon Macs only. With --hosted, the models are served for you"
-        );
+    if mac.server == Server::Mtplx {
+        if let Some(why) = init::no_inkling() {
+            bail!(
+                "{why}.\n\n\
+                 Claude can judge this Mac instead, through Anthropic's API:\n  \
+                 tangent {} mac --hosted\n\
+                 It reads ANTHROPIC_API_KEY, a key from console.anthropic.com. Each session's summary is sent there, with its command lines, its paths and what you asked Claude Code.",
+                if mac.watched { "watch" } else { "init" }
+            );
+        }
     }
     Ok(())
 }
