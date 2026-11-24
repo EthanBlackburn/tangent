@@ -1,6 +1,6 @@
-//! What `tangent watch` says while its pipeline runs: each alert as the
-//! judge flags it, each review as it is written, and now and then how many
-//! records were judged. It reads them where the pipeline writes them
+//! What `tangent watch` says while its pipeline runs: each minute what the
+//! judge checked, each alert as the judge flags it, and each review as it
+//! is written. It reads them where the pipeline writes them
 //! (alerts.ndjson, reviews.ndjson and verdicts.ndjson, in the pipeline's
 //! directory), from where each file ended when the watch began, so the
 //! runtime knows nothing of it and a restart says nothing twice.
@@ -19,8 +19,10 @@ use tokio::sync::oneshot;
 
 /// How often the files are read for what is new.
 const EVERY: Duration = Duration::from_secs(1);
-/// The least time between two lines that say how many records were judged.
-const TALLY_EVERY: Duration = Duration::from_secs(300);
+/// The least time between two lines that say what the judge checked.
+const TALLY_EVERY: Duration = Duration::from_secs(60);
+/// The most names a line that says what was checked gives.
+const NAMED: usize = 5;
 /// The most of a model's text a line shows.
 const SHOWN: usize = 600;
 
@@ -126,7 +128,19 @@ fn alert(record: &Value) -> Vec<String> {
             who(record)
         ),
         format!("          {why}"),
+        "          sent to review".to_string(),
     ]
+}
+
+/// What a judged record is called where the checked are counted: a Mac's
+/// session by the program that started it, without its path, and a cloud
+/// record by its actor.
+fn name(record: &Value) -> String {
+    let entry = text(record, &["session", "entry"]);
+    match entry.rsplit('/').next() {
+        Some(program) if !program.is_empty() => program.to_string(),
+        _ => who(record),
+    }
 }
 
 /// A review, as the lines that say it. A cloud pipeline's review covers an
@@ -172,8 +186,12 @@ pub struct Follow {
     verdicts: Tail,
     judged: u64,
     flagged: u64,
-    /// The count the last tally gave, and when.
-    told: (u64, Instant),
+    /// What was judged since the last line that said so: each name, how
+    /// many times, and how many of them were flagged.
+    checked: Vec<(String, u64)>,
+    marked: u64,
+    /// When the last such line was said.
+    told: Instant,
 }
 
 impl Follow {
@@ -184,30 +202,64 @@ impl Follow {
             verdicts: Tail::from_end(dir.join("verdicts.ndjson")),
             judged: 0,
             flagged: 0,
-            told: (0, Instant::now()),
+            checked: Vec::new(),
+            marked: 0,
+            told: Instant::now(),
         }
     }
 
-    /// The lines for what was written since the last call. `tally` asks for
-    /// the count now, if it has changed, however lately it was given.
-    fn said(&mut self, tally: bool) -> Vec<String> {
+    /// The line for what was judged since the last one: how many, the names
+    /// judged most, and how many were flagged.
+    fn tally(&mut self) -> String {
+        let mut checked = std::mem::take(&mut self.checked);
+        checked.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let count: u64 = checked.iter().map(|(_, n)| n).sum();
+        let mut names: Vec<String> = checked
+            .iter()
+            .take(NAMED)
+            .map(|(name, n)| match n {
+                1 => name.clone(),
+                n => format!("{name} x{n}"),
+            })
+            .collect();
+        if checked.len() > NAMED {
+            names.push(format!("{} more", checked.len() - NAMED));
+        }
+        let flagged = match std::mem::take(&mut self.marked) {
+            0 => "nothing flagged".to_string(),
+            n => format!("{n} flagged"),
+        };
+        self.told = Instant::now();
+        format!("checked   {count} ({}): {flagged}", names.join(", "))
+    }
+
+    /// The lines for what was written since the last call. `now` asks for
+    /// what was checked to be said however lately it was.
+    fn said(&mut self, now: bool) -> Vec<String> {
         let mut lines = Vec::new();
         let parsed = |line: String| serde_json::from_str::<Value>(&line).ok();
-        self.judged += self.verdicts.lines().len() as u64;
-        for record in self.alerts.lines().into_iter().filter_map(parsed) {
-            self.flagged += 1;
-            lines.extend(alert(&record));
+        for record in self.verdicts.lines().into_iter().filter_map(parsed) {
+            self.judged += 1;
+            let name = name(&record);
+            match self.checked.iter_mut().find(|(known, _)| *known == name) {
+                Some((_, n)) => *n += 1,
+                None => self.checked.push((name, 1)),
+            }
+        }
+        let alerts: Vec<Value> = self.alerts.lines().into_iter().filter_map(parsed).collect();
+        self.flagged += alerts.len() as u64;
+        self.marked += alerts.len() as u64;
+        // What was checked is said before an alert from among it.
+        if !self.checked.is_empty()
+            && (now || !alerts.is_empty() || self.told.elapsed() >= TALLY_EVERY)
+        {
+            lines.push(self.tally());
+        }
+        for record in &alerts {
+            lines.extend(alert(record));
         }
         for record in self.reviews.lines().into_iter().filter_map(parsed) {
             lines.extend(review(&record));
-        }
-        let (told, at) = self.told;
-        if self.judged != told && (tally || at.elapsed() >= TALLY_EVERY) {
-            self.told = (self.judged, Instant::now());
-            lines.push(format!(
-                "judged    {} records since this watch began, {} flagged",
-                self.judged, self.flagged
-            ));
         }
         lines
     }
@@ -228,6 +280,10 @@ impl Follow {
         for line in self.said(true) {
             println!("{line}");
         }
+        println!(
+            "judged    {} since this watch began, {} flagged",
+            self.judged, self.flagged
+        );
     }
 }
 
@@ -285,7 +341,7 @@ mod tests {
             "judge": {"flag": true, "why": "a sign-in\x1b]0;title\x07 from Tor"},
         });
         let lines = alert(&record);
-        assert_eq!(lines.len(), 2, "an actor's name cannot start a line");
+        assert_eq!(lines.len(), 3, "an actor's name cannot start a line");
         assert!(
             lines.iter().all(|l| !l.chars().any(char::is_control)),
             "{lines:?}"
@@ -303,7 +359,8 @@ mod tests {
             alert(&record),
             [
                 "flagged   2026-11-24 03:09Z  okta  ana@acme.example",
-                "          a sign-in from a Tor exit"
+                "          a sign-in from a Tor exit",
+                "          sent to review"
             ]
         );
     }
@@ -368,7 +425,8 @@ mod tests {
             alert(&look),
             [
                 "look      2026-11-24 03:09Z  macos_session  ~/bin/agent#501",
-                "          An agent read a key."
+                "          An agent read a key.",
+                "          sent to review"
             ]
         );
         let mut flag = look.clone();
@@ -395,8 +453,8 @@ mod tests {
         );
     }
 
-    /// What a pipeline writes is said as it is written: the alerts, the
-    /// reviews, and the count when asked, once for a count.
+    /// What a pipeline writes is said as it is written: what was checked,
+    /// by name and once, then the alert from among it and its review.
     #[test]
     fn what_the_pipeline_writes_is_said() {
         let dir = tempfile::tempdir().unwrap();
@@ -404,22 +462,42 @@ mod tests {
         let mut follow = Follow::new(dir.path());
         assert!(follow.said(true).is_empty(), "nothing new, nothing said");
 
-        append(&dir.path().join("verdicts.ndjson"), "{}\n{}\n{}\n");
+        let session = |entry: &str| json!({"session": {"entry": entry}}).to_string();
+        append(
+            &dir.path().join("verdicts.ndjson"),
+            &format!(
+                "{}\n{}\n{}\n",
+                session("/bin/zsh"),
+                session("/usr/libexec/xpcproxy"),
+                session("/usr/libexec/xpcproxy")
+            ),
+        );
+        assert!(follow.said(false).is_empty(), "the count waits its turn");
+        assert_eq!(
+            follow.said(true),
+            ["checked   3 (xpcproxy x2, zsh): nothing flagged"]
+        );
+        assert!(
+            follow.said(true).is_empty(),
+            "what was checked is said once"
+        );
+
         let flagged = json!({"ts": "2026-11-24T03:09:43Z", "source": "okta",
             "_norm": {"actor": "ana"}, "judge": {"why": "odd"}});
+        append(&dir.path().join("verdicts.ndjson"), &format!("{flagged}\n"));
         append(
             &dir.path().join("alerts.ndjson"),
             &format!("{flagged}\nnot json\n"),
         );
         assert_eq!(
             follow.said(false),
-            ["flagged   2026-11-24 03:09Z  okta  ana", "          odd"],
-            "the count waits its turn"
+            [
+                "checked   1 (ana): 1 flagged",
+                "flagged   2026-11-24 03:09Z  okta  ana",
+                "          odd",
+                "          sent to review"
+            ],
+            "an alert does not wait, and what was checked comes before it"
         );
-        assert_eq!(
-            follow.said(true),
-            ["judged    3 records since this watch began, 1 flagged"]
-        );
-        assert!(follow.said(true).is_empty(), "a count is given once");
     }
 }

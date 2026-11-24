@@ -68,11 +68,13 @@ tangent watch cloud --sources okta,github
   ```
 - **Choose any model or run locally:** Add `--local` to keep every cloud record on your Mac with Inkling 2 Mini, `--local --model <name>` for your own local server (`llama-server`, `mlx_lm.server`, Ollama, vLLM), or `--provider openrouter|openai|bedrock --model <judge>,<reviewer>`.
 
-While `tangent watch` runs, alerts and settled reviews stream cleanly to your terminal:
+While `tangent watch` runs, what it checked, each alert and each settled review stream to your terminal:
 
 ```text
+checked   41 (deploy-bot x30, ana@acme.example x9, 2 more): 1 flagged
 flagged   2026-11-24 03:09Z  okta  ana@acme.example
           a sign-in from a Tor exit, with no second factor
+          sent to review
 reviewed  ana@acme.example, 3 alerts: malicious
           ...
           check: ...
