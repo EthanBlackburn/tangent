@@ -3,11 +3,15 @@
 //! Nothing is left in a file tangent keeps: every node, its settings and its
 //! `inputs` are in the file written, to read and to edit.
 //!
-//! It asks nothing. `--sources` names what to watch, and without it the
-//! pipeline is written with no source yet. `--provider` and `--model`, given
-//! together, name who serves the models and the models: one name judges and
-//! reviews, and two, with a comma, are the judge's and then the reviewer's.
-//! Without them it is the two models measured on Anthropic's API.
+//! It asks nothing. What is watched is its subcommand: `cloud` is your
+//! cloud and SaaS audit logs, which `--sources` names, and without it the
+//! pipeline is written with no source yet. The models are hosted unless
+//! `--local`: the two measured on Anthropic's API or, with `--provider` and
+//! `--model`, the provider's by name (one name judges and reviews, and two,
+//! with a comma, are the judge's and then the reviewer's). `--local` is a
+//! model on this machine, Inkling 2 Mini on a server tangent starts or, with
+//! `--model`, a server of your own. Hosted, every record is sent to the
+//! provider, so the file and init's last lines say where the records go.
 //! docs/config.md says how to change either in the file by hand. The plugins
 //! the config names are fetched, and the attestation of each build checked,
 //! before a file is written: init leaves a pipeline that loads, or nothing.
@@ -216,8 +220,7 @@ impl fmt::Display for Source {
     }
 }
 
-/// Who serves the models. Each brings the settings its models were measured
-/// with: a model that judges and one that reviews what it flagged.
+/// Who serves hosted models: what `--provider` names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Provider {
     /// Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API, with ANTHROPIC_API_KEY
@@ -228,8 +231,33 @@ pub enum Provider {
     Openrouter,
     /// GPT-6 Luna judges and GPT-6.1 Terra reviews, through OpenAI's API, with OPENAI_API_KEY
     Openai,
-    /// A model on this machine judges and reviews: a server you run at http://localhost:8080/v1 (llama-server, mlx_lm.server, Ollama, vLLM)
-    Local,
+}
+
+/// Who serves the models. Each brings the settings its models were measured
+/// with: a model that judges and one that reviews what it flagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Server {
+    /// A provider, which is sent every record.
+    Hosted(Provider),
+    /// A server of your own on this machine, at http://localhost:8080/v1,
+    /// with the model you name: `--local` with `--model`.
+    Yours,
+    /// MTPLX on this Mac, which tangent starts, with Inkling 2 Mini:
+    /// `--local`.
+    Mtplx,
+}
+
+impl Server {
+    /// Every pair init writes, the providers' first.
+    #[cfg(test)]
+    const ALL: [Server; 6] = [
+        Server::Hosted(Provider::Anthropic),
+        Server::Hosted(Provider::Bedrock),
+        Server::Hosted(Provider::Openrouter),
+        Server::Hosted(Provider::Openai),
+        Server::Yours,
+        Server::Mtplx,
+    ];
 }
 
 /// What a pair brings to the config.
@@ -238,7 +266,12 @@ struct Pair {
     label: &'static str,
     /// Who serves them, as the file says it of a model named with `--model`.
     host: &'static str,
-    /// The judge's model, under `models.judge`: where it is served.
+    /// The one entry under `models` that both nodes name, when the pair is
+    /// one model on one server; none when the judge and the reviewer have an
+    /// entry each, `judge` and `reviewer`.
+    entry: Option<&'static str>,
+    /// The judge's model, under `models.judge`: where it is served. With
+    /// `entry`, the whole of that entry: its limits and its server too.
     judge_model: &'static str,
     /// What the judge is asked with, under `inference.judge`.
     judge: &'static str,
@@ -246,15 +279,32 @@ struct Pair {
     reviewer_model: &'static str,
     /// What the reviewer is asked with, under `inference.reviewer`.
     reviewer: &'static str,
+    /// The judge's `batch_bytes`, and what the file says of it.
+    batch: &'static str,
     needs: Needs,
 }
 
-impl Provider {
+/// What the judge's and the reviewer's own entries hold after where each is
+/// served: how hard each may be asked.
+const JUDGE_LIMITS: &str = "    timeout_ms: 90000
+    concurrency: 4               # requests at once
+";
+const REVIEWER_LIMITS: &str =
+    "    timeout_ms: 120000           # reviews go one at a time: two minutes a try,
+    retries: 2                   # three tries, then the review is an error and the alerts stand
+    concurrency: 1
+";
+
+/// The judge's `batch_bytes` where a request may be large.
+const BATCH: &str = "96000           # a request past this is split; an actor's forty records fit";
+
+impl Server {
     fn pair(self) -> Pair {
         match self {
-            Provider::Anthropic => Pair {
+            Server::Hosted(Provider::Anthropic) => Pair {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Anthropic's API)",
                 host: "Anthropic's API",
+                entry: None,
                 judge_model: r#"    type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"   # a key from console.anthropic.com
     model: claude-haiku-5-5
@@ -270,11 +320,13 @@ impl Provider {
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
 "#,
+                batch: BATCH,
                 needs: &[("ANTHROPIC_API_KEY", "a key from console.anthropic.com")],
             },
-            Provider::Bedrock => Pair {
+            Server::Hosted(Provider::Bedrock) => Pair {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Amazon Bedrock)",
                 host: "Amazon Bedrock",
+                entry: None,
                 judge_model: r#"    type: bedrock
     model: us.anthropic.claude-haiku-5-5
     aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }   # a US region: Bedrock serves this model there
@@ -290,14 +342,16 @@ impl Provider {
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
       output_config: { effort: low }
 "#,
+                batch: BATCH,
                 needs: &[(
                     "AWS_PROFILE",
                     "the AWS profile that calls Bedrock, with access to both models in the US regions; `default` when unset",
                 )],
             },
-            Provider::Openrouter => Pair {
+            Server::Hosted(Provider::Openrouter) => Pair {
                 label: "DeepSeek V4 Flash, open weights, judges and reviews (OpenRouter)",
                 host: "OpenRouter",
+                entry: None,
                 judge_model: r#"    type: openai                 # an OpenAI-compatible server
     url: https://openrouter.ai/api/v1
     api_key: "${OPENROUTER_API_KEY}"   # a key from openrouter.ai/keys
@@ -318,11 +372,13 @@ impl Provider {
                 reviewer: r#"    extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 "#,
+                batch: BATCH,
                 needs: &[("OPENROUTER_API_KEY", "a key from openrouter.ai/keys")],
             },
-            Provider::Openai => Pair {
+            Server::Hosted(Provider::Openai) => Pair {
                 label: "GPT-6 Luna judges, GPT-6.1 Terra reviews (OpenAI's API)",
                 host: "OpenAI's API",
+                entry: None,
                 judge_model: r#"    type: responses              # OpenAI's Responses API
     api_key: "${OPENAI_API_KEY}"   # a key from platform.openai.com
     model: gpt-6-luna
@@ -338,11 +394,13 @@ impl Provider {
                 reviewer: r#"    extra:
       reasoning: { effort: low }   # it thinks before each query and its report, briefly
 "#,
+                batch: BATCH,
                 needs: &[("OPENAI_API_KEY", "a key from platform.openai.com")],
             },
-            Provider::Local => Pair {
+            Server::Yours => Pair {
                 label: "A model on this machine judges and reviews (llama-server, mlx_lm.server, Ollama, vLLM)",
                 host: "a server on this machine",
+                entry: None,
                 judge_model: r#"    type: openai                 # an OpenAI-compatible server
     url: http://localhost:8080/v1   # llama-server, mlx_lm.server or vLLM; Ollama is http://localhost:11434/v1
     model: glm-4.7-flash         # EDIT to the name your server gives its model
@@ -358,6 +416,41 @@ impl Provider {
     model: glm-4.7-flash         # EDIT, as the judge's
 "#,
                 reviewer: r#""#,
+                batch: BATCH,
+                needs: &[],
+            },
+            // One model on one server, which answers a request at a time:
+            // the settings are the ones measured with MTPLX 2.13 on an M4
+            // Max with 36 GB, where the model leaves about 3.5 GB spare.
+            Server::Mtplx => Pair {
+                label: "Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (MTPLX)",
+                host: "this Mac",
+                entry: Some("inkling"),
+                judge_model: r#"    type: openai                 # MTPLX serves the OpenAI API
+    url: http://127.0.0.1:8000/v1
+    model: mtplx                 # it answers with the model it loaded
+    timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
+    retries: 2
+    concurrency: 1               # one request at a time, the judge's and the reviewer's together
+    # `tangent run` starts this server, waits until it answers and stops it
+    # after; one already answering at `url` is used and left running.
+    serve:
+      command: [mtplx, serve, --model, Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed, --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
+      env:
+        HF_HUB_OFFLINE: "1"                        # the model is read from this Mac, and never fetched here
+        MTPLX_SESSION_BANK_MAX_BYTES: 3G           # what it keeps of prompts it has read, so the judge's brief is read once
+        MTPLX_SYSTEM_MEMORY_SHED_FLOOR_BYTES: 2G   # it drops that only below 2 GB of free memory
+        MTPLX_GDN_BOUNDARY_TAIL_BACKOFF: "768"     # a restore point inside the brief, for the next record
+"#,
+                judge: r#"    max_tokens: 500              # per record
+    temperature: 0.7
+    extra:
+      top_p: 0.95
+      chat_template_kwargs: { enable_thinking: false }   # no thinking: the reply is the answer
+"#,
+                reviewer_model: r#""#,
+                reviewer: r#""#,
+                batch: "32000           # a request past this is split: what the model reads well at once",
                 needs: &[],
             },
         }
@@ -369,7 +462,7 @@ impl Provider {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choices {
     watch: Vec<Source>,
-    provider: Provider,
+    server: Server,
     /// The model that judges and the one that reviews, each by the name
     /// its provider takes. Without them, the provider's two as measured.
     models: Option<(String, String)>,
@@ -404,23 +497,19 @@ fn named(block: &str, model: &str) -> String {
 }
 
 impl Choices {
-    pub fn new(
-        mut watch: Vec<Source>,
-        provider: Provider,
-        models: Option<(String, String)>,
-    ) -> Self {
+    pub fn new(mut watch: Vec<Source>, server: Server, models: Option<(String, String)>) -> Self {
         watch.sort();
         watch.dedup();
         Self {
             watch,
-            provider,
+            server,
             models,
         }
     }
 
     /// Who judges, who reviews, and who serves them, as the file says it.
     fn models(&self) -> String {
-        let pair = self.provider.pair();
+        let pair = self.server.pair();
         match &self.models {
             Some((judge, reviewer)) if judge == reviewer => {
                 format!("{judge} judges and reviews ({})", pair.host)
@@ -432,19 +521,47 @@ impl Choices {
         }
     }
 
-    /// The judge's model and the reviewer's, under `models`, with each
-    /// model named.
-    fn served(&self) -> (String, String) {
-        let pair = self.provider.pair();
-        match &self.models {
+    /// Where the records go to be judged, as the file and init say it: a
+    /// hosted model is sent every one.
+    fn records(&self) -> String {
+        match self.server {
+            Server::Yours | Server::Mtplx => {
+                "stay on this machine: the model that judges them runs here".to_string()
+            }
+            hosted => format!(
+                "are sent to {}, every one, to be judged",
+                hosted.pair().host
+            ),
+        }
+    }
+
+    /// What is under `models`, with each model named: the judge's entry and
+    /// the reviewer's, or the one entry both name.
+    fn served(&self) -> String {
+        let pair = self.server.pair();
+        let (judge, reviewer) = match &self.models {
             Some((judge, reviewer)) => (
-                named(pair.judge_model, judge),
-                named(pair.reviewer_model, reviewer),
+                named(pair.judge_model, judge) + "\n",
+                named(pair.reviewer_model, reviewer) + "\n",
             ),
             None => (
                 pair.judge_model.to_string(),
                 pair.reviewer_model.to_string(),
             ),
+        };
+        match pair.entry {
+            Some(entry) => format!("  {entry}:\n{judge}"),
+            None => {
+                format!("  judge:\n{judge}{JUDGE_LIMITS}  reviewer:\n{reviewer}{REVIEWER_LIMITS}")
+            }
+        }
+    }
+
+    /// The entries under `models` the judge and the reviewer name.
+    fn entries(&self) -> (&'static str, &'static str) {
+        match self.server.pair().entry {
+            Some(entry) => (entry, entry),
+            None => ("judge", "reviewer"),
         }
     }
 
@@ -486,7 +603,7 @@ impl Choices {
     fn needs(&self) -> Vec<(&'static str, &'static str)> {
         let mut needs: Vec<(&'static str, &'static str)> = Vec::new();
         let packs = self.watch.iter().flat_map(|w| w.pack().needs);
-        for need in self.provider.pair().needs.iter().chain(packs) {
+        for need in self.server.pair().needs.iter().chain(packs) {
             if !needs.iter().any(|(var, _)| var == &need.0) {
                 needs.push(*need);
             }
@@ -506,6 +623,7 @@ impl Choices {
             header.push_str(&format!("#   {lead:7}  {}\n", w.pack().label));
         }
         header.push_str(&format!("#   models   {}\n", self.models()));
+        header.push_str(&format!("#   records  {}\n", self.records()));
         for (i, command) in self.commands().iter().enumerate() {
             let gap = if i == 0 { "#\n" } else { "" };
             header.push_str(&format!("{gap}#   {command}\n"));
@@ -530,8 +648,8 @@ impl Choices {
             .collect();
         let inputs: Vec<&str> = packs.iter().map(|p| p.name).collect();
         let plugins: String = self.watch.iter().map(|w| w.plugin()).collect();
-        let pair = self.provider.pair();
-        let (judge_model, reviewer_model) = self.served();
+        let pair = self.server.pair();
+        let (judge_entry, reviewer_entry) = self.entries();
         // Each part ends its last line, and so does the line it stands on.
         // With no source yet, a part says so where its nodes would be.
         let block = |text: &str, none: &str| match text.trim_end() {
@@ -544,8 +662,13 @@ impl Choices {
             ("{{sources}}", block(&join(|p| p.node), "  {}   # none yet")),
             ("{{packs}}", block(&plugins, "  # (none yet)")),
             ("{{inputs}}", inputs.join(", ")),
-            ("{{judge_model}}", block(&judge_model, "")),
-            ("{{reviewer_model}}", block(&reviewer_model, "")),
+            ("{{models}}", block(&self.served(), "")),
+            (
+                "{{judge_entry}}",
+                format!("{judge_entry:<22}# its model, under `models`"),
+            ),
+            ("{{reviewer_entry}}", reviewer_entry.to_string()),
+            ("{{batch_bytes}}", pair.batch.to_string()),
             ("{{judge}}", block(pair.judge, "")),
             (
                 "{{rows}}",
@@ -631,14 +754,87 @@ fn names<T: clap::ValueEnum>(sep: &str) -> String {
 /// `tangent init` in `dir`: the files for what the flags name, and the
 /// plugins the config names, fetched and checked. A fetch that fails takes
 /// the files with it, so what is left loads or is nothing.
+/// The memory under which Inkling is not worth starting, in GiB.
+const INKLING_MEMORY: u64 = 32;
+
+/// The pair `tangent init cloud`'s flags name, and the models named with
+/// it: hosted unless `--local`. Hosted is Anthropic's pair, or `--provider`
+/// with `--model`; `--local` is Inkling on a server tangent starts, or with
+/// `--model` a server of your own.
+pub fn served(
+    local: bool,
+    provider: Option<Provider>,
+    model: Option<&str>,
+) -> Result<(Server, Option<(String, String)>)> {
+    let named = model.map(models).transpose()?;
+    match (local, provider) {
+        (true, _) if named.is_some() => Ok((Server::Yours, named)),
+        (true, _) => Ok((Server::Mtplx, None)),
+        (false, None) if named.is_some() => bail!(
+            "--model names a hosted model with --provider, or with --local a model server of your own"
+        ),
+        (false, provider) => Ok((Server::Hosted(provider.unwrap_or(Provider::Anthropic)), named)),
+    }
+}
+
+/// This machine's memory in GiB, where it says: a Mac's `hw.memsize`.
+fn memory_gib() -> Option<u64> {
+    let out = std::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    let bytes: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    Some(bytes >> 30)
+}
+
+/// Whether `program` is on the PATH.
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+/// What a model on this machine needs that the file cannot hold, as lines
+/// to print after it is written.
+fn local_needs(server: Server) -> Vec<String> {
+    match server {
+        Server::Yours => vec!["Start your model's server first.".to_string()],
+        Server::Mtplx => {
+            let mut lines = Vec::new();
+            if let Some(memory) = memory_gib().filter(|gib| *gib < INKLING_MEMORY) {
+                lines.push(format!(
+                    "This Mac has {memory} GB of memory. Inkling 2 Mini takes about 20 GB to itself and was measured with 36: under {INKLING_MEMORY} it is slow, or does not load. Without --local, the models are served for you.\n"
+                ));
+            }
+            let found = if on_path("mtplx") {
+                ""
+            } else {
+                " (mtplx is not on your PATH)"
+            };
+            lines.push(format!(
+                "`tangent run` starts the model and stops it. It needs MTPLX and the model on this Mac, which tangent does not fetch yet{found}:"
+            ));
+            lines.push("  brew install youssofal/mtplx/mtplx      # or, with Python 3.11 or newer: python3 -m pip install mtplx".to_string());
+            lines.push(
+                "  mtplx pull Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed   # 17 GB".to_string(),
+            );
+            lines
+        }
+        _ => Vec::new(),
+    }
+}
+
 pub async fn run(
     dir: &Path,
     watch: Vec<Source>,
-    provider: Option<Provider>,
-    model: Option<String>,
+    server: Server,
+    models: Option<(String, String)>,
 ) -> Result<()> {
-    let models = model.as_deref().map(models).transpose()?;
-    let choices = Choices::new(watch, provider.unwrap_or(Provider::Anthropic), models);
+    if server == Server::Mtplx && !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        bail!(
+            "tangent starts Inkling 2 Mini on Apple Silicon Macs only. `--local --model <name>` is a model server of your own, and without --local the models are served for you"
+        );
+    }
+    let choices = Choices::new(watch, server, models);
     let written = choices.write(dir)?;
     let config = dir.join("tangent.yaml");
     if let Err(e) = fetch::missing(&config.canonicalize().unwrap_or(config)).await {
@@ -654,6 +850,7 @@ pub async fn run(
         .map(|n| n.to_string_lossy().into_owned())
         .collect();
     println!("\nWrote {}.", wrote.join(", "));
+    println!("\nYour records {}.", choices.records());
     let needs = choices.needs();
     if !needs.is_empty() {
         println!("\nIt reads these from the environment:");
@@ -664,12 +861,13 @@ pub async fn run(
             println!("  {var:width$}  {what}{state}");
         }
     }
-    if choices.provider == Provider::Local {
-        println!("\nStart your model's server first.");
+    let local = local_needs(choices.server);
+    if !local.is_empty() {
+        println!("\n{}", local.join("\n"));
     }
     if choices.watch.is_empty() {
         println!(
-            "\nIt watches nothing yet. In an empty directory, `tangent init --sources` with one or more of {} writes it with them in; {DIRECTIONS} says how to add one to this file.",
+            "\nIt watches nothing yet. In an empty directory, `tangent init cloud` with `--sources` and one or more of {} writes it with them in; {DIRECTIONS} says how to add one to this file.",
             names::<Source>(", ")
         );
         return Ok(());
@@ -705,15 +903,15 @@ mod tests {
 
     /// The files for these choices, in a directory of their own, and the
     /// config as it loads.
-    fn written(watch: &[Source], provider: Provider) -> (tempfile::TempDir, Config) {
+    fn written(watch: &[Source], server: Server) -> (tempfile::TempDir, Config) {
         let dir = tempfile::tempdir().unwrap();
-        let choices = Choices::new(watch.to_vec(), provider, None);
+        let choices = Choices::new(watch.to_vec(), server, None);
         choices.write(dir.path()).unwrap();
         let cfg = Config::load(&dir.path().join("tangent.yaml"))
-            .unwrap_or_else(|e| panic!("{watch:?}, {provider:?}: {e:#}"))
+            .unwrap_or_else(|e| panic!("{watch:?}, {server:?}: {e:#}"))
             .config;
         cfg.validate()
-            .unwrap_or_else(|e| panic!("{watch:?}, {provider:?}: {e:#}"));
+            .unwrap_or_else(|e| panic!("{watch:?}, {server:?}: {e:#}"));
         (dir, cfg)
     }
 
@@ -725,12 +923,12 @@ mod tests {
         let mut sets: Vec<Vec<Source>> = EVERY.iter().map(|w| vec![*w]).collect();
         sets.push(EVERY.to_vec());
         for watch in &sets {
-            for provider in Provider::value_variants() {
-                let (_dir, cfg) = written(watch, *provider);
+            for server in &Server::ALL {
+                let (_dir, cfg) = written(watch, *server);
                 assert_eq!(
                     cfg.warnings(),
                     Vec::<String>::new(),
-                    "{watch:?}, {provider:?}"
+                    "{watch:?}, {server:?}"
                 );
                 assert_eq!(cfg.sources.len(), watch.len(), "{watch:?}");
                 for w in watch {
@@ -754,13 +952,10 @@ mod tests {
     /// No place is left in a config, whatever the choices.
     #[test]
     fn every_place_in_the_file_is_filled() {
-        for provider in Provider::value_variants() {
-            let config = Choices::new(EVERY.to_vec(), *provider, None).config();
-            assert!(!config.contains("{{"), "{provider:?}:\n{config}");
-            assert!(
-                !config.contains("\n\n\n"),
-                "{provider:?}: a part left a gap"
-            );
+        for server in &Server::ALL {
+            let config = Choices::new(EVERY.to_vec(), *server, None).config();
+            assert!(!config.contains("{{"), "{server:?}:\n{config}");
+            assert!(!config.contains("\n\n\n"), "{server:?}: a part left a gap");
         }
     }
 
@@ -801,13 +996,13 @@ mod tests {
     /// pack measured is what init writes.
     #[test]
     fn the_config_is_what_the_packs_say() {
-        for (provider, pack) in [
-            (Provider::Anthropic, "anthropic"),
-            (Provider::Openrouter, "openrouter"),
+        for (server, pack) in [
+            (Server::Hosted(Provider::Anthropic), "anthropic"),
+            (Server::Hosted(Provider::Openrouter), "openrouter"),
         ] {
-            let (_dir, ours) = written(&EVERY, provider);
+            let (_dir, ours) = written(&EVERY, server);
 
-            let choices = Choices::new(EVERY.to_vec(), provider, None);
+            let choices = Choices::new(EVERY.to_vec(), server, None);
             let packs: Vec<Pack> = EVERY.iter().map(|w| w.pack()).collect();
             let names: Vec<&str> = packs.iter().map(|p| p.name).collect();
             let includes: Vec<String> = names.iter().map(|n| format!("pack:{n}")).collect();
@@ -839,7 +1034,7 @@ mod tests {
             // The pack names Anthropic's address over the local server's it
             // starts from; the file has no address to name over.
             for value in [&mut ours, &mut theirs] {
-                if provider == Provider::Anthropic {
+                if server == Server::Hosted(Provider::Anthropic) {
                     value["models"]["judge"]
                         .as_mapping_mut()
                         .unwrap()
@@ -863,11 +1058,11 @@ mod tests {
             assert_eq!(
                 (only(&written, &included), only(&included, &written)),
                 (Vec::new(), Vec::new()),
-                "{provider:?}: settings only init writes, and only the packs have"
+                "{server:?}: settings only init writes, and only the packs have"
             );
             assert!(
                 written.len() > 150,
-                "{provider:?}: {} settings",
+                "{server:?}: {} settings",
                 written.len()
             );
         }
@@ -877,7 +1072,7 @@ mod tests {
     /// pack has it, and the config names those files.
     #[test]
     fn the_briefs_are_the_judge_packs_beside_the_config() {
-        let (dir, cfg) = written(&[Source::Cloudtrail], Provider::Anthropic);
+        let (dir, cfg) = written(&[Source::Cloudtrail], Server::Hosted(Provider::Anthropic));
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs");
         for (name, pack_file) in BRIEFS {
             assert_eq!(
@@ -902,47 +1097,55 @@ mod tests {
     /// and its reviewer is the provider's own. Each node names its model.
     #[test]
     fn every_pair_names_its_models() {
-        for provider in Provider::value_variants() {
-            let (_dir, cfg) = written(&[Source::Cloudtrail], *provider);
+        for server in &Server::ALL {
+            let (_dir, cfg) = written(&[Source::Cloudtrail], *server);
             let (judge, reviewer) = (&cfg.inference["judge"], &cfg.inference["reviewer"]);
-            let (kind, url, judges, reviews) = match provider {
-                Provider::Anthropic => (
+            let (kind, url, judges, reviews) = match server {
+                Server::Hosted(Provider::Anthropic) => (
                     ModelKind::Anthropic,
                     None,
                     "claude-haiku-5-5",
                     "claude-sonnet-5-5",
                 ),
-                Provider::Bedrock => (
+                Server::Hosted(Provider::Bedrock) => (
                     ModelKind::Bedrock,
                     None,
                     "us.anthropic.claude-haiku-5-5",
                     "us.anthropic.claude-sonnet-5-5",
                 ),
-                Provider::Openrouter => (
+                Server::Hosted(Provider::Openrouter) => (
                     ModelKind::Openai,
                     Some("https://openrouter.ai/api/v1"),
                     "deepseek/deepseek-v4-flash-0731",
                     "deepseek/deepseek-v4-flash-0731",
                 ),
-                Provider::Openai => (ModelKind::Responses, None, "gpt-6-luna", "gpt-6.1-terra"),
-                Provider::Local => (
+                Server::Hosted(Provider::Openai) => {
+                    (ModelKind::Responses, None, "gpt-6-luna", "gpt-6.1-terra")
+                }
+                Server::Yours => (
                     ModelKind::Openai,
                     Some("http://localhost:8080/v1"),
                     "glm-4.7-flash",
                     "glm-4.7-flash",
                 ),
+                Server::Mtplx => (
+                    ModelKind::Openai,
+                    Some("http://127.0.0.1:8000/v1"),
+                    "mtplx",
+                    "mtplx",
+                ),
             };
             let models = [judge, reviewer].map(|node| &cfg.models[&node.model]);
             for model in models {
-                assert_eq!(model.kind, kind, "{provider:?}");
-                assert_eq!(model.url.as_deref(), url, "{provider:?}");
+                assert_eq!(model.kind, kind, "{server:?}");
+                assert_eq!(model.url.as_deref(), url, "{server:?}");
             }
             assert_eq!(models.map(|model| model.model.as_str()), [judges, reviews]);
             assert!(
                 reviewer.inputs.is_empty(),
-                "{provider:?}: the plugin calls it"
+                "{server:?}: the plugin calls it"
             );
-            assert_eq!(reviewer.max_tokens, 8000, "{provider:?}");
+            assert_eq!(reviewer.max_tokens, 8000, "{server:?}");
         }
     }
 
@@ -951,18 +1154,94 @@ mod tests {
     /// local model's and, as its pair was measured, OpenRouter's.
     #[test]
     fn a_hosted_model_is_sent_no_local_settings() {
-        for provider in Provider::value_variants() {
-            let (_dir, cfg) = written(&[Source::Cloudtrail], *provider);
+        for server in &Server::ALL {
+            let (_dir, cfg) = written(&[Source::Cloudtrail], *server);
             let judge = &cfg.inference["judge"];
-            let local = *provider == Provider::Local;
+            let local = matches!(server, Server::Yours | Server::Mtplx);
             assert_eq!(
                 judge.extra.contains_key("chat_template_kwargs"),
                 local,
-                "{provider:?}"
+                "{server:?}"
             );
-            let sampled = matches!(provider, Provider::Local | Provider::Openrouter);
-            assert_eq!(judge.temperature.is_some(), sampled, "{provider:?}");
-            assert_eq!(judge.extra.contains_key("top_p"), sampled, "{provider:?}");
+            let sampled = local || *server == Server::Hosted(Provider::Openrouter);
+            assert_eq!(judge.temperature.is_some(), sampled, "{server:?}");
+            assert_eq!(judge.extra.contains_key("top_p"), sampled, "{server:?}");
+        }
+    }
+
+    /// `--local` is one model on a server tangent starts: one entry under
+    /// `models`, which the judge and the reviewer both name, asked one
+    /// request at a time, with the command that starts it.
+    #[test]
+    fn inkling_is_one_model_tangent_starts() {
+        let (_dir, cfg) = written(&[Source::Github], Server::Mtplx);
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.models.keys().map(|k| &**k).collect::<Vec<_>>(),
+            ["inkling"]
+        );
+        for node in ["judge", "reviewer"] {
+            assert_eq!(&*cfg.inference[node].model, "inkling", "{node}");
+        }
+        let model = &cfg.models["inkling"];
+        assert_eq!(model.concurrency, 1);
+        assert_eq!(model.timeout_ms, 600_000);
+        let serve = model.serve.as_ref().expect("tangent starts it");
+        assert_eq!(serve.command[..2], ["mtplx", "serve"]);
+        let port = serve.command.iter().position(|a| a == "--port").unwrap();
+        assert!(
+            model
+                .url
+                .as_deref()
+                .unwrap()
+                .contains(&format!(":{}/", serve.command[port + 1])),
+            "the server listens where the model is asked"
+        );
+        assert_eq!(serve.env["HF_HUB_OFFLINE"], "1");
+        assert_eq!(cfg.inference["judge"].batch_bytes, 32_000);
+        // every other pair's judge may be sent an actor's forty records at once
+        let (_dir, hosted) = written(&[Source::Github], Server::Hosted(Provider::Anthropic));
+        assert_eq!(hosted.inference["judge"].batch_bytes, 96_000);
+    }
+
+    /// The models are hosted unless `--local`: Anthropic's pair or a
+    /// provider's models by name, and with `--local` Inkling or, with a
+    /// model named, a server of your own.
+    #[test]
+    fn the_flags_say_who_judges() {
+        let both = |name: &str| Some((name.to_string(), name.to_string()));
+        assert_eq!(
+            served(false, None, None).unwrap(),
+            (Server::Hosted(Provider::Anthropic), None)
+        );
+        assert_eq!(
+            served(false, Some(Provider::Openai), Some("gpt-6-luna")).unwrap(),
+            (Server::Hosted(Provider::Openai), both("gpt-6-luna"))
+        );
+        assert_eq!(served(true, None, None).unwrap(), (Server::Mtplx, None));
+        assert_eq!(
+            served(true, None, Some("glm-4.7-flash")).unwrap(),
+            (Server::Yours, both("glm-4.7-flash"))
+        );
+        assert!(served(false, None, Some("gpt-6-luna")).is_err());
+    }
+
+    /// The file's head and init's last lines say where the records go: a
+    /// hosted model is sent every one, by name, and a model on this machine
+    /// none.
+    #[test]
+    fn the_file_says_where_the_records_go() {
+        for server in &Server::ALL {
+            let choices = Choices::new(vec![Source::Okta], *server, None);
+            let line = format!("#   records  {}\n", choices.records());
+            assert!(choices.header().contains(&line), "{server:?}");
+            let local = matches!(server, Server::Yours | Server::Mtplx);
+            assert_eq!(line.contains("stay on this machine"), local, "{server:?}");
+            assert_eq!(
+                line.contains(&format!("are sent to {}", server.pair().host)),
+                !local,
+                "{server:?}"
+            );
         }
     }
 
@@ -980,7 +1259,7 @@ mod tests {
     /// the shell's, and the models are called in a US region.
     #[test]
     fn on_bedrock_the_models_use_the_sources_profile() {
-        let (_dir, cfg) = written(&[Source::Cloudtrail], Provider::Bedrock);
+        let (_dir, cfg) = written(&[Source::Cloudtrail], Server::Hosted(Provider::Bedrock));
         let SourceConfig::Cloudtrail(source) = &cfg.sources["aws_audit"] else {
             panic!("aws_audit is not a cloudtrail source");
         };
@@ -998,7 +1277,7 @@ mod tests {
     #[test]
     fn the_commands_are_the_ones_that_read_what_is_watched() {
         let commands = |watch: &[Source]| -> Vec<&'static str> {
-            let choices = Choices::new(watch.to_vec(), Provider::Anthropic, None);
+            let choices = Choices::new(watch.to_vec(), Server::Hosted(Provider::Anthropic), None);
             let config = choices.config();
             let lines = choices.commands();
             for line in &lines {
@@ -1016,7 +1295,7 @@ mod tests {
         assert_eq!(commands(&[Source::Cloudtrail]), [REPLAY]);
         assert_eq!(commands(&[Source::Okta, Source::Github]), [RUN]);
         assert_eq!(commands(&EVERY), [REPLAY, RUN]);
-        let all = Choices::new(EVERY.to_vec(), Provider::Anthropic, None);
+        let all = Choices::new(EVERY.to_vec(), Server::Hosted(Provider::Anthropic), None);
         assert!(
             all.commands()[1].ends_with(
                 "# GitHub, Okta, Google Workspace, Supabase, from an hour back and as it happens"
@@ -1032,7 +1311,7 @@ mod tests {
     fn the_sources_are_each_once() {
         let named = Choices::new(
             vec![Source::Okta, Source::Cloudtrail, Source::Okta],
-            Provider::Local,
+            Server::Yours,
             None,
         );
         assert_eq!(named.watch, [Source::Cloudtrail, Source::Okta]);
@@ -1046,22 +1325,19 @@ mod tests {
     /// and says where its sources go.
     #[test]
     fn with_no_source_it_is_the_pipeline_without_one() {
-        for provider in Provider::value_variants() {
+        for server in &Server::ALL {
             let dir = tempfile::tempdir().unwrap();
-            let choices = Choices::new(Vec::new(), *provider, None);
+            let choices = Choices::new(Vec::new(), *server, None);
             choices.write(dir.path()).unwrap();
             let config = choices.config();
-            assert!(!config.contains("{{"), "{provider:?}:\n{config}");
-            assert!(
-                !config.contains("\n\n\n"),
-                "{provider:?}: a part left a gap"
-            );
+            assert!(!config.contains("{{"), "{server:?}:\n{config}");
+            assert!(!config.contains("\n\n\n"), "{server:?}: a part left a gap");
             assert!(config.contains("#   watches  nothing yet"), "{config}");
             let cfg = Config::load(&dir.path().join("tangent.yaml"))
-                .unwrap_or_else(|e| panic!("{provider:?}: {e:#}"))
+                .unwrap_or_else(|e| panic!("{server:?}: {e:#}"))
                 .config;
-            assert!(cfg.sources.is_empty(), "{provider:?}");
-            assert_eq!(cfg.inference.len(), 2, "{provider:?}");
+            assert!(cfg.sources.is_empty(), "{server:?}");
+            assert_eq!(cfg.inference.len(), 2, "{server:?}");
         }
     }
 
@@ -1072,58 +1348,58 @@ mod tests {
     fn the_models_named_are_the_judge_and_the_reviewer() {
         let named = [
             (
-                Provider::Anthropic,
+                Server::Hosted(Provider::Anthropic),
                 "claude-sonnet-5-5",
                 "judges and reviews",
             ),
             (
-                Provider::Bedrock,
+                Server::Hosted(Provider::Bedrock),
                 "us.anthropic.claude-haiku-5-5",
                 "judges and reviews",
             ),
             (
-                Provider::Openrouter,
+                Server::Hosted(Provider::Openrouter),
                 "z-ai/glm-4.7-flash",
                 "judges and reviews",
             ),
             (
-                Provider::Openai,
+                Server::Hosted(Provider::Openai),
                 "gpt-6-luna, gpt-6.1-terra",
                 "gpt-6-luna judges, gpt-6.1-terra reviews",
             ),
             (
-                Provider::Local,
+                Server::Yours,
                 "qwen3.5:122b,glm-4.7-flash",
                 "qwen3.5:122b judges, glm-4.7-flash reviews",
             ),
         ];
-        for (provider, flag, says) in named {
+        for (server, flag, says) in named {
             let (judge, reviewer) = models(flag).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let choices = Choices::new(
                 vec![Source::Github],
-                provider,
+                server,
                 Some((judge.clone(), reviewer.clone())),
             );
             choices.write(dir.path()).unwrap();
             let cfg = Config::load(&dir.path().join("tangent.yaml"))
-                .unwrap_or_else(|e| panic!("{provider:?}: {e:#}"))
+                .unwrap_or_else(|e| panic!("{server:?}: {e:#}"))
                 .config;
-            let (_dir, measured) = written(&[Source::Github], provider);
+            let (_dir, measured) = written(&[Source::Github], server);
             let shape_of =
                 |cfg: &Config, node: &str| serde_yaml::to_value(&cfg.inference[node]).unwrap();
             for (node, name) in [("judge", &judge), ("reviewer", &reviewer)] {
-                assert_eq!(&cfg.models[node].model, name, "{provider:?} {node}");
+                assert_eq!(&cfg.models[node].model, name, "{server:?} {node}");
                 let mut as_measured = shape_of(&cfg, node);
                 as_measured["model"] = shape_of(&measured, node)["model"].clone();
                 assert_eq!(
                     as_measured,
                     shape_of(&measured, node),
-                    "{provider:?} {node}: only the model differs"
+                    "{server:?} {node}: only the model differs"
                 );
             }
             let header = choices.header();
-            assert!(header.contains(says), "{provider:?}: {header}");
+            assert!(header.contains(says), "{server:?}: {header}");
         }
     }
 
@@ -1156,18 +1432,15 @@ mod tests {
                 assert!(directions.contains(var), "{source:?}: {var}");
             }
         }
-        for provider in Provider::value_variants() {
-            let pair = provider.pair();
+        for server in &Server::ALL {
+            let pair = server.pair();
             for part in [
                 pair.judge_model,
                 pair.reviewer_model,
                 pair.judge,
                 pair.reviewer,
             ] {
-                assert!(
-                    directions.contains(part.trim_end()),
-                    "{provider:?}:\n{part}"
-                );
+                assert!(directions.contains(part.trim_end()), "{server:?}:\n{part}");
             }
         }
         assert!(DIRECTIONS.ends_with("docs/config.md"));
@@ -1177,10 +1450,18 @@ mod tests {
     /// that reads CloudTrail is the one that calls the models.
     #[test]
     fn a_variable_is_named_once() {
-        let choices = Choices::new(vec![Source::Cloudtrail], Provider::Bedrock, None);
+        let choices = Choices::new(
+            vec![Source::Cloudtrail],
+            Server::Hosted(Provider::Bedrock),
+            None,
+        );
         let vars: Vec<&str> = choices.needs().into_iter().map(|(var, _)| var).collect();
         assert_eq!(vars, ["AWS_PROFILE"]);
-        let choices = Choices::new(vec![Source::Github], Provider::Anthropic, None);
+        let choices = Choices::new(
+            vec![Source::Github],
+            Server::Hosted(Provider::Anthropic),
+            None,
+        );
         let vars: Vec<&str> = choices.needs().into_iter().map(|(var, _)| var).collect();
         assert_eq!(vars, ["ANTHROPIC_API_KEY", "GITHUB_ORG", "GITHUB_TOKEN"]);
     }
@@ -1189,7 +1470,11 @@ mod tests {
     /// one, and every file is left as it was.
     #[test]
     fn refuses_a_file_already_there_and_writes_nothing() {
-        let choices = Choices::new(vec![Source::Cloudtrail], Provider::Anthropic, None);
+        let choices = Choices::new(
+            vec![Source::Cloudtrail],
+            Server::Hosted(Provider::Anthropic),
+            None,
+        );
         for (taken, _) in choices.files() {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(taken), "mine").unwrap();

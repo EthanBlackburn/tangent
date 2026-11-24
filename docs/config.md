@@ -1,18 +1,22 @@
 # Editing tangent.yaml by hand
 
-`tangent init` writes the whole pipeline to tangent.yaml, and asks nothing. Its flags say what goes in:
+`tangent init cloud` writes the whole pipeline for your cloud and SaaS audit logs to tangent.yaml, and asks nothing. Its flags say what goes in:
 
 ```bash
-tangent init                                # the pipeline, with no source yet
-tangent init --sources cloudtrail,github    # with those two watched
-tangent init --sources okta --provider openrouter --model deepseek/deepseek-v4-flash-0731
-tangent init --sources okta --provider openai --model gpt-6-luna,gpt-6.1-terra
+tangent init cloud                                # the pipeline, with no source yet
+tangent init cloud --sources cloudtrail,github    # with those two watched
+tangent init cloud --sources okta --provider openrouter --model deepseek/deepseek-v4-flash-0731
+tangent init cloud --sources okta --provider openai --model gpt-6-luna,gpt-6.1-terra
+tangent init cloud --sources okta --local         # Inkling 2 Mini on this Mac, started by tangent
+tangent init cloud --sources okta --local --model glm-4.7-flash   # a model server of your own
 ```
 
 | flag | names | without it |
 |---|---|---|
 | `--sources` | what to watch, one or more of `cloudtrail`, `github`, `okta`, `google_workspace`, `supabase` | the pipeline has no source yet |
-| `--provider` and `--model`, together | who serves the models (`anthropic`, `bedrock`, `openrouter`, `openai`, `local`), and each model by the exact name the provider takes: one name judges and reviews, and two with a comma are the judge's, then the reviewer's | Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API |
+| `--provider` and `--model`, together | who serves the models (`anthropic`, `bedrock`, `openrouter`, `openai`), and each model by the exact name the provider takes: one name judges and reviews, and two with a comma are the judge's, then the reviewer's | Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API |
+| `--local` | a model on this machine in place of a hosted one: Inkling 2 Mini judges and reviews, on a server tangent starts with `tangent run` (Apple Silicon, with 32 GB of memory or more) | the models are hosted, and every record is sent to who serves them |
+| `--model`, with `--local` | the model a server of your own gives at `http://localhost:8080/v1`, which tangent does not start | `--local` is Inkling 2 Mini |
 
 Init writes over nothing, so the flags are for a new file. This page is how to change one already written: to add or take out a source, and to change who serves the models.
 
@@ -29,7 +33,7 @@ A source is in four places in the file:
 
 To stop watching a source, take it out of the same four places. A file written with no source has `{}` where its nodes and rows go, and `(none yet)` where its plugin goes: put the blocks in their place. The order of the nodes does not matter.
 
-The comment at the top of the file says what it watches, who serves the models and how to run it. Nothing reads it: bring it up to date for whoever opens the file next.
+The comment at the top of the file says what it watches, who serves the models, where the records go to be judged and how to run it. Nothing reads it: bring it up to date for whoever opens the file next.
 
 `tangent replay --config tangent.yaml --from 1d` reads CloudTrail's past and no other source. `tangent run --config tangent.yaml` reads the others from an hour back and as it happens, and CloudTrail too once `queue_url` names the SQS queue the trail's bucket notifies.
 
@@ -219,10 +223,12 @@ Two entries under `models:` say who serves the models, and two nodes under `infe
 
 - Under `models:`, in `judge`, the lines above `timeout_ms: 90000`.
 - Under `models:`, in `reviewer`, the lines above `timeout_ms: 120000`.
-- Under `inference:`, in `judge`, the lines between `model: judge` and `prompt_file: judge.md`.
-- Under `inference:`, in `reviewer`, the lines between `model: reviewer` and `prompt_file: review.md`.
+- Under `inference:`, in `judge`, the lines between its `model:` line and `prompt_file: judge.md`.
+- Under `inference:`, in `reviewer`, the lines between its `model:` line and `prompt_file: review.md`.
 
 Replace those lines with the blocks below, and leave the rest as it is. Each block has the model its provider was measured with: for another, change the `model` line under `models:`, which is all `--model` does: the judge's entry for its first name, the reviewer's for its second. A block is whole: a line the old one had and the new one has not, such as `url`, goes. judge.md, judge.schema.json and review.md, beside the file, are the same whoever serves the models.
+
+The last pair below is one model on one server, and has one entry under `models:` where the others have two: its section says what else changes.
 
 [Try it](try-it.md) has what each pair caught and flagged in tangent's evals.
 
@@ -381,7 +387,7 @@ The reviewer's lines, under `inference:`:
 
 ### A model on this machine judges and reviews (llama-server, mlx_lm.server, Ollama, vLLM)
 
-Start the model's server before tangent, and set the two lines marked EDIT to the name the server gives its model. Nothing leaves the machine.
+`--local --model <name>` writes this, with the name in place of the two lines marked EDIT. Start the model's server before tangent. Nothing leaves the machine.
 
 The judge's model, under `models:`:
 
@@ -403,6 +409,50 @@ The judge's lines, under `inference:`:
 
 ```yaml
     max_tokens: 200              # per record
+    temperature: 0.7
+    extra:
+      top_p: 0.95
+      chat_template_kwargs: { enable_thinking: false }   # no thinking: the reply is the answer
+```
+
+The reviewer has no lines of its own under `inference:`: take out the ones that were there.
+
+### Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (MTPLX)
+
+`--local` writes this. The judge and the reviewer are one model, so `models:` holds one entry, `inkling`, in place of `judge` and `reviewer`, and both nodes under `inference:` say `model: inkling`. `tangent run` starts the server (`serve`), waits until it answers and stops it after. It needs an Apple Silicon Mac with 32 GB of memory or more, and MTPLX and the model on it:
+
+```bash
+brew install youssofal/mtplx/mtplx      # or, with Python 3.11 or newer: python3 -m pip install mtplx
+mtplx pull Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed   # 17 GB
+```
+
+The settings are the ones measured with MTPLX 2.13 on an M4 Max with 36 GB. Nothing leaves the machine.
+
+The whole of `models:`:
+
+```yaml
+  inkling:
+    type: openai                 # MTPLX serves the OpenAI API
+    url: http://127.0.0.1:8000/v1
+    model: mtplx                 # it answers with the model it loaded
+    timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
+    retries: 2
+    concurrency: 1               # one request at a time, the judge's and the reviewer's together
+    # `tangent run` starts this server, waits until it answers and stops it
+    # after; one already answering at `url` is used and left running.
+    serve:
+      command: [mtplx, serve, --model, Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed, --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
+      env:
+        HF_HUB_OFFLINE: "1"                        # the model is read from this Mac, and never fetched here
+        MTPLX_SESSION_BANK_MAX_BYTES: 3G           # what it keeps of prompts it has read, so the judge's brief is read once
+        MTPLX_SYSTEM_MEMORY_SHED_FLOOR_BYTES: 2G   # it drops that only below 2 GB of free memory
+        MTPLX_GDN_BOUNDARY_TAIL_BACKOFF: "768"     # a restore point inside the brief, for the next record
+```
+
+The judge's lines, under `inference:`, and its `batch_bytes` there is `32000`:
+
+```yaml
+    max_tokens: 500              # per record
     temperature: 0.7
     extra:
       top_p: 0.95

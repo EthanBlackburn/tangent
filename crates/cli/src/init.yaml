@@ -74,27 +74,19 @@ plugins:
 # The models: where each is served, and how hard it may be asked. The judge
 # and the reviewer, under `inference`, each name theirs.
 models:
-  judge:
-{{judge_model}}
-    timeout_ms: 90000
-    concurrency: 4               # requests at once
-  reviewer:
-{{reviewer_model}}
-    timeout_ms: 120000           # reviews go one at a time: two minutes a try,
-    retries: 2                   # three tries, then the review is an error and the alerts stand
-    concurrency: 1
+{{models}}
 
 inference:
   # The judge reads every record, an actor's group in one request, and
   # answers each: flagged or not, and why.
   judge:
     inputs: [baseline_renderer]
-    model: judge                 # its model, under `models`
+    model: {{judge_entry}}
 {{judge}}
     prompt_file: judge.md
     schema_file: judge.schema.json   # the shape its answer is held to
     group_by: [_norm.org, _norm.actor]
-    batch_bytes: 96000           # a request past this is split; an actor's forty records fit
+    batch_bytes: {{batch_bytes}}
     # How the records are written for the model: a logfmt line each, about
     # half the tokens of JSON. The fields in `keep` are on every line, and
     # the rest, which an actor's records share, are written once.
@@ -109,7 +101,7 @@ inference:
   # The reviewer settles what the judge flagged. It has no inputs: plugin
   # review holds the conversation with it.
   reviewer:
-    model: reviewer
+    model: {{reviewer_entry}}
 {{reviewer}}
     prompt_file: review.md
     max_tokens: 8000             # a turn: its thinking, and a query or the report

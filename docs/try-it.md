@@ -1,6 +1,6 @@
 # Try it
 
-`tangent init` asks what you want to watch and which models judge it, and writes the whole pipeline to `tangent.yaml`.
+`tangent init cloud` writes the whole pipeline for your cloud and SaaS audit logs to `tangent.yaml`: what you watch, and the models that judge it.
 
 1. Install tangent:
 
@@ -11,7 +11,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/EthanBlackburn/tangent/
 2. Write the config, in an empty directory:
 
 ```bash
-tangent init --sources cloudtrail,github
+tangent init cloud --sources cloudtrail,github
 ```
 
 `--sources` is what to watch, one or more of:
@@ -26,13 +26,13 @@ tangent init --sources cloudtrail,github
 
 Without it, init writes the pipeline with no source yet.
 
-Two models read the records: one judges every record and flags freely, and the other reviews each actor's alerts, with the records to query, and clears what turns out to be ordinary work. Init writes Claude Haiku 5.5 as the judge and Claude Sonnet 5.5 as the reviewer, through Anthropic's API, with `ANTHROPIC_API_KEY`.
+Two models read the records: one judges every record and flags freely, and the other reviews each actor's alerts, with the records to query, and clears what turns out to be ordinary work. Init writes models served for you: Claude Haiku 5.5 as the judge and Claude Sonnet 5.5 as the reviewer, through Anthropic's API, with `ANTHROPIC_API_KEY`. Every record is sent there to be judged, and the file and init's last lines say so.
 
 `--provider` and `--model`, given together, name others: who serves the models, and each model by the exact name the provider takes. One name judges and reviews, and two with a comma are the judge's, then the reviewer's:
 
 ```bash
-tangent init --sources okta --provider openrouter --model deepseek/deepseek-v4-flash-0731
-tangent init --sources okta --provider openai --model gpt-6-luna,gpt-6.1-terra
+tangent init cloud --sources okta --provider openrouter --model deepseek/deepseek-v4-flash-0731
+tangent init cloud --sources okta --provider openai --model gpt-6-luna,gpt-6.1-terra
 ```
 
 Each provider's settings were measured with the models below, over the logs [tangent-eval](https://github.com/EthanBlackburn/tangent-eval) builds: 71 attacks, and 5,304 ordinary records a model reads.
@@ -43,7 +43,18 @@ Each provider's settings were measured with the models below, over the logs [tan
 | `bedrock` | the same two on Amazon Bedrock: `us.anthropic.claude-haiku-5-5,us.anthropic.claude-sonnet-5-5` | | | an AWS profile with Bedrock access to both models in every US region: the models are called in us-west-2, and their `us.` profiles may serve a call from another |
 | `openrouter` | DeepSeek V4 Flash, open weights, as both, through OpenRouter: `deepseek/deepseek-v4-flash-0731` | 71 (two runs) | 10 to 13 | `OPENROUTER_API_KEY` |
 | `openai` | GPT-6 Luna, GPT-6.1 Terra, through OpenAI's API: `gpt-6-luna,gpt-6.1-terra` | 71 (one run) | 20 | `OPENAI_API_KEY` |
-| `local` | a model on this machine: a server you run at `http://localhost:8080/v1` (llama-server, mlx_lm.server, Ollama, vLLM), and the name it gives its model | not measured | | the server running; nothing leaves the machine |
+
+`--local` is a model on this machine in place of a hosted one, and no record leaves it:
+
+```bash
+tangent init cloud --sources okta --local                         # Inkling 2 Mini, on a server tangent starts
+tangent init cloud --sources okta --local --model glm-4.7-flash   # a model server of your own
+```
+
+| `--local` | the model | measured | it needs |
+|---|---|---|---|
+| alone | Inkling 2 Mini, open weights, judges and reviews, on MTPLX. `tangent run` starts the server, waits until it answers and stops it after | not on the corpus above | an Apple Silicon Mac with 32 GB of memory or more, and MTPLX and the model on it: init prints the two commands, and warns under 32 GB |
+| with `--model` | the model a server you run gives at `http://localhost:8080/v1` (llama-server, mlx_lm.server, Ollama, vLLM), by the name it gives it | not measured | the server running before tangent |
 
 The corpus is one made-up company, and 36 of its attacks are cases the judge's brief was written against: it says nothing of how much a model flags on your logs.
 
