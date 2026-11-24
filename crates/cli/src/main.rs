@@ -312,8 +312,8 @@ async fn main() -> Result<()> {
                     model,
                 },
         } => {
-            let (provider, models) = init::served(local, provider, model.as_deref())?;
-            init::run(Path::new("."), sources, provider, models).await?
+            let (server, models) = init::served(local, provider, model.as_deref())?;
+            init::run(Path::new("."), sources, server, models).await?
         }
 
         Commands::Replay { config, from, to } => {
