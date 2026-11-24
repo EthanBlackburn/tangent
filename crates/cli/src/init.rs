@@ -812,7 +812,7 @@ pub fn names<T: clap::ValueEnum>(sep: &str) -> String {
 /// `tangent init` in `dir`: the files for what the flags name, and the
 /// plugins the config names, fetched and checked. A fetch that fails takes
 /// the files with it, so what is left loads or is nothing.
-/// The memory under which Inkling is not worth starting, in GiB.
+/// The memory under which tangent does not start Inkling, in GiB.
 const INKLING_MEMORY: u64 = 32;
 
 /// The pair `tangent init cloud`'s flags name, and the models named with
@@ -882,7 +882,7 @@ pub fn ask_to_fetch(missing: &local::Missing, root: &Path) -> bool {
 
 /// This machine's memory in GiB, where it says: a Mac's `hw.memsize`.
 fn memory_gib() -> Option<u64> {
-    let out = std::process::Command::new("sysctl")
+    let out = std::process::Command::new("/usr/sbin/sysctl")
         .args(["-n", "hw.memsize"])
         .output()
         .ok()?;
@@ -896,16 +896,10 @@ pub fn local_needs(server: Server) -> Vec<String> {
     match server {
         Server::Yours => vec!["Start your model's server first.".to_string()],
         Server::Mtplx => {
-            let mut lines = Vec::new();
-            if let Some(memory) = memory_gib().filter(|gib| *gib < INKLING_MEMORY) {
-                lines.push(format!(
-                    "This Mac has {memory} GB of memory. Inkling 2 Mini takes about 20 GB to itself and was measured with 36: under {INKLING_MEMORY} it is slow, or does not load. Without --local, the models are served for you.\n"
-                ));
-            }
-            lines.push(
+            let mut lines = vec![
                 "`tangent run` starts the model, waits until it answers and stops it after."
                     .to_string(),
-            );
+            ];
             if let Ok(root) = local::root() {
                 let missing = local::missing(&root);
                 if !missing.nothing() {
@@ -921,13 +915,33 @@ pub fn local_needs(server: Server) -> Vec<String> {
     }
 }
 
-/// Whether this machine can serve the models as `server` would: tangent
-/// starts MTPLX on Apple Silicon Macs only.
+/// Why tangent does not start Inkling on this machine, where it does not:
+/// MTPLX runs on Apple Silicon Macs only, and the model does not fit in
+/// less than [`INKLING_MEMORY`].
+pub fn no_inkling() -> Option<String> {
+    unfit(memory_gib())
+}
+
+/// [`no_inkling`] for a machine with `memory` GiB, or one that does not say.
+fn unfit(memory: Option<u64>) -> Option<String> {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return Some("tangent starts Inkling 2 Mini on Apple Silicon Macs only".to_string());
+    }
+    let memory = memory.filter(|gib| *gib < INKLING_MEMORY)?;
+    Some(format!(
+        "this Mac has {memory} GB of memory, and Inkling 2 Mini takes about 20 GB to itself: under {INKLING_MEMORY} GB it is slow or does not load, so tangent does not start it"
+    ))
+}
+
+/// Whether this machine can serve the models as `server` would. It is
+/// asked before anything is written or downloaded.
 pub fn runs_here(server: Server) -> Result<()> {
-    if server == Server::Mtplx && !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        bail!(
-            "tangent starts Inkling 2 Mini on Apple Silicon Macs only. `--local --model <name>` is a model server of your own, and without --local the models are served for you"
-        );
+    if server == Server::Mtplx {
+        if let Some(why) = no_inkling() {
+            bail!(
+                "{why}. `--local --model <name>` is a model server of your own, and without --local the models are served for you"
+            );
+        }
     }
     Ok(())
 }
@@ -1329,6 +1343,20 @@ pub(crate) mod tests {
         // every other pair's judge may be sent an actor's forty records at once
         let (_dir, hosted) = written(&[Source::Github], Server::Hosted(Provider::Anthropic));
         assert_eq!(hosted.inference["judge"].batch_bytes, 96_000);
+    }
+
+    /// Inkling is not started on a Mac with less memory than it was
+    /// measured to need, and the reason says how much the Mac has. A Mac
+    /// that does not say its memory is not refused for it.
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn inkling_is_not_started_under_its_memory() {
+        let why = unfit(Some(16)).expect("16 GB is under what Inkling needs");
+        assert!(why.contains("this Mac has 16 GB of memory"), "{why}");
+        assert!(unfit(Some(INKLING_MEMORY - 1)).is_some());
+        assert_eq!(unfit(Some(INKLING_MEMORY)), None);
+        assert_eq!(unfit(Some(64)), None);
+        assert_eq!(unfit(None), None);
     }
 
     /// The models are hosted unless `--local`: Anthropic's pair or a
