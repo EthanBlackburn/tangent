@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use tangent_shared::packs;
 
-use crate::fetch;
+use crate::{fetch, local};
 
 /// tangent.yaml with its sources, their plugins and rows, and the two
 /// models' settings left out: `{{name}}` where each goes.
@@ -435,7 +435,8 @@ impl Server {
     # `tangent run` starts this server, waits until it answers and stops it
     # after; one already answering at `url` is used and left running.
     serve:
-      command: [mtplx, serve, --model, Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed, --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
+      # MTPLX and the model, where `tangent model fetch` keeps them
+      command: ["{{mtplx}}", serve, --model, "{{inkling}}", --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
       env:
         HF_HUB_OFFLINE: "1"                        # the model is read from this Mac, and never fetched here
         MTPLX_SESSION_BANK_MAX_BYTES: 3G           # what it keeps of prompts it has read, so the judge's brief is read once
@@ -550,7 +551,7 @@ impl Choices {
             ),
         };
         match pair.entry {
-            Some(entry) => format!("  {entry}:\n{judge}"),
+            Some(entry) => placed(&format!("  {entry}:\n{judge}"), &cache()),
             None => {
                 format!("  judge:\n{judge}{JUDGE_LIMITS}  reviewer:\n{reviewer}{REVIEWER_LIMITS}")
             }
@@ -777,6 +778,51 @@ pub fn served(
     }
 }
 
+/// The cache directory as a config names it, so the file holds no one's
+/// home: `${XDG_CACHE_HOME}` where that is set to a path tangent would use,
+/// else `${HOME}/.cache`.
+fn cache() -> String {
+    let xdg = std::env::var_os("XDG_CACHE_HOME").is_some_and(|p| Path::new(&p).is_absolute());
+    if xdg {
+        "${XDG_CACHE_HOME}"
+    } else {
+        "${HOME}/.cache"
+    }
+    .to_string()
+}
+
+/// `text` with MTPLX's program and the model's directory under `cache` in
+/// their places.
+fn placed(text: &str, cache: &str) -> String {
+    let (mtplx, inkling) = local::paths(cache);
+    text.replace("{{mtplx}}", &mtplx)
+        .replace("{{inkling}}", &inkling)
+}
+
+/// Asks, at a terminal, whether to download what `missing` lists now. No
+/// terminal is no.
+fn ask_to_fetch(missing: &local::Missing, root: &Path) -> bool {
+    use std::io::IsTerminal as _;
+    println!(
+        "\nInkling 2 Mini runs on MTPLX, and {}: {} to download, into {}.",
+        match (missing.engine, missing.model > 0) {
+            (true, true) => "neither is on this Mac yet",
+            (true, false) => "MTPLX is not on this Mac yet",
+            _ => "the model is not all on this Mac yet",
+        },
+        local::size(missing.bytes()),
+        root.display()
+    );
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    print!("Download now? [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).ok();
+    matches!(answer.trim(), "y" | "Y" | "yes")
+}
+
 /// This machine's memory in GiB, where it says: a Mac's `hw.memsize`.
 fn memory_gib() -> Option<u64> {
     let out = std::process::Command::new("sysctl")
@@ -785,12 +831,6 @@ fn memory_gib() -> Option<u64> {
         .ok()?;
     let bytes: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
     Some(bytes >> 30)
-}
-
-/// Whether `program` is on the PATH.
-fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
 /// What a model on this machine needs that the file cannot hold, as lines
@@ -805,18 +845,19 @@ fn local_needs(server: Server) -> Vec<String> {
                     "This Mac has {memory} GB of memory. Inkling 2 Mini takes about 20 GB to itself and was measured with 36: under {INKLING_MEMORY} it is slow, or does not load. Without --local, the models are served for you.\n"
                 ));
             }
-            let found = if on_path("mtplx") {
-                ""
-            } else {
-                " (mtplx is not on your PATH)"
-            };
-            lines.push(format!(
-                "`tangent run` starts the model and stops it. It needs MTPLX and the model on this Mac, which tangent does not fetch yet{found}:"
-            ));
-            lines.push("  brew install youssofal/mtplx/mtplx      # or, with Python 3.11 or newer: python3 -m pip install mtplx".to_string());
             lines.push(
-                "  mtplx pull Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed   # 17 GB".to_string(),
+                "`tangent run` starts the model, waits until it answers and stops it after."
+                    .to_string(),
             );
+            if let Ok(root) = local::root() {
+                let missing = local::missing(&root);
+                if !missing.nothing() {
+                    lines.push(format!(
+                        "It is not all on this Mac yet: `tangent model fetch` downloads it ({}), and goes on where a fetch was stopped.",
+                        local::size(missing.bytes())
+                    ));
+                }
+            }
             lines
         }
         _ => Vec::new(),
@@ -842,6 +883,16 @@ pub async fn run(
         return Err(
             e.context("a plugin the config names could not be fetched, so nothing is written")
         );
+    }
+
+    // The model and what serves it, when it is to run here and is not here.
+    let mut fetched = Ok(());
+    if choices.server == Server::Mtplx {
+        let root = local::root()?;
+        let missing = local::missing(&root);
+        if !missing.nothing() && ask_to_fetch(&missing, &root) {
+            fetched = local::fetch(&root).await;
+        }
     }
 
     let wrote: Vec<String> = written
@@ -870,7 +921,7 @@ pub async fn run(
             "\nIt watches nothing yet. In an empty directory, `tangent init cloud` with `--sources` and one or more of {} writes it with them in; {DIRECTIONS} says how to add one to this file.",
             names::<Source>(", ")
         );
-        return Ok(());
+        return fetched.context("the config is written, and the model is not all here: `tangent model fetch` goes on where this stopped");
     }
     println!("\nThen:");
     for command in choices.commands() {
@@ -881,7 +932,7 @@ pub async fn run(
             "\n`tangent run` reads CloudTrail as it is written once tangent.yaml's `queue_url` names the trail's queue."
         );
     }
-    Ok(())
+    fetched.context("the config is written, and the model is not all here: `tangent model fetch` goes on where this stopped")
 }
 
 #[cfg(test)]
@@ -1187,7 +1238,19 @@ mod tests {
         assert_eq!(model.concurrency, 1);
         assert_eq!(model.timeout_ms, 600_000);
         let serve = model.serve.as_ref().expect("tangent starts it");
-        assert_eq!(serve.command[..2], ["mtplx", "serve"]);
+        // tangent's own MTPLX and the model, under the cache
+        let (mtplx, inkling) = local::paths(&cache());
+        let expand = |text: &str| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let xdg = std::env::var("XDG_CACHE_HOME").unwrap_or_default();
+            text.replace("${HOME}", &home)
+                .replace("${XDG_CACHE_HOME}", &xdg)
+        };
+        assert_eq!(serve.command[0], expand(&mtplx));
+        assert_eq!(
+            serve.command[1..4],
+            ["serve".to_string(), "--model".to_string(), expand(&inkling)]
+        );
         let port = serve.command.iter().position(|a| a == "--port").unwrap();
         assert!(
             model
@@ -1440,6 +1503,8 @@ mod tests {
                 pair.judge,
                 pair.reviewer,
             ] {
+                // as the file has it where the cache is the home's
+                let part = placed(part, "${HOME}/.cache");
                 assert!(directions.contains(part.trim_end()), "{server:?}:\n{part}");
             }
         }

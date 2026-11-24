@@ -7046,6 +7046,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "compile-wasm",
+ "fs2",
  "handlebars",
  "hex",
  "include_dir",
