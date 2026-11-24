@@ -112,7 +112,7 @@ To change more than the flags do, `tangent init cloud` with the same flags write
 ## This Mac: `tangent watch mac`
 
 ```bash
-SENSOR=/path/to/TangentSensor.app/Contents/MacOS/tangent-sensor tangent watch mac
+tangent watch mac
 ```
 
 It watches the Mac it runs on: what each program runs, opens and connects to, and what you ask Claude Code, a session (a terminal tab, an app, an agent) at a time. There is nothing to choose but who judges:
@@ -124,11 +124,12 @@ It watches the Mac it runs on: what each program runs, opens and connects to, an
 
 Inkling's settings here are the ones measured on cloud logs, with room for the longer answer a session takes. Its results on the recorded Mac attacks in [tangent-eval](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos) are not published yet; the hosted pair's are there.
 
-Three things are yours to do:
+Two things are yours to do:
 
-- **The sensor.** A release has it built, signed and notarized, as `tangent-sensor-macos.zip` beside the binaries: unzip it, and `SENSOR` names `tangent-sensor` inside the app.
 - **Your password,** once, when it starts: sudo runs the sensor and macOS's tcpdump as root.
 - **Full Disk Access** for the terminal it runs in (System Settings, Privacy & Security), and a restart of the terminal after the grant.
+
+The sensor, which reads what each program does, is the release's: tangent downloads it once per version, and before each start checks that it is the one tangent's team signed and Apple notarized, since it runs as root.
 
 It keeps its pipeline in `~/.local/share/tangent/mac`, as `watch cloud` keeps its own, and says each alert as the judge marks a session `look` or `flag`, and each review about seven minutes after.
 

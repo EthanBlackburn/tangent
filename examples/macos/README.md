@@ -29,16 +29,14 @@ after the grant.
 
 The sensor is [packs/macos/sensor](/packs/macos/sensor), the pack's
 Endpoint Security client. A release has it built, signed and notarized, as
-`tangent-sensor-macos.zip` beside the binaries: download it, unzip it, and
-name the binary inside,
-
-```bash
-SENSOR=/path/to/TangentSensor.app/Contents/MacOS/tangent-sensor tangent run --config haiku.yaml
-```
+`tangent-sensor-macos.zip` beside the binaries, and `tangent run` fetches
+it once per version: there is nothing to download or name. Since it runs as
+root, tangent checks before each start that it is the one its team signed
+and Apple notarized.
 
 It runs on any Mac, with nothing to ask of Apple. Building it yourself takes
 an entitlement Apple grants to a developer team (the sensor's README), and
-with no `SENSOR` the config looks for it where that build leaves it.
+the source's `sensor:` names your build.
 
 Your prompts to Claude Code reach the model that judges, and the lake, with
 the command lines that already do (packs/macos/README.md, "What the agent

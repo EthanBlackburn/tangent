@@ -23,9 +23,9 @@ include:
 sources:
   mac:
     type: macos
-    # packs/macos/sensor, built and signed (its README), or a release's:
-    # SENSOR names tangent-sensor inside its TangentSensor.app
-    sensor: ${SENSOR:-../../packs/macos/sensor/build/TangentSensor.app/Contents/MacOS/tangent-sensor}
+    # The sensor is this release's: tangent fetches it once per version and
+    # checks its signature before each start. `sensor:` names one you built
+    # from packs/macos/sensor (its README).
 
 plugins:
   macos: { inputs: [mac] }                   # the sensor's events, and the connections and prompts joined to the same process tree

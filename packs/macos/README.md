@@ -24,7 +24,6 @@ A `macos` source is the whole capture, with no script and no socket:
 sources:
   mac:
     type: macos
-    sensor: TangentSensor.app/Contents/MacOS/tangent-sensor   # relative to the working directory
 plugins:
   macos: { inputs: [mac] }
 ```
@@ -39,8 +38,15 @@ ends both programs when it stops. Tangent itself runs as you, and the
 terminal it runs in needs Full Disk Access (System Settings → Privacy &
 Security), restarted after the grant.
 
-The sensor is built and signed from [`sensor/`](sensor), and needs an
-entitlement Apple grants to a developer team: its README has the steps. Its
+The sensor is the release's, `tangent-sensor-macos.zip` beside the binaries,
+signed by tangent's team and notarized by Apple. Tangent fetches it once per
+version into its cache, and since it runs as root checks it with macOS's
+`codesign` before each start: the sensor by its identifier, that team's
+signature, Apple's notarization, and no file changed. `sensor:` names one
+you built instead, `tangent-sensor` inside your TangentSensor.app, relative
+to the working directory: it is built and signed from [`sensor/`](sensor),
+which needs an entitlement Apple grants to a developer team (its README has
+the steps), and tangent starts yours as it is. Its
 lines are in the shape of `eslogger`'s, Apple's own Endpoint Security tool,
 at about half the size.
 
