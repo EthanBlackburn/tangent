@@ -39,11 +39,10 @@ only its plugin, and your config gives it as an input to `baseline_builder`,
   It reaches the renderer whole, on workers of its own, with the actor's
   latest ten records again ahead of it, marked `_context` (`history: 10`):
   forty records a request, which `batch_bytes` is sized for. Groups wait in
-  memory; the end of input closes every open one, and so does a signal
-  (Ctrl-C, a restart). After a signal, though, the model calls have ended:
-  the groups it closes and the requests the model has not answered get no
-  verdict, their records in your sink and the baseline, and nothing asks
-  about them again. The renderer puts the same `_baseline` on each of an
+  memory, and the end of input closes every open one. A signal (Ctrl-C, a
+  restart) closes none: the groups still open, and the records the model
+  has not been asked about, are saved in the state store and go on from
+  where they were at the next start. The renderer puts the same `_baseline` on each of an
   actor's records
   ([behavior-baseline](../behavior-baseline#what-it-stamps)); when it
   fails, the records go to the model without it.

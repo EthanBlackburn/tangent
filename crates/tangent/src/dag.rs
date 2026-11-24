@@ -15,6 +15,10 @@ use tangent_shared::{
 };
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
+
+use crate::group::Group;
+use crate::pending::{Forget, Pending, Saved};
+use crate::stop::Stop;
 use wasmtime::component::Component;
 
 use crate::{
@@ -42,6 +46,14 @@ pub struct DagRuntime {
     /// The model servers this pipeline started (`serve` on a `models`
     /// entry), stopped when it has shut down.
     served: Vec<crate::inference::serve::Served>,
+    /// The run's stop, for the shutdown: one that is stopping saves its
+    /// open groups rather than close them.
+    stop: Stop,
+    /// Where a stop's waiting records are kept for the next start; none in
+    /// a replay, and in a run that only reads its state.
+    pending: Option<Arc<Pending>>,
+    /// The task handing back what the last stop saved.
+    resume: Option<tokio::task::JoinHandle<()>>,
     /// The enrichment tables every plugin on every worker reads, here so a
     /// test can count what holds them; the engines keep them alive.
     #[cfg(test)]
@@ -54,27 +66,23 @@ impl DagRuntime {
         cfg: Config,
         cfg_path: &Path,
         shutdown: CancellationToken,
-        stop_models: CancellationToken,
+        stop: Stop,
     ) -> anyhow::Result<Self> {
-        Self::assemble(cfg, cfg_path, Some(shutdown), stop_models).await
+        Self::assemble(cfg, cfg_path, Some(shutdown), stop).await
     }
 
     /// The DAG with nothing reading its sources: the caller hands each
     /// source's records to `router` as the source would, and the source's
     /// edges take them on. `tangent replay` feeds it the sources' past.
-    pub async fn fed(
-        cfg: Config,
-        cfg_path: &Path,
-        stop_models: CancellationToken,
-    ) -> anyhow::Result<Self> {
-        Self::assemble(cfg, cfg_path, None, stop_models).await
+    pub async fn fed(cfg: Config, cfg_path: &Path, stop: Stop) -> anyhow::Result<Self> {
+        Self::assemble(cfg, cfg_path, None, stop).await
     }
 
     async fn assemble(
         cfg: Config,
         cfg_path: &Path,
         consumers: Option<CancellationToken>,
-        stop_models: CancellationToken,
+        stop: Stop,
     ) -> anyhow::Result<Self> {
         let sink_manager = Arc::new(SinkManager::new(&cfg.sinks).await?);
         let config_dir = cfg_path.parent().unwrap_or_else(|| Path::new("."));
@@ -115,16 +123,14 @@ impl DagRuntime {
         }
         // One of each inference node, whichever pool runs it and whichever
         // plugin holds a conversation with it.
-        let models = crate::inference::nodes(&cfg.models, &cfg.inference, config_dir)?;
+        let models = crate::inference::nodes(&cfg.models, &cfg.inference, config_dir, &stop)?;
+        // A run keeps what a stop leaves waiting for a model; a replay reads
+        // a past it can read again, and a run that only reads its state has
+        // nowhere to keep it.
+        let pending = (consumers.is_some() && !cfg.runtime.state.read_only)
+            .then(|| Pending::new(Arc::clone(&store)));
         let (engines, components) = load(
-            &cfg,
-            &plugins,
-            config_dir,
-            &store,
-            &tables,
-            &models,
-            &stop_models,
-            workers,
+            &cfg, &plugins, config_dir, &store, &tables, &models, &stop, workers,
         )?;
         let mut outs: HashMap<NodeRef, Vec<NodeRef>> = HashMap::default();
         // `validate` has checked every name, so each resolves
@@ -153,7 +159,8 @@ impl DagRuntime {
                 batch_size,
                 batch_age,
                 Arc::clone(&router),
-                stop_models.clone(),
+                stop.clone(),
+                pending.clone(),
             )
             .await?,
         );
@@ -166,14 +173,7 @@ impl DagRuntime {
         let mut groupers = std::collections::HashMap::new();
         for (name, p) in cfg.plugins.iter().filter(|(_, p)| !p.group_by.is_empty()) {
             let (engines, components) = load(
-                &cfg,
-                &plugins,
-                config_dir,
-                &store,
-                &tables,
-                &models,
-                &stop_models,
-                workers,
+                &cfg, &plugins, config_dir, &store, &tables, &models, &stop, workers,
             )?;
             let pool = Arc::new(
                 WorkerPool::new(
@@ -184,7 +184,8 @@ impl DagRuntime {
                     batch_size,
                     batch_age,
                     Arc::clone(&router),
-                    stop_models.clone(),
+                    stop.clone(),
+                    pending.clone(),
                 )
                 .await?,
             );
@@ -210,6 +211,13 @@ impl DagRuntime {
         // After the rest that can fail, since a model may take minutes to
         // load.
         let served = crate::inference::serve::start(&cfg.models).await?;
+
+        // What the last stop kept from the models goes back to the node it
+        // waited for, now that its server answers.
+        let resume = match &pending {
+            Some(pending) => resume(&cfg, pending, &router, &pool).await?,
+            None => None,
+        };
 
         // Last, after everything that can fail, so a failed build leaves no
         // task holding the store (and SQLite's lock with it). Expired
@@ -241,6 +249,9 @@ impl DagRuntime {
             purge,
             groups,
             served,
+            stop,
+            pending,
+            resume,
             #[cfg(test)]
             tables,
         })
@@ -283,8 +294,17 @@ impl DagRuntime {
             purge,
             groups,
             served,
+            stop,
+            pending,
+            resume,
             ..
         } = self;
+
+        // Saved records not yet handed back stay saved.
+        if let Some(task) = resume {
+            task.abort();
+            let _ = task.await;
+        }
 
         // Stopped with the shutdown signal already; this stops it when the
         // caller never sent one.
@@ -325,8 +345,16 @@ impl DagRuntime {
             );
         }
 
-        // Then the groups: the end of input closes every open one.
-        close_groups(&groups, &router, Some(worker_timeout)).await;
+        // Then the groups. The end of input closes every open one; a run
+        // that is stopping keeps them for the next start, as it keeps what
+        // waits for a model, so a stop cuts no group short.
+        match &pending {
+            Some(pending) if stop.finishing() => {
+                save_groups(&groups, pending).await;
+                let _ = timeout(worker_timeout, drained(&router)).await;
+            }
+            _ => close_groups(&groups, &router, Some(worker_timeout)).await,
+        }
         let mut pools = vec![pool];
         for (grouper, task, pool) in groups {
             drop(grouper);
@@ -364,6 +392,100 @@ impl DagRuntime {
             server.stop().await;
         }
         Ok(())
+    }
+}
+
+/// Hands back what the last stop saved, each to the node it waited for. A
+/// grouped plugin's records join its groups again, here; the rest are walked
+/// from their node by the workers, in a task so that a slow model does not
+/// hold the start. Records saved for a node this config has not are left
+/// where they are.
+async fn resume(
+    cfg: &Config,
+    pending: &Arc<Pending>,
+    router: &Arc<Router>,
+    pool: &Arc<WorkerPool>,
+) -> Result<Option<tokio::task::JoinHandle<()>>> {
+    let mut walks = Vec::new();
+    let mut records = 0;
+    for saved in pending.saved().await? {
+        let known = match &saved.node {
+            NodeRef::Plugin { name } => cfg.plugins.contains_key(name),
+            NodeRef::Inference { name } => cfg.inference.contains_key(name),
+            _ => false,
+        };
+        if !known {
+            tracing::warn!(node = ?saved.node, records = saved.records.len(), "saved by a stop for a node this config has not; left in the state store");
+            continue;
+        }
+        records += saved.records.len();
+        let grouper = match &saved.node {
+            NodeRef::Plugin { name } => router.grouper(name),
+            _ => None,
+        };
+        match grouper {
+            // In a group they are where they were when the stop came.
+            Some(grouper) => {
+                grouper.add(saved.records).await?;
+                pending.forget(&saved.key).await?;
+            }
+            None => walks.push(saved),
+        }
+    }
+    if records > 0 {
+        tracing::info!(records, "handing back what the last stop saved");
+    }
+    if walks.is_empty() {
+        return Ok(None);
+    }
+    let (pending, pool) = (Arc::clone(pending), Arc::clone(pool));
+    Ok(Some(tokio::spawn(async move {
+        for Saved { key, node, records } in walks {
+            let group = Group {
+                node,
+                records,
+                context: 0,
+                done: Arc::new(Forget {
+                    pending: Arc::clone(&pending),
+                    key,
+                }),
+                saved: true,
+            };
+            if let Err(e) = Dispatch::dispatch(pool.as_ref(), group).await {
+                tracing::warn!("saved records could not reach a worker, and stay saved: {e:#}");
+                return;
+            }
+        }
+    })))
+}
+
+/// Saves the records of every group still open, or waiting behind its key's
+/// group out, for the next start.
+async fn save_groups(groups: &Groups, pending: &Pending) {
+    for (grouper, _, _) in groups {
+        let node = NodeRef::Plugin {
+            name: Arc::clone(&grouper.node),
+        };
+        match grouper.take().await {
+            Ok(records) if records.is_empty() => {}
+            Ok(records) => match pending.save(&node, &records).await {
+                Ok(()) => {
+                    tracing::info!(
+                        ?node,
+                        records = records.len(),
+                        "open groups saved for the next start"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        ?node,
+                        records = records.len(),
+                        "open groups could not be saved, and are left out: {e:#}"
+                    );
+                }
+            },
+            Err(e) => tracing::warn!(?node, "its groups could not be read: {e:#}"),
+        }
     }
 }
 
@@ -446,7 +568,7 @@ fn load(
     store: &Arc<dyn StateStore>,
     tables: &Arc<Tables>,
     models: &Nodes,
-    stop: &CancellationToken,
+    stop: &Stop,
     workers: usize,
 ) -> Result<Loaded> {
     let mut engines: Vec<WasmEngine> = (0..workers)
@@ -783,6 +905,9 @@ mod tests {
             purge: None,
             groups: vec![],
             served: vec![],
+            stop: Stop::default(),
+            pending: None,
+            resume: None,
             tables: Default::default(),
         };
 
@@ -833,7 +958,7 @@ mod tests {
         )
         .unwrap();
         let cfg = Config::from_file(&cfg_path).unwrap();
-        let dag = DagRuntime::fed(cfg, &cfg_path, CancellationToken::new())
+        let dag = DagRuntime::fed(cfg, &cfg_path, Stop::default())
             .await
             .unwrap();
         let ack = Arc::new(CountingAck::default());
@@ -910,6 +1035,9 @@ mod tests {
             purge: None,
             groups: vec![(grouper, task, Arc::new(WorkerPool::new_for_test(vec![])))],
             served: vec![],
+            stop: Stop::default(),
+            pending: None,
+            resume: None,
             tables: Default::default(),
         };
         (runtime, through)
@@ -970,7 +1098,7 @@ sinks:
         let cfg = Config::from_file(&cfg_path).unwrap();
 
         let shutdown = CancellationToken::new();
-        let rt = DagRuntime::build(cfg, &cfg_path, shutdown.clone(), CancellationToken::new())
+        let rt = DagRuntime::build(cfg, &cfg_path, shutdown.clone(), Stop::default())
             .await
             .unwrap();
         // The table itself, read beside the running pipeline: `get` skips
@@ -1013,15 +1141,10 @@ sinks:
         )
         .unwrap();
         let cfg = Config::from_file(&cfg_path).unwrap();
-        let err = DagRuntime::build(
-            cfg,
-            &cfg_path,
-            CancellationToken::new(),
-            CancellationToken::new(),
-        )
-        .await
-        .err()
-        .unwrap();
+        let err = DagRuntime::build(cfg, &cfg_path, CancellationToken::new(), Stop::default())
+            .await
+            .err()
+            .unwrap();
         let err = format!("{err:#}");
         let want = format!(
             "plugin p: not compiled: no {}, and it has no `prebuilt`; `tangent plugin compile` builds it",

@@ -15,6 +15,8 @@ use secrecy::ExposeSecret;
 use tangent_shared::models::{ModelConfig, ModelKind, DEFAULT_URL};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
+use crate::stop::Stop;
+
 pub struct Model {
     pub name: Arc<str>,
     pub cfg: ModelConfig,
@@ -22,6 +24,9 @@ pub struct Model {
     /// `concurrency` permits: requests in flight to this model, from every
     /// node that names it.
     sem: Semaphore,
+    /// The run's stop: once it is finishing, a request sent is not sent
+    /// again, and the nodes send no new one.
+    stop: Stop,
 }
 
 /// The key of an API that needs one. `${VAR}` unset is the empty string:
@@ -91,7 +96,7 @@ fn client(cfg: &ModelConfig) -> Result<DynModel<Completion>> {
 }
 
 impl Model {
-    pub fn new(name: &Arc<str>, cfg: ModelConfig) -> Result<Self> {
+    pub fn new(name: &Arc<str>, cfg: ModelConfig, stop: Stop) -> Result<Self> {
         let client = client(&cfg)?;
         let sem = Semaphore::new(cfg.concurrency.max(1));
         tracing::info!(model = %name, kind = ?cfg.kind, id = %cfg.model, "model ready");
@@ -100,7 +105,12 @@ impl Model {
             cfg,
             client,
             sem,
+            stop,
         })
+    }
+
+    pub fn stop(&self) -> &Stop {
+        &self.stop
     }
 
     /// One of the model's `concurrency` places, held while a request is out.
@@ -124,7 +134,9 @@ impl Model {
                     Ok(Err(e)) => (anyhow!("{e}"), e.is_retryable()),
                     Err(_) => (anyhow!("no reply within {} ms", self.cfg.timeout_ms), true),
                 };
-            if !again || attempt > self.cfg.retries {
+            // A run that is stopping waits for the requests it sent, and
+            // sends none again.
+            if !again || attempt > self.cfg.retries || self.stop.finishing() {
                 return Err(e);
             }
             let wait = Duration::from_secs(1 << (attempt - 1).min(6));

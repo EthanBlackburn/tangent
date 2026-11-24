@@ -1,3 +1,4 @@
+use crate::stop::Stop;
 use anyhow::{bail, Result};
 use std::{net::SocketAddr, path::PathBuf};
 use tokio::time::Duration;
@@ -17,6 +18,7 @@ pub mod dag;
 pub mod enrichment;
 pub mod group;
 pub mod inference;
+pub mod pending;
 pub mod query;
 pub mod record;
 pub mod replay;
@@ -24,6 +26,7 @@ pub mod router;
 pub mod sinks;
 pub mod sources;
 pub mod state;
+pub mod stop;
 pub mod wasm;
 pub mod worker;
 
@@ -130,15 +133,15 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
 
     // Metrics are worth having, not worth dying for: a second tangent on the
     // box, or anything else on the port, must not keep this one from running.
-    let _exporter_guard = opts
-        .prometheus_bind
-        .and_then(|addr| match prometheus_exporter::start(addr) {
-            Ok(guard) => Some(guard),
-            Err(e) => {
-                tracing::warn!(%addr, "metrics exporter not started: {e}");
-                None
-            }
-        });
+    let _exporter_guard =
+        opts.prometheus_bind
+            .and_then(|addr| match prometheus_exporter::start(addr) {
+                Ok(guard) => Some(guard),
+                Err(e) => {
+                    tracing::warn!(%addr, "metrics exporter not started: {e}");
+                    None
+                }
+            });
 
     if cfg.sources.is_empty() {
         bail!("At least one source is required.");
@@ -156,7 +159,7 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
     tracing::info!(target = "startup", config = ?cfg);
 
     let ingest_shutdown = CancellationToken::new();
-    let stop_models = CancellationToken::new();
+    let stop = Stop::default();
 
     info!(
         "Batch size: {} KiB, max age: {:?}",
@@ -164,29 +167,26 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
         cfg.batch_age_ms()
     );
 
-    let dag_runtime = DagRuntime::build(
-        cfg,
-        &config_path,
-        ingest_shutdown.clone(),
-        stop_models.clone(),
-    )
-    .await?;
+    let dag_runtime =
+        DagRuntime::build(cfg, &config_path, ingest_shutdown.clone(), stop.clone()).await?;
 
     #[cfg(feature = "alloc-prof")]
     jemalloc_dump("warm");
 
     if opts.once {
         // Nothing here waits for a signal, so one ends the run's model
-        // calls, as it does a replay's, and the run stops with what it has.
-        let stop_models = stop_models.clone();
+        // calls, as it does a replay's; what waited on them is saved, as
+        // any run's is.
+        let stop = stop.clone();
         tokio::spawn(async move {
             if wait_for_shutdown_signal().await.is_ok() {
-                stopping(&stop_models);
+                stopping(&stop);
             }
         });
     } else {
         wait_for_shutdown_signal().await?;
-        stopping(&stop_models);
+        info!("stopping: nothing more is read, and no new request goes to a model. The requests already sent are waited for, and what was still waiting is saved for the next start. A second signal ends those requests");
+        finishing(&stop);
     }
 
     #[cfg(feature = "alloc-prof")]
@@ -202,14 +202,30 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
     Ok(())
 }
 
-/// What the first signal starts: the model calls end, and a second signal
-/// exits at once. One within a second of the first is the same stop.
-pub(crate) fn stopping(stop_models: &CancellationToken) {
-    stop_models.cancel();
+/// What the first signal of a run starts: no request is sent to a model from
+/// here on, and a second signal ends the ones under way ([`stopping`]). One
+/// within a second of the first is the same stop: a terminal's SIGINT, and
+/// the SIGTERM of whatever started tangent.
+fn finishing(stop: &Stop) {
+    stop.finish();
+    let stop = stop.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if wait_for_shutdown_signal().await.is_ok() {
+            tracing::warn!("second signal: the requests under way end, and their records are saved too. Another exits now");
+            stopping(&stop);
+        }
+    });
+}
+
+/// The model calls end, and a signal a second or more after exits at once:
+/// the second signal of a run, and the first of a replay.
+pub(crate) fn stopping(stop: &Stop) {
+    stop.end();
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_secs(1)).await;
         if wait_for_shutdown_signal().await.is_ok() {
-            tracing::warn!("second signal; exiting now");
+            tracing::warn!("another signal; exiting now");
             inference::serve::end_now();
             std::process::exit(130);
         }

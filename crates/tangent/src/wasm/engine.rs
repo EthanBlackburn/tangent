@@ -13,9 +13,9 @@ use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 use crate::enrichment::Tables;
 use crate::inference::Nodes;
 use crate::state::{StateStore, PLUGIN_NS};
+use crate::stop::Stop;
 use crate::wasm::host::tangent::logs::{config, enrichment, lake, log, model, remote, state};
 use crate::wasm::host::{HostEngine, Processor};
-use tokio_util::sync::CancellationToken;
 pub struct WasmEngine {
     engine: Engine,
     linker: Linker<HostEngine>,
@@ -35,8 +35,8 @@ pub struct WasmEngine {
     /// plugin's own of them (`plugins.<name>.inference`).
     models: Nodes,
     plugin_models: HashMap<Arc<str>, Nodes>,
-    /// Cancelled when the pipeline stops: it ends a model's turn under way.
-    stop: CancellationToken,
+    /// The run's stop, for a model's turn.
+    stop: Stop,
     /// The enrichment tables, loaded once for the process: every engine and
     /// every plugin instance holds the same ones.
     tables: Arc<Tables>,
@@ -52,7 +52,7 @@ impl WasmEngine {
         max_ttl_ms: u64,
         tables: Arc<Tables>,
         models: Nodes,
-        stop: CancellationToken,
+        stop: Stop,
         disable_remote_calls: bool,
     ) -> Result<Self> {
         let engine = tangent_shared::wasm_engine::build()?;

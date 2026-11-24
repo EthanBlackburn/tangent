@@ -16,10 +16,10 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use crate::enrichment::Tables;
 use crate::inference::Nodes;
 use crate::state::{StateStore, StateValue, Txn};
+use crate::stop::Stop;
 use crate::wasm::host::tangent::logs::log;
 use crate::wasm::host::tangent::logs::remote;
 use log::Scalar;
-use tokio_util::sync::CancellationToken;
 
 bindgen!({
     world: "processor",
@@ -65,8 +65,12 @@ pub struct HostEngine {
     /// The inference nodes this plugin may hold a conversation with
     /// (`plugins.<name>.inference`).
     models: Nodes,
-    /// Cancelled when the pipeline stops: it ends a model's turn under way.
-    stop: CancellationToken,
+    /// The run's stop: a turn is not sent once it is finishing, and one
+    /// under way ends when the requests are ended.
+    stop: Stop,
+    /// A turn of this call was not sent, or was ended, by the stop: what
+    /// the plugin made of its records is not what it would have.
+    cut: bool,
     /// If true, short-circuit remote calls with successful empty responses,
     /// and fail a model's turn rather than ask for it.
     pub disable_remote_calls: bool,
@@ -83,7 +87,7 @@ impl HostEngine {
         tables: Arc<Tables>,
         lake: Option<Arc<[String]>>,
         models: Nodes,
-        stop: CancellationToken,
+        stop: Stop,
         disable_remote_calls: bool,
     ) -> Self {
         Self {
@@ -99,6 +103,7 @@ impl HostEngine {
             lake,
             models,
             stop,
+            cut: false,
             disable_remote_calls,
         }
     }
@@ -108,6 +113,12 @@ impl HostEngine {
     /// then no other state call runs, so the worker ends every call.
     pub fn end_call(&mut self) -> bool {
         self.txn.take().is_some()
+    }
+
+    /// Whether the stop kept a turn of the call just ended from the model,
+    /// which it asks once per call.
+    pub fn take_cut(&mut self) -> bool {
+        std::mem::take(&mut self.cut)
     }
 
     /// A TTL the guest asked for, cut to `max_ttl_ms`. None (the default,
@@ -278,8 +289,9 @@ impl tangent::logs::enrichment::Host for HostEngine {
 }
 
 /// A turn of a conversation with one of the plugin's `inference`: the node's
-/// own request, under its concurrency, timeout and retries. A stop ends the
-/// turn, as it ends an inference node's calls.
+/// own request, under its concurrency, timeout and retries. A run that is
+/// stopping sends no turn, and one whose requests are ended ends the turn
+/// under way: either is the call's error, and marks the plugin's call cut.
 impl tangent::logs::model::Host for HostEngine {
     async fn chat(&mut self, node: String, request: String) -> Result<String, String> {
         if self.txn.is_some() {
@@ -293,9 +305,22 @@ impl tangent::logs::model::Host for HostEngine {
         if self.disable_remote_calls {
             return Err("the model was not asked: `runtime.disable_remote_calls` is set, as `tangent plugin test` sets it without --enable-http".into());
         }
-        match self.stop.run_until_cancelled(model.chat(&request)).await {
-            Some(reply) => reply.map_err(|e| format!("{e:#}")),
-            None => Err("stopped before the model answered".into()),
+        if self.stop.finishing() {
+            self.cut = true;
+            return Err("tangent is stopping: the turn was not sent".into());
+        }
+        match self.stop.unless_ended(model.chat(&request)).await {
+            Some(Ok(reply)) => Ok(reply),
+            // One that failed as the run began to stop was not sent, waiting
+            // for the model's place, or was not sent again.
+            Some(Err(e)) => {
+                self.cut = self.stop.finishing();
+                Err(format!("{e:#}"))
+            }
+            None => {
+                self.cut = true;
+                Err("stopped before the model answered".into())
+            }
         }
     }
 }
@@ -691,9 +716,13 @@ mod tests {
         let mut on = guest(&store);
         on.models = nodes;
         on.disable_remote_calls = false;
-        on.stop.cancel();
+        on.stop.end();
+        assert!(!on.take_cut());
         let e = on.chat("reviewer".into(), request.into()).await;
-        assert_eq!(e.unwrap_err(), "stopped before the model answered");
+        assert_eq!(e.unwrap_err(), "tangent is stopping: the turn was not sent");
+        assert!(on.take_cut(), "the call is marked cut, once");
+        assert!(!on.take_cut());
+        assert_eq!(taken.load(std::sync::atomic::Ordering::SeqCst), 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 

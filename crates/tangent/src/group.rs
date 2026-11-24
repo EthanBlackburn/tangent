@@ -25,6 +25,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::Value;
+use tangent_shared::dag::NodeRef;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -49,12 +50,18 @@ pub struct GroupConfig {
 
 /// A closed group on its way to the grouped plugin's workers.
 pub struct Group {
-    /// The grouped plugin, where the group's walk of the DAG starts.
-    pub node: Arc<str>,
+    /// Where the group's walk of the DAG starts: the grouped plugin, or for
+    /// records a stop saved ([`crate::pending`]) the node they were about
+    /// to enter.
+    pub node: NodeRef,
     /// The key's history first, marked `"_context": true`, then the group.
     pub records: Vec<JsonLogView>,
+    /// How many of `records`, from the first, are the key's history.
+    pub context: usize,
     /// Fires once the group is through the DAG.
     pub done: Arc<dyn Ack>,
+    /// Records a stop saved, read back: `done` forgets them.
+    pub saved: bool,
 }
 
 /// Where closed groups go: the grouped plugin's worker pool.
@@ -69,11 +76,15 @@ enum Msg {
     Close,
     /// Close every open group; answer once none is open, waiting or out.
     Flush(oneshot::Sender<()>),
+    /// Hand back the records of every group open or waiting, and hold none.
+    Take(oneshot::Sender<Vec<JsonLogView>>),
 }
 
 /// A grouped plugin's grouping task, as the workers hand it records.
 #[derive(Clone)]
 pub struct Grouper {
+    /// The grouped plugin.
+    pub node: Arc<str>,
     tx: mpsc::Sender<Msg>,
     held: Arc<AtomicUsize>,
 }
@@ -101,6 +112,18 @@ impl Grouper {
             .send(Msg::Records(records))
             .await
             .map_err(|_| anyhow!("the grouping task is gone"))
+    }
+
+    /// The records of every group not yet out, open or waiting behind its
+    /// key's group out, which are held no longer: a stop saves them for the
+    /// next start rather than hand the plugin groups cut short.
+    pub async fn take(&self) -> Result<Vec<JsonLogView>> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Msg::Take(tx))
+            .await
+            .map_err(|_| anyhow!("the grouping task is gone"))?;
+        rx.await.map_err(|_| anyhow!("the grouping task is gone"))
     }
 
     /// Closes every open group and waits until each, and any group waiting
@@ -136,7 +159,12 @@ pub fn spawn(
         done_tx,
         flushing: Vec::new(),
     };
-    (Grouper { tx, held }, tokio::spawn(task.run(rx, done_rx)))
+    let grouper = Grouper {
+        node: Arc::clone(&task.node),
+        tx,
+        held,
+    };
+    (grouper, tokio::spawn(task.run(rx, done_rx)))
 }
 
 /// A group still taking records.
@@ -191,6 +219,9 @@ impl Task {
                         }
                     }
                     Some(Msg::Close) => self.close_open().await,
+                    Some(Msg::Take(answer)) => {
+                        let _ = answer.send(self.take());
+                    }
                     Some(Msg::Flush(answer)) => {
                         self.close_open().await;
                         self.flushing.push(answer);
@@ -260,6 +291,23 @@ impl Task {
         }
     }
 
+    /// Every record held, in an open group or a waiting one, each key's in
+    /// the order they joined; none is held after.
+    fn take(&mut self) -> Vec<JsonLogView> {
+        let mut records = Vec::new();
+        for k in self.keys.values_mut() {
+            for group in k.waiting.drain(..) {
+                records.extend(group);
+            }
+            if let Some(open) = k.open.take() {
+                records.extend(open.records);
+            }
+        }
+        self.keys.retain(|_, k| k.out);
+        self.held.fetch_sub(records.len(), Ordering::Relaxed);
+        records
+    }
+
     async fn close_open(&mut self) {
         let open: Vec<Arc<str>> = self
             .keys
@@ -289,15 +337,20 @@ impl Task {
     async fn send(&mut self, key: Arc<str>, records: Vec<JsonLogView>) {
         self.held.fetch_sub(records.len(), Ordering::Relaxed);
         let mut all = self.history(&key).await;
+        let context = all.len();
         all.extend(records.iter().cloned());
         let done = Arc::new(Through {
             tx: self.done_tx.clone(),
             group: Mutex::new(Some((Arc::clone(&key), records))),
         });
         let group = Group {
-            node: Arc::clone(&self.node),
+            node: NodeRef::Plugin {
+                name: Arc::clone(&self.node),
+            },
             records: all,
+            context,
             done,
+            saved: false,
         };
         // Out from here: the group's ack, fired or dropped, frees the key.
         if let Some(k) = self.keys.get_mut(&key) {
@@ -520,6 +573,46 @@ mod tests {
             .unwrap();
         settle().await;
         assert_eq!(out.ids(), [vec![1, 3]], "b's one record waits");
+    }
+
+    /// A stop takes what is held, open or waiting behind a group out, and
+    /// nothing of it goes to the plugin after.
+    #[tokio::test]
+    async fn a_stop_takes_the_groups_not_yet_out() {
+        let (g, out) = start(Some(2), 60_000, 0);
+        // a's first group goes out and its second waits behind it; b's is open
+        g.add(vec![
+            rec("a", 1),
+            rec("a", 2),
+            rec("a", 3),
+            rec("a", 4),
+            rec("b", 5),
+        ])
+        .await
+        .unwrap();
+        settle().await;
+        assert_eq!(out.ids(), [vec![1, 2]]);
+        assert_eq!(g.held(), 3);
+
+        let mut taken: Vec<i64> = g
+            .take()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                r.lookup("id")
+                    .and_then(JsonLogView::to_scalar)
+                    .map(record::scalar_text)
+            })
+            .map(|id| id.unwrap().parse().unwrap())
+            .collect();
+        taken.sort_unstable();
+        assert_eq!(taken, [3, 4, 5]);
+        assert_eq!(g.held(), 0);
+
+        out.ack(0).await;
+        settle().await;
+        assert_eq!(out.ids(), [vec![1, 2]], "nothing waited behind it any more");
     }
 
     /// A group closes once nothing has joined it for `expire_after_ms`.

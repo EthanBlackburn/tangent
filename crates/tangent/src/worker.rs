@@ -12,12 +12,13 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Instant as TokioInstant};
-use tokio_util::sync::CancellationToken;
 use wasmtime::component::{Component, Resource};
 
 use crate::group::{Dispatch, Group};
 use crate::inference::{lines, Nodes};
+use crate::pending::Pending;
 use crate::router::{RefCountAck, Router};
+use crate::stop::Stop;
 use crate::wasm::host::JsonLogView;
 use crate::wasm::{
     self,
@@ -129,8 +130,13 @@ pub struct Worker {
     router: Arc<Router>,
     /// Records anywhere between a source and a sink, shared with the router.
     in_flight: Arc<AtomicUsize>,
-    /// Cancelled by a signal: model calls end, and their groups go nowhere.
-    stop: CancellationToken,
+    /// The run's stop: no request to a model is sent once it is finishing,
+    /// and the ones under way end when it says so.
+    stop: Stop,
+    /// Where the records a stop keeps from a model wait for the next start.
+    /// None in a replay, and in a run that only reads its state: there they
+    /// go nowhere, and are not acked.
+    pending: Option<Arc<Pending>>,
 }
 
 /// The records in a node's output frames.
@@ -351,14 +357,30 @@ impl Worker {
                             }
                             Vec::new()
                         }
-                        None => self.run_plugin(name, &views, &mut taken).await?,
+                        None => {
+                            let ran = self.run_plugin(name, &views, &mut taken).await?;
+                            match ran.cut {
+                                // The stop kept a turn from the model: what
+                                // the plugin took waits for the next start.
+                                Some(cut) if self.pending.is_some() => {
+                                    if !save(&self.pending, to, &cut).await {
+                                        return Ok(());
+                                    }
+                                    Vec::new()
+                                }
+                                _ => ran.out,
+                            }
+                        }
                     },
                     NodeRef::Inference { name } => {
-                        match run_inference(&self.inference, name, &views, &self.stop).await? {
-                            Some(out) => out,
-                            // stopped: the group goes nowhere and is not acked
-                            None => return Ok(()),
+                        let (out, unsent) =
+                            run_inference(&self.inference, name, &views, &self.stop).await?;
+                        // Not sent, or ended: saved for the next start, or
+                        // with nowhere to save the walk ends here, unacked.
+                        if !unsent.is_empty() && !save(&self.pending, to, &unsent).await {
+                            return Ok(());
                         }
+                        out
                     }
                     _ => unreachable!("sinks and sources were filtered out"),
                 };
@@ -389,16 +411,40 @@ impl Worker {
         Ok(())
     }
 
-    /// A closed group through its plugin, on the plugin's own workers, and
-    /// on through the DAG from there.
+    /// A group through the node its walk starts at, and on through the DAG
+    /// from there: a closed group through its plugin, on the plugin's own
+    /// workers, or records a stop saved through the node they waited for.
     async fn walk_group(&mut self, g: Group, _done: Done) -> Result<()> {
-        let mut taken = vec![false; g.records.len()];
-        let out = self.run_plugin(&g.node, &g.records, &mut taken).await?;
-        let node = NodeRef::Plugin { name: g.node };
+        let out = match &g.node {
+            NodeRef::Plugin { name } => {
+                let mut taken = vec![false; g.records.len()];
+                let ran = self.run_plugin(name, &g.records, &mut taken).await?;
+                if ran.cut.is_some() && self.pending.is_some() {
+                    // The group waits for the next start without its
+                    // history, which it is given again then. Its ack is not
+                    // fired, so the key's history does not take it as seen;
+                    // saved records read back stay saved as they were.
+                    if !g.saved {
+                        save(&self.pending, &g.node, &g.records[g.context..]).await;
+                    }
+                    return Ok(());
+                }
+                ran.out
+            }
+            NodeRef::Inference { name } => {
+                let (out, unsent) =
+                    run_inference(&self.inference, name, &g.records, &self.stop).await?;
+                if !unsent.is_empty() && !save(&self.pending, &g.node, &unsent).await {
+                    return Ok(());
+                }
+                out
+            }
+            other => bail!("a walk starts at a plugin or an inference node, not {other:?}"),
+        };
         let queue = if out.is_empty() {
             VecDeque::new()
         } else {
-            VecDeque::from([(node, Hop::Frames(out))])
+            VecDeque::from([(g.node, Hop::Frames(out))])
         };
         self.walk(queue, vec![g.done]).await
     }
@@ -418,13 +464,13 @@ impl Worker {
 
     /// `views` through plugin `name`: one guest call with the records whose
     /// probe matched, each marked in `taken`. The plugin's output frame, if
-    /// it wrote one.
+    /// it wrote one, and the records it took if the stop cut the call.
     async fn run_plugin(
         &mut self,
         name: &Arc<str>,
         views: &Views,
         taken: &mut [bool],
-    ) -> Result<Frames> {
+    ) -> Result<Ran> {
         let Some(idx) = self
             .mappers
             .mappers
@@ -437,7 +483,7 @@ impl Worker {
         let (group, bytes) = by_probe(&self.mappers.mappers[idx].selectors, views, taken);
         if group.is_empty() {
             tracing::debug!(plugin = %name, "no record matched the probe");
-            return Ok(Vec::new());
+            return Ok(Ran::out(Vec::new()));
         }
 
         {
@@ -463,6 +509,12 @@ impl Worker {
                     "the call returned with a state transaction open; rolled back"
                 );
             }
+            // The stop kept a turn of this call from the model.
+            let cut = m.store.data_mut().take_cut();
+            let ran = |out: Frames| Ran {
+                out,
+                cut: cut.then(|| group.clone()),
+            };
 
             GUEST_LATENCY
                 .with_label_values(&[&self.id.to_string()])
@@ -505,23 +557,63 @@ impl Worker {
             };
             let Some(frame) = frame else {
                 // A failed call: its records are dropped, or go on unchanged.
-                return Ok(if drop_on_error {
+                return Ok(ran(if drop_on_error {
                     Vec::new()
                 } else {
                     vec![frame_of(&group)]
-                });
+                }));
             };
             if frame.is_empty() {
                 // A plugin that filters emits nothing for most batches.
                 tracing::debug!(plugin = %name, "mapper produced empty output");
-                return Ok(Vec::new());
+                return Ok(ran(Vec::new()));
             }
             // The guest's buffer becomes the frame without a copy.
             let frame = Bytes::from(frame)
                 .try_into_mut()
                 .unwrap_or_else(|b| BytesMut::from(&b[..]));
-            Ok(vec![frame])
+            Ok(ran(vec![frame]))
         }
+    }
+}
+
+/// Records kept from a model by the stop, saved for `node` until the next
+/// start. False when there is nowhere to save them, or the save failed: the
+/// walk that held them ends, and its source is not acked. A free function
+/// for the reason [`run_inference`] is one.
+async fn save(pending: &Option<Arc<Pending>>, node: &NodeRef, records: &[JsonLogView]) -> bool {
+    let Some(pending) = pending else {
+        return false;
+    };
+    match pending.save(node, records).await {
+        Ok(()) => {
+            tracing::info!(?node, records = records.len(), "saved for the next start");
+            true
+        }
+        Err(e) => {
+            tracing::error!(
+                ?node,
+                records = records.len(),
+                "could not be saved, and are left out: {e:#}"
+            );
+            false
+        }
+    }
+}
+
+/// What a plugin made of the records it took.
+struct Ran {
+    /// Its output frame, if it wrote one.
+    out: Frames,
+    /// The records it took, when the stop kept one of its model turns from
+    /// the model: `out` is then what it made of a conversation cut short,
+    /// which a run that can save the records leaves out.
+    cut: Option<Vec<JsonLogView>>,
+}
+
+impl Ran {
+    fn out(out: Frames) -> Self {
+        Self { out, cut: None }
     }
 }
 
@@ -545,17 +637,17 @@ fn by_probe(
     (group, bytes)
 }
 
-/// `views` through inference node `name`, `concurrency` at a time: every
-/// record comes back annotated, in the order given; none when `stop` ended
-/// the calls. A free function rather than a method: the worker's guest
-/// stores are not `Sync`, so a `&Worker` cannot be held across the model's
-/// await.
+/// `views` through inference node `name`, `concurrency` at a time: the
+/// records the model answered, annotated and in the order given, and the
+/// ones the stop kept from it, which is all of them once the requests are
+/// ended. A free function rather than a method: the worker's guest stores
+/// are not `Sync`, so a `&Worker` cannot be held across the model's await.
 async fn run_inference(
     nodes: &Nodes,
     name: &Arc<str>,
     views: &Views,
-    stop: &CancellationToken,
-) -> Result<Option<Frames>> {
+    stop: &Stop,
+) -> Result<(Frames, Views)> {
     let Some(node) = nodes.get(name) else {
         bail!("unknown inference node {name}");
     };
@@ -563,16 +655,32 @@ async fn run_inference(
         .iter()
         .map(|lv| serde_json::from_str(&lv.to_json()).unwrap_or(serde_json::Value::Null))
         .collect();
-    let Some(annotated) = stop.run_until_cancelled(node.annotate_all(records)).await else {
+    let Some(annotated) = stop.unless_ended(node.annotate_unsent(records)).await else {
         tracing::info!(node = %name, records = views.len(), "stopped before the model answered");
-        return Ok(None);
+        return Ok((Vec::new(), views.clone()));
     };
     let mut frame = BytesMut::new();
-    for v in annotated {
-        frame.extend_from_slice(&serde_json::to_vec(&v)?);
-        frame.extend_from_slice(b"\n");
+    let mut unsent = Views::new();
+    for (answer, view) in annotated.into_iter().zip(views) {
+        match answer {
+            Some(v) => {
+                frame.extend_from_slice(&serde_json::to_vec(&v)?);
+                frame.extend_from_slice(b"\n");
+            }
+            None => unsent.push(view.clone()),
+        }
     }
-    Ok(Some(vec![frame]))
+    if !unsent.is_empty() {
+        tracing::info!(node = %name, records = unsent.len(), "not sent to the model: the run is stopping");
+    }
+    Ok((
+        if frame.is_empty() {
+            Vec::new()
+        } else {
+            vec![frame]
+        },
+        unsent,
+    ))
 }
 
 pub struct WorkerPool {
@@ -594,7 +702,8 @@ impl WorkerPool {
         batch_max_size: usize,
         batch_max_age: Duration,
         router: Arc<Router>,
-        stop: CancellationToken,
+        stop: Stop,
+        pending: Option<Arc<Pending>>,
     ) -> anyhow::Result<Self> {
         let mut senders = Vec::with_capacity(size);
         let mut group_senders = Vec::with_capacity(size);
@@ -644,6 +753,7 @@ impl WorkerPool {
                 router: Arc::clone(&router),
                 in_flight: Arc::clone(&in_flight),
                 stop: stop.clone(),
+                pending: pending.clone(),
             };
             let h = tokio::spawn(async move {
                 if let Err(e) = worker.run().await {
@@ -755,6 +865,7 @@ impl WorkerPool {
 mod tests {
     use super::*;
     use crate::inference::stub;
+    use crate::pending::{Forget, Saved};
     use crate::sinks::manager::{Sink, SinkManager, SinkWrite};
     use crate::state::StateStore;
     use crate::wasm::engine::WasmEngine;
@@ -887,7 +998,8 @@ mod tests {
             batch_max_age: Duration::from_millis(20),
             router: Arc::clone(&router),
             in_flight: Arc::clone(&in_flight),
-            stop: CancellationToken::new(),
+            stop: Stop::default(),
+            pending: None,
         };
         let handle = tokio::spawn(worker.run());
 
@@ -962,14 +1074,14 @@ mod tests {
         cfg.model.timeout_ms = 600_000;
         let nodes = cfg.nodes("judge", &dir).unwrap();
         let views: Views = vec![JsonLogView::from_bytes(BytesMut::from("{\"id\":1}")).unwrap()];
-        let stop = CancellationToken::new();
+        let stop = Stop::default();
         tokio::spawn({
             let (stop, taken) = (stop.clone(), Arc::clone(&taken));
             async move {
                 while taken.load(Ordering::SeqCst) == 0 {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                stop.cancel();
+                stop.end();
             }
         });
         let out = tokio::time::timeout(
@@ -978,9 +1090,12 @@ mod tests {
         )
         .await
         .expect("the stop ends the call");
-        assert!(out.unwrap().is_none());
-        let again = run_inference(&nodes, &judge, &views, &stop).await;
-        assert!(again.unwrap().is_none());
+        let (answered, unsent) = out.unwrap();
+        assert!(answered.is_empty());
+        assert_eq!(unsent.len(), 1, "the record is handed back");
+        let (answered, unsent) = run_inference(&nodes, &judge, &views, &stop).await.unwrap();
+        assert!(answered.is_empty());
+        assert_eq!(unsent.len(), 1);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
             taken.load(Ordering::SeqCst),
@@ -1036,7 +1151,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let store: Arc<dyn StateStore> =
             Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
-        let stop = CancellationToken::new();
+        let stop = Stop::default();
         let worker = Worker {
             id: 0,
             rx,
@@ -1060,6 +1175,7 @@ mod tests {
             router: Arc::clone(&router),
             in_flight: Arc::clone(&in_flight),
             stop: stop.clone(),
+            pending: None,
         };
         let handle = tokio::spawn(worker.run());
 
@@ -1083,7 +1199,7 @@ mod tests {
         })
         .await
         .expect("the model is asked");
-        stop.cancel();
+        stop.end();
         send(2, &judged, &judged_ack).await.unwrap();
         send(11, &ingest, &ingest_ack).await.unwrap();
         drop(tx);
@@ -1117,6 +1233,165 @@ mod tests {
         assert_eq!(ingest_ack.0.load(Ordering::SeqCst), 2);
         assert_eq!(judged_ack.0.load(Ordering::SeqCst), 0);
         assert_eq!(taken.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A worker of no plugins over `router`, as a run builds one.
+    fn worker(
+        router: &Arc<Router>,
+        inference: Nodes,
+        stop: &Stop,
+        pending: &Arc<Pending>,
+        rx: mpsc::Receiver<Record>,
+        groups: mpsc::Receiver<(Group, Done)>,
+    ) -> Worker {
+        let store: Arc<dyn StateStore> =
+            Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
+        Worker {
+            id: 0,
+            rx,
+            groups,
+            mappers: Mappers {
+                mappers: Vec::new(),
+            },
+            engine: WasmEngine::new(
+                store,
+                0,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                true,
+            )
+            .unwrap(),
+            components: Vec::new(),
+            inference,
+            batch_max_size: 1 << 20,
+            batch_max_age: Duration::from_millis(50),
+            router: Arc::clone(router),
+            in_flight: router.in_flight_counter(),
+            stop: stop.clone(),
+            pending: Some(Arc::clone(pending)),
+        }
+    }
+
+    /// A run that is stopping sends the model nothing: the record that was
+    /// about to be asked about is saved for the judge and its source acked,
+    /// and what the walk had for a sink is delivered. Handed back at the
+    /// next start, the record is judged, reaches the sink and is forgotten.
+    #[tokio::test]
+    async fn a_stop_saves_what_waits_for_a_model_and_the_next_start_hands_it_back() {
+        let dir = stub::dir("stop-save");
+        let source = NodeRef::Source {
+            name: Arc::from("actors"),
+        };
+        let judge = NodeRef::Inference {
+            name: Arc::from("judge"),
+        };
+        let sink_name: Arc<str> = Arc::from("out");
+        let to_sink = NodeRef::Sink {
+            name: sink_name.clone(),
+        };
+        let sink = Arc::new(RecordingSink::default());
+        let sink_manager = Arc::new(SinkManager::for_test(
+            vec![(sink_name.clone(), sink.clone() as Arc<dyn Sink>)],
+            1,
+        ));
+        let mut outs: HashMap<NodeRef, Vec<NodeRef>> = HashMap::default();
+        outs.insert(source.clone(), vec![to_sink.clone(), judge.clone()]);
+        outs.insert(judge.clone(), vec![to_sink]);
+        let router = Arc::new(Router::new(outs, Arc::clone(&sink_manager)));
+        let kept: Arc<dyn StateStore> =
+            Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
+        let pending = Pending::new(kept);
+
+        // The run that is stopped: its model would never answer.
+        let (silent, taken) = stub::silent().await;
+        let stop = Stop::default();
+        let nodes = stub::config(&silent)
+            .nodes_until("judge", &dir, &stop)
+            .unwrap();
+        let (tx, rx) = mpsc::channel(16);
+        let stopped =
+            tokio::spawn(worker(&router, nodes, &stop, &pending, rx, mpsc::channel(1).1).run());
+        stop.finish();
+        let ack = Arc::new(CountingAck::default());
+        router.in_flight_counter().fetch_add(1, Ordering::AcqRel);
+        tx.send(Record {
+            payload: BytesMut::from("{\"id\":1}\n"),
+            ack: Some(ack.clone() as Arc<dyn Ack>),
+            from: source.clone(),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(5), stopped)
+            .await
+            .expect("the worker does not wait on the model")
+            .unwrap()
+            .unwrap();
+        assert_eq!(taken.load(Ordering::SeqCst), 0, "nothing is sent");
+        let saved = pending.saved().await.unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].node, judge);
+        assert_eq!(saved[0].records.len(), 1);
+
+        // The next start: a model that answers, and the saved record handed
+        // back to the judge.
+        let (answers, _) = stub::model().await;
+        let stop = Stop::default();
+        let nodes = stub::config(&answers)
+            .nodes_until("judge", &dir, &stop)
+            .unwrap();
+        let (groups_tx, groups) = mpsc::channel(1);
+        let (tx, rx) = mpsc::channel(1);
+        let next = tokio::spawn(worker(&router, nodes, &stop, &pending, rx, groups).run());
+        for Saved { key, node, records } in saved {
+            let done = Done(router.in_flight_counter(), records.len());
+            router
+                .in_flight_counter()
+                .fetch_add(records.len(), Ordering::AcqRel);
+            let group = Group {
+                node,
+                records,
+                context: 0,
+                done: Arc::new(Forget {
+                    pending: Arc::clone(&pending),
+                    key,
+                }),
+                saved: true,
+            };
+            groups_tx.send((group, done)).await.ok().unwrap();
+        }
+        // The worker is done with it before its queues close: one that
+        // finds them closed ends, whatever is still queued.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while router.in_flight() > 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the judge answers");
+        drop((tx, groups_tx));
+        next.await.unwrap().unwrap();
+        drop(router);
+        Arc::try_unwrap(sink_manager)
+            .ok()
+            .expect("sink manager refs")
+            .join()
+            .await
+            .unwrap();
+
+        let writes = sink.writes.lock().await;
+        let lines: Vec<Value> = writes
+            .iter()
+            .flat_map(|w| w.lines())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].get("judge").is_none(), "the source's own line");
+        assert!(lines[1].get("judge").is_some(), "the judged one: {lines:?}");
+        assert_eq!(ack.0.load(Ordering::SeqCst), 1, "saved is delivered");
+        assert!(pending.saved().await.unwrap().is_empty(), "and forgotten");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1249,7 +1524,8 @@ mod tests {
             batch_max_age: Duration::from_millis(20),
             router: Arc::clone(&router),
             in_flight: Arc::clone(&in_flight),
-            stop: CancellationToken::new(),
+            stop: Stop::default(),
+            pending: None,
         };
         let handle = tokio::spawn(worker.run());
 
