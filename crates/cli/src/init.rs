@@ -3,6 +3,9 @@
 //! Nothing is left in a file tangent keeps: every node, its settings and its
 //! `inputs` are in the file written, to read and to edit.
 //!
+//! This is `tangent init cloud`; `tangent init mac`, the Mac it runs on, is
+//! [`crate::mac`], and shares what is not a cloud's.
+//!
 //! It asks nothing. What is watched is its subcommand: `cloud` is your
 //! cloud and SaaS audit logs, which `--sources` names, and without it the
 //! pipeline is written with no source yet. The models are hosted unless
@@ -32,7 +35,7 @@ const CONFIG: &str = include_str!("init.yaml");
 
 /// Where a pack's compiled plugin comes from: this repository's release, as
 /// built by the workflow that attests it.
-const PREBUILT: &str =
+pub const PREBUILT: &str =
     "{ repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }";
 
 /// The command that reads a source's past, and the one that reads sources
@@ -295,6 +298,29 @@ const REVIEWER_LIMITS: &str =
     concurrency: 1
 ";
 
+/// Inkling 2 Mini's entry under `models`, whole: where MTPLX serves it, how
+/// hard it may be asked, and how tangent starts it. One model on one
+/// server, which answers a request at a time: the settings are the ones
+/// measured with MTPLX 2.13 on an M4 Max with 36 GB, where the model leaves
+/// about 3.5 GB spare.
+pub const INKLING: &str = r#"    type: openai                 # MTPLX serves the OpenAI API
+    url: http://127.0.0.1:8000/v1
+    model: mtplx                 # it answers with the model it loaded
+    timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
+    retries: 2
+    concurrency: 1               # one request at a time, the judge's and the reviewer's together
+    # `tangent run` starts this server, waits until it answers and stops it
+    # after; one already answering at `url` is used and left running.
+    serve:
+      # MTPLX and the model, where `tangent model fetch` keeps them
+      command: ["{{mtplx}}", serve, --model, "{{inkling}}", --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
+      env:
+        HF_HUB_OFFLINE: "1"                        # the model is read from this Mac, and never fetched here
+        MTPLX_SESSION_BANK_MAX_BYTES: 3G           # what it keeps of prompts it has read, so the judge's brief is read once
+        MTPLX_SYSTEM_MEMORY_SHED_FLOOR_BYTES: 2G   # it drops that only below 2 GB of free memory
+        MTPLX_GDN_BOUNDARY_TAIL_BACKOFF: "768"     # a restore point inside the brief, for the next record
+"#;
+
 /// The judge's `batch_bytes` where a request may be large.
 const BATCH: &str = "96000           # a request past this is split; an actor's forty records fit";
 
@@ -419,30 +445,11 @@ impl Server {
                 batch: BATCH,
                 needs: &[],
             },
-            // One model on one server, which answers a request at a time:
-            // the settings are the ones measured with MTPLX 2.13 on an M4
-            // Max with 36 GB, where the model leaves about 3.5 GB spare.
             Server::Mtplx => Pair {
                 label: "Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (MTPLX)",
                 host: "this Mac",
                 entry: Some("inkling"),
-                judge_model: r#"    type: openai                 # MTPLX serves the OpenAI API
-    url: http://127.0.0.1:8000/v1
-    model: mtplx                 # it answers with the model it loaded
-    timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
-    retries: 2
-    concurrency: 1               # one request at a time, the judge's and the reviewer's together
-    # `tangent run` starts this server, waits until it answers and stops it
-    # after; one already answering at `url` is used and left running.
-    serve:
-      # MTPLX and the model, where `tangent model fetch` keeps them
-      command: ["{{mtplx}}", serve, --model, "{{inkling}}", --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
-      env:
-        HF_HUB_OFFLINE: "1"                        # the model is read from this Mac, and never fetched here
-        MTPLX_SESSION_BANK_MAX_BYTES: 3G           # what it keeps of prompts it has read, so the judge's brief is read once
-        MTPLX_SYSTEM_MEMORY_SHED_FLOOR_BYTES: 2G   # it drops that only below 2 GB of free memory
-        MTPLX_GDN_BOUNDARY_TAIL_BACKOFF: "768"     # a restore point inside the brief, for the next record
-"#,
+                judge_model: INKLING,
                 judge: r#"    max_tokens: 500              # per record
     temperature: 0.7
     extra:
@@ -520,10 +527,6 @@ impl Choices {
 
     pub fn watch(&self) -> &[Source] {
         &self.watch
-    }
-
-    pub fn server(&self) -> Server {
-        self.server
     }
 
     /// Who judges, who reviews, and who serves them, as the file says it.
@@ -726,7 +729,7 @@ impl Choices {
 
     /// Every file init writes, by name, with its text: tangent.yaml, and
     /// what the two models are told.
-    fn files(&self) -> Vec<(&'static str, String)> {
+    pub fn files(&self) -> Vec<(&'static str, String)> {
         let mut files = vec![("tangent.yaml", self.config())];
         for (name, pack_file) in BRIEFS {
             let (_, text) = packs::FILES
@@ -743,47 +746,54 @@ impl Choices {
     /// over, and a write that fails removes what this call wrote, which is
     /// its alone. The paths written.
     pub fn write(&self, dir: &Path) -> Result<Vec<PathBuf>> {
-        let files = self.files();
-        if let Some((name, _)) = files.iter().find(|(name, _)| dir.join(name).exists()) {
-            bail!(
-                "{name} is already here; init leaves it as it is, and writes nothing (run tangent init in another directory)"
-            );
-        }
-        let mut written = Vec::new();
-        for (name, text) in &files {
-            let path = dir.join(name);
-            let created = OpenOptions::new().write(true).create_new(true).open(&path);
-            let result = match created {
-                Ok(mut file) => {
-                    written.push(path.clone());
-                    file.write_all(text.as_bytes())
-                        .with_context(|| format!("writing {}", path.display()))
-                }
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(anyhow::anyhow!(
-                    "{name} is already here; init leaves it as it is"
-                )),
-                Err(e) => Err(e).with_context(|| format!("creating {}", path.display())),
-            };
-            if let Err(e) = result {
-                remove(&written);
-                return Err(e);
-            }
-        }
-        Ok(written)
-    }
-
-    /// Writes the files to `dir`, over the ones there: for a directory that
-    /// is tangent's own, where each start writes what its flags say.
-    pub fn place(&self, dir: &Path) -> Result<()> {
-        for (name, text) in self.files() {
-            let path = dir.join(name);
-            std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
-        }
-        Ok(())
+        write(dir, &self.files())
     }
 }
 
-fn remove(paths: &[PathBuf]) {
+/// Writes `files` to `dir`, unless one of them is there: each is created
+/// only if missing, so a file already there is never written over, and a
+/// write that fails removes what this call wrote, which is its alone. The
+/// paths written.
+pub fn write(dir: &Path, files: &[(&'static str, String)]) -> Result<Vec<PathBuf>> {
+    if let Some((name, _)) = files.iter().find(|(name, _)| dir.join(name).exists()) {
+        bail!(
+            "{name} is already here; init leaves it as it is, and writes nothing (run tangent init in another directory)"
+        );
+    }
+    let mut written = Vec::new();
+    for (name, text) in files {
+        let path = dir.join(name);
+        let created = OpenOptions::new().write(true).create_new(true).open(&path);
+        let result = match created {
+            Ok(mut file) => {
+                written.push(path.clone());
+                file.write_all(text.as_bytes())
+                    .with_context(|| format!("writing {}", path.display()))
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(anyhow::anyhow!(
+                "{name} is already here; init leaves it as it is"
+            )),
+            Err(e) => Err(e).with_context(|| format!("creating {}", path.display())),
+        };
+        if let Err(e) = result {
+            remove(&written);
+            return Err(e);
+        }
+    }
+    Ok(written)
+}
+
+/// Writes `files` to `dir`, over the ones there: for a directory that is
+/// tangent's own, where each start writes what its flags say.
+pub fn place(dir: &Path, files: &[(&'static str, String)]) -> Result<()> {
+    for (name, text) in files {
+        let path = dir.join(name);
+        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn remove(paths: &[PathBuf]) {
     for path in paths {
         let _ = std::fs::remove_file(path);
     }
@@ -828,7 +838,7 @@ pub fn served(
 /// The cache directory as a config names it, so the file holds no one's
 /// home: `${XDG_CACHE_HOME}` where that is set to a path tangent would use,
 /// else `${HOME}/.cache`.
-fn cache() -> String {
+pub fn cache() -> String {
     let xdg = std::env::var_os("XDG_CACHE_HOME").is_some_and(|p| Path::new(&p).is_absolute());
     if xdg {
         "${XDG_CACHE_HOME}"
@@ -840,7 +850,7 @@ fn cache() -> String {
 
 /// `text` with MTPLX's program and the model's directory under `cache` in
 /// their places.
-fn placed(text: &str, cache: &str) -> String {
+pub fn placed(text: &str, cache: &str) -> String {
     let (mtplx, inkling) = local::paths(cache);
     text.replace("{{mtplx}}", &mtplx)
         .replace("{{inkling}}", &inkling)
@@ -882,7 +892,7 @@ fn memory_gib() -> Option<u64> {
 
 /// What a model on this machine needs that the file cannot hold, as lines
 /// to print after it is written.
-fn local_needs(server: Server) -> Vec<String> {
+pub fn local_needs(server: Server) -> Vec<String> {
     match server {
         Server::Yours => vec!["Start your model's server first.".to_string()],
         Server::Mtplx => {
@@ -990,7 +1000,7 @@ pub async fn run(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use clap::ValueEnum as _;
     use serde_yaml::Value;
@@ -1066,7 +1076,7 @@ mod tests {
 
     /// A config as it loads, as YAML to compare: without the paths that say
     /// where a file is rather than what it holds.
-    fn shape(cfg: &Config) -> Value {
+    pub(crate) fn shape(cfg: &Config) -> Value {
         let mut value = serde_yaml::to_value(cfg).unwrap();
         for node in value["inference"].as_mapping_mut().unwrap().values_mut() {
             let node = node.as_mapping_mut().unwrap();
@@ -1079,7 +1089,7 @@ mod tests {
     /// Every setting in `value`, as `a.b.c = value` lines, sorted: two
     /// configs compare whatever order their maps are in, and a difference
     /// is the lines that differ.
-    fn settings(value: &Value, at: &str, out: &mut Vec<String>) {
+    pub(crate) fn settings(value: &Value, at: &str, out: &mut Vec<String>) {
         match value {
             Value::Mapping(map) => {
                 for (key, value) in map {
@@ -1575,7 +1585,7 @@ mod tests {
         for server in &Server::ALL {
             let kept = Choices::new(vec![Source::Okta], *server, None);
             let watched = kept.clone().watched();
-            watched.place(dir.path()).unwrap();
+            place(dir.path(), &watched.files()).unwrap();
             let text = std::fs::read_to_string(&path).unwrap();
             assert!(
                 text.contains("written by `tangent watch cloud`"),

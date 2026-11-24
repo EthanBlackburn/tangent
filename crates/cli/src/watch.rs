@@ -23,6 +23,7 @@ use tangent_runtime::RuntimeOptions;
 
 use crate::follow::Follow;
 use crate::init::{self, Choices, Server, Source};
+use crate::mac::{self, Mac};
 use crate::{fetch, local};
 
 /// The queue a CloudTrail source reads its trail from as it is written.
@@ -34,6 +35,10 @@ const OPTIONAL: &[(&str, &str)] = &[
     ("profile.yaml", "your company's profile (profile.yaml)"),
     ("data/networks.csv", "the address tables (data/)"),
 ];
+
+/// Where the address tables alone are described.
+const ADDRESSES: &str =
+    "https://github.com/EthanBlackburn/tangent/blob/main/examples/enrich/README.md#data";
 
 /// Where the profile and the address tables are described.
 const PROFILE: &str =
@@ -82,6 +87,42 @@ fn hold(dir: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
+/// Stops with the list when `config` reads a variable, of `needs`, that
+/// the environment lacks.
+fn needed(config: &str, needs: &[(&'static str, &'static str)]) -> Result<()> {
+    let missing = unset(config, needs, |name| std::env::var_os(name));
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let width = missing.iter().map(|(var, _)| var.len()).max().unwrap_or(0);
+    let lines: Vec<String> = missing
+        .iter()
+        .map(|(var, what)| format!("  {var:width$}  {what}"))
+        .collect();
+    bail!(
+        "it reads these from the environment, and they are not set:\n{}",
+        lines.join("\n")
+    );
+}
+
+/// A pipeline to watch: what `tangent init` writes for it, and what watch
+/// says of it before it starts.
+struct Pipeline {
+    /// Its directory's name under tangent's own: what is watched.
+    what: &'static str,
+    /// tangent.yaml and the files beside it.
+    files: Vec<(&'static str, String)>,
+    server: Server,
+    /// What is watched, who judges, and where the records go, as lines.
+    said: Vec<String>,
+    /// The files it reads when they are beside it, and where they are
+    /// described.
+    optional: &'static [(&'static str, &'static str)],
+    described: &'static str,
+    /// When an alert and a review come.
+    pace: &'static str,
+}
+
 /// `tangent watch cloud`: the pipeline `tangent init cloud` writes for
 /// these flags, kept in tangent's own directory, and run.
 pub async fn cloud(
@@ -97,22 +138,9 @@ pub async fn cloud(
     }
     init::runs_here(server)?;
     let choices = Choices::new(sources, server, models).watched();
-    let env = |name: &str| std::env::var_os(name);
-
-    let missing = unset(&choices.config(), &choices.needs(), env);
-    if !missing.is_empty() {
-        let width = missing.iter().map(|(var, _)| var.len()).max().unwrap_or(0);
-        let lines: Vec<String> = missing
-            .iter()
-            .map(|(var, what)| format!("  {var:width$}  {what}"))
-            .collect();
-        bail!(
-            "it reads these from the environment, and they are not set:\n{}",
-            lines.join("\n")
-        );
-    }
+    needed(&choices.config(), &choices.needs())?;
     // CloudTrail is read as it is written from a queue, and only from one.
-    let queued = env(QUEUE).is_some_and(|v| !v.to_string_lossy().trim().is_empty());
+    let queued = std::env::var_os(QUEUE).is_some_and(|v| !v.to_string_lossy().trim().is_empty());
     let trail = choices.watch().contains(&Source::Cloudtrail) && !queued;
     if trail && choices.watch().len() == 1 {
         bail!(
@@ -120,16 +148,68 @@ pub async fn cloud(
         );
     }
 
-    let dir = home("cloud", env)?;
+    let watched: Vec<String> = choices.watch().iter().map(Source::to_string).collect();
+    let mut said = vec![format!("Watching {}.", watched.join("; "))];
+    if trail {
+        said.push(format!(
+            "CloudTrail is left out: it is read from the queue {QUEUE} names, which is not set."
+        ));
+    }
+    said.push(format!("{}.", choices.models()));
+    said.push(format!("Your records {}.", choices.records()));
+    start(Pipeline {
+        what: "cloud",
+        files: choices.files(),
+        server,
+        said,
+        optional: OPTIONAL,
+        described: PROFILE,
+        pace: "an actor's\n\
+               records are judged together, thirty at a time or an hour after the first, and an alert\n\
+               is reviewed a little over an hour after it.",
+    })
+    .await
+}
+
+/// `tangent watch mac`: the pipeline `tangent init mac` writes, kept in
+/// tangent's own directory, and run.
+pub async fn mac(hosted: bool) -> Result<()> {
+    let mac = Mac::new(hosted).watched();
+    mac::runs_here(&mac)?;
+    needed(&mac.config(), &mac.needs())?;
+    start(Pipeline {
+        what: "mac",
+        files: mac.files(),
+        server: mac.server(),
+        said: vec![
+            "Watching this Mac: what each program runs, opens and connects to, and what you ask Claude Code."
+                .to_string(),
+            format!("{}.", mac.models()),
+            format!("Your records {}.", mac.records()),
+            mac::BY_HAND.to_string(),
+        ],
+        optional: &OPTIONAL[1..],
+        described: ADDRESSES,
+        pace: "a session\n\
+               is judged five minutes at a time, or an agent's turn at its end, and an alert is\n\
+               reviewed about seven minutes after it.",
+    })
+    .await
+}
+
+/// Writes the pipeline to its directory, fetches what it needs, says what
+/// it is, and runs it there until a signal, saying what it finds.
+async fn start(pipeline: Pipeline) -> Result<()> {
+    let dir = home(pipeline.what, |name| std::env::var_os(name))?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let _held = hold(&dir)?;
-    choices.place(&dir)?;
+    init::place(&dir, &pipeline.files)?;
     // A sink's path is read against the directory tangent runs in, and the
     // file's are its own: the lake, the alerts and their reviews.
     std::env::set_current_dir(&dir).with_context(|| format!("entering {}", dir.display()))?;
     let config = dir.join("tangent.yaml");
     fetch::missing(&config).await?;
-    if choices.server() == Server::Mtplx {
+    if pipeline.server == Server::Mtplx {
         let root = local::root()?;
         let missing = local::missing(&root);
         if !missing.nothing() {
@@ -140,30 +220,28 @@ pub async fn cloud(
         }
     }
 
-    let watched: Vec<String> = choices.watch().iter().map(Source::to_string).collect();
-    println!("\nWatching {}.", watched.join("; "));
-    if trail {
-        println!(
-            "CloudTrail is left out: it is read from the queue {QUEUE} names, which is not set."
-        );
-    }
-    println!("{}.", choices.models());
-    println!("Your records {}.", choices.records());
-    let absent: Vec<&str> = OPTIONAL
+    println!("\n{}", pipeline.said.join("\n"));
+    let absent: Vec<&str> = pipeline
+        .optional
         .iter()
         .filter(|(file, _)| !dir.join(file).exists())
         .map(|(_, what)| *what)
         .collect();
     if !absent.is_empty() {
         println!(
-            "It judges without {}: {PROFILE} says what each adds, and they go in the directory below.",
-            absent.join(" and ")
+            "It judges without {}: {} says what {} and they go in the directory below.",
+            absent.join(" and "),
+            pipeline.described,
+            if absent.len() == 1 {
+                "they add,"
+            } else {
+                "each adds,"
+            }
         );
     }
     println!(
-        "\nEach alert is said here as the judge flags it, and each review as it is written: an actor's\n\
-         records are judged together, thirty at a time or an hour after the first, and an alert\n\
-         is reviewed a little over an hour after it."
+        "\nEach alert is said here as the judge marks it, and each review as it is written: {}",
+        pipeline.pace
     );
     println!(
         "They are kept, with the pipeline and its lake, in {}",
