@@ -37,29 +37,30 @@ struct Cli {
 enum Watch {
     /// Your cloud and SaaS audit logs (CloudTrail, GitHub, Okta, ...)
     ///
-    /// The models that judge them are served for you unless --local:
-    /// Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through
-    /// Anthropic's API, so every record is sent there. --provider and
-    /// --model name other hosted models, and --local keeps the records on
-    /// this machine.
+    /// You say who judges them: --provider names who serves a hosted
+    /// pair, and is sent every record, and --local keeps the records on
+    /// this machine. With neither, it lists each and says which has its
+    /// key in the environment already.
     Cloud {
         /// What to watch, one or more: --sources cloudtrail,github. Without
         /// it init writes the pipeline with no source yet
         #[arg(long, value_enum, value_delimiter = ',')]
         sources: Vec<init::Source>,
-        /// A model on this machine in place of a hosted one, so no record
-        /// leaves it: Inkling 2 Mini judges and reviews, on a server
+        /// A model on this machine, so no record leaves it: Inkling 2 Mini
+        /// judges and reviews, on a server
         /// tangent starts with the pipeline (Apple Silicon, 32 GB of
         /// memory or more). With --model, a model server of your own at
         /// http://localhost:8080/v1 instead, which tangent does not start
         #[arg(long)]
         local: bool,
-        /// Who serves the models, with --model
-        #[arg(long, value_enum, requires = "model", conflicts_with = "local")]
+        /// Who serves the models: the pair measured with that provider,
+        /// a model that judges and one that reviews
+        #[arg(long, value_enum, conflicts_with = "local")]
         provider: Option<init::Provider>,
-        /// The model, by the exact name its provider or your server takes:
-        /// one judges and reviews, and two with a comma are the judge's,
-        /// then the reviewer's (--model gpt-6-luna,gpt-6.1-terra)
+        /// Other models than the provider's pair, or with --local your
+        /// server's, by the exact name each takes: one judges and reviews,
+        /// and two with a comma are the judge's, then the reviewer's
+        /// (--model gpt-6-luna,gpt-6.1-terra)
         #[arg(long)]
         model: Option<String>,
     },
@@ -68,15 +69,17 @@ enum Watch {
     ///
     /// A model on this Mac judges it, so nothing the sensor reads leaves
     /// the machine: Inkling 2 Mini, on a server tangent starts with the
-    /// pipeline (Apple Silicon, 32 GB of memory or more). --hosted has
-    /// Claude judge it through Anthropic's API instead.
+    /// pipeline (Apple Silicon, 32 GB of memory or more). --provider has
+    /// a hosted pair judge it instead.
     Mac {
-        /// Models served for you in place of one on this Mac: Claude Haiku
-        /// 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's
-        /// API, with ANTHROPIC_API_KEY. Each session's summary is sent
-        /// there, with its command lines, its paths and your prompts
-        #[arg(long)]
-        hosted: bool,
+        /// Who serves the models, in place of one on this Mac: that
+        /// provider's pair, a model that judges and one that reviews.
+        /// Each session's summary is sent there, with its command lines,
+        /// its paths and your prompts. Claude Haiku 5.5 and Sonnet 5.5
+        /// (anthropic, bedrock) are the pair measured on the recorded Mac
+        /// attacks
+        #[arg(long, value_enum)]
+        provider: Option<init::Provider>,
     },
 }
 
@@ -367,12 +370,13 @@ async fn main() -> Result<()> {
                     model,
                 },
         } => {
-            let (server, models) = init::served(local, provider, model.as_deref())?;
+            let command = init::command("init", &sources);
+            let (server, models) = init::served(&command, local, provider, model.as_deref())?;
             init::run(Path::new("."), sources, server, models).await?
         }
         Commands::Init {
-            watch: Watch::Mac { hosted },
-        } => mac::run(Path::new("."), hosted).await?,
+            watch: Watch::Mac { provider },
+        } => mac::run(Path::new("."), provider).await?,
 
         Commands::Watch {
             watch:
@@ -385,14 +389,16 @@ async fn main() -> Result<()> {
             no_notify,
             ..
         } => {
-            let (server, models) = init::served(local, provider, model.as_deref())?;
+            watch::sourced(&sources)?;
+            let command = init::command("watch", &sources);
+            let (server, models) = init::served(&command, local, provider, model.as_deref())?;
             watch::cloud(sources, server, models, no_notify).await?
         }
         Commands::Watch {
-            watch: Some(Watch::Mac { hosted }),
+            watch: Some(Watch::Mac { provider }),
             no_notify,
             ..
-        } => watch::mac(hosted, no_notify).await?,
+        } => watch::mac(provider, no_notify).await?,
         Commands::Watch {
             watch: None,
             config,
@@ -573,8 +579,9 @@ mod tests {
     use super::*;
 
     /// Init's command line, and watch's, which is the same: what to watch
-    /// is its subcommand, a provider goes with its model, and a model on
-    /// this machine is --local, not a provider.
+    /// is its subcommand, a provider is named alone or with other models
+    /// than its pair, and a model on this machine is --local, not a
+    /// provider.
     #[test]
     fn init_and_watch_take_what_to_watch_and_who_judges_it() {
         for command in ["init", "watch"] {
@@ -592,7 +599,7 @@ mod tests {
                 "--model",
                 "gpt-6-luna"
             ]));
-            assert!(!parses(&["cloud", "--provider", "openai"]));
+            assert!(parses(&["cloud", "--provider", "openai"]));
             assert!(!parses(&[
                 "cloud",
                 "--local",
@@ -610,14 +617,19 @@ mod tests {
             ]));
             assert!(!parses(&["--sources", "okta"]), "the sources are cloud's");
             assert!(parses(&["mac"]));
-            assert!(parses(&["mac", "--hosted"]));
+            assert!(parses(&["mac", "--provider", "bedrock"]));
+            assert!(!parses(&["mac", "--hosted"]), "a provider is named");
+            assert!(
+                !parses(&["mac", "--provider", "openai", "--model", "gpt-6-luna"]),
+                "a Mac's models are its provider's pair"
+            );
             assert!(
                 !parses(&["mac", "--sources", "okta"]),
                 "a Mac is watched whole"
             );
             assert!(
                 !parses(&["mac", "--local"]),
-                "a Mac is judged here unless --hosted"
+                "a Mac is judged here unless --provider"
             );
         }
     }

@@ -8,13 +8,14 @@
 //!
 //! It asks nothing. What is watched is its subcommand: `cloud` is your
 //! cloud and SaaS audit logs, which `--sources` names, and without it the
-//! pipeline is written with no source yet. The models are hosted unless
-//! `--local`: the two measured on Anthropic's API or, with `--provider` and
-//! `--model`, the provider's by name (one name judges and reviews, and two,
-//! with a comma, are the judge's and then the reviewer's). `--local` is a
-//! model on this machine, Inkling 2 Mini on a server tangent starts or, with
-//! `--model`, a server of your own. Hosted, every record is sent to the
-//! provider, so the file and init's last lines say where the records go.
+//! pipeline is written with no source yet. Who judges is said too, and
+//! nothing is picked for whoever does not say. `--provider` is the pair
+//! measured with that provider or, with `--model`, its models by name (one
+//! name judges and reviews, and two, with a comma, are the judge's and then
+//! the reviewer's). `--local` is a model on this machine, Inkling 2 Mini on
+//! a server tangent starts or, with `--model`, a server of your own. Hosted,
+//! every record is sent to the provider, so the file and init's last lines
+//! say where the records go.
 //! docs/config.md says how to change either in the file by hand. The plugins
 //! the config names are fetched, and the attestation of each build checked,
 //! before a file is written: init leaves a pipeline that loads, or nothing.
@@ -264,27 +265,27 @@ impl Server {
 }
 
 /// What a pair brings to the config.
-struct Pair {
+pub(crate) struct Pair {
     /// Who judges, who reviews, and who serves them, as the file says it.
-    label: &'static str,
+    pub(crate) label: &'static str,
     /// Who serves them, as the file says it of a model named with `--model`.
-    host: &'static str,
+    pub(crate) host: &'static str,
     /// The one entry under `models` that both nodes name, when the pair is
     /// one model on one server; none when the judge and the reviewer have an
     /// entry each, `judge` and `reviewer`.
     entry: Option<&'static str>,
     /// The judge's model, under `models.judge`: where it is served. With
     /// `entry`, the whole of that entry: its limits and its server too.
-    judge_model: &'static str,
+    pub(crate) judge_model: &'static str,
     /// What the judge is asked with, under `inference.judge`.
     judge: &'static str,
     /// The reviewer's model, under `models.reviewer`.
-    reviewer_model: &'static str,
+    pub(crate) reviewer_model: &'static str,
     /// What the reviewer is asked with, under `inference.reviewer`.
     reviewer: &'static str,
     /// The judge's `batch_bytes`, and what the file says of it.
     batch: &'static str,
-    needs: Needs,
+    pub(crate) needs: Needs,
 }
 
 /// What the judge's and the reviewer's own entries hold after where each is
@@ -325,7 +326,7 @@ pub const INKLING: &str = r#"    type: openai                 # Ollama serves th
 const BATCH: &str = "96000           # a request past this is split; an actor's forty records fit";
 
 impl Server {
-    fn pair(self) -> Pair {
+    pub(crate) fn pair(self) -> Pair {
         match self {
             Server::Hosted(Provider::Anthropic) => Pair {
                 label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Anthropic's API)",
@@ -816,10 +817,13 @@ pub fn names<T: clap::ValueEnum>(sep: &str) -> String {
 const INKLING_MEMORY: u64 = 32;
 
 /// The pair `tangent init cloud`'s flags name, and the models named with
-/// it: hosted unless `--local`. Hosted is Anthropic's pair, or `--provider`
-/// with `--model`; `--local` is Inkling on a server tangent starts, or with
-/// `--model` a server of your own.
+/// it. `--provider` is that provider's pair as it was measured, or with
+/// `--model` its models by name; `--local` is Inkling on a server tangent
+/// starts, or with `--model` a server of your own. With neither there is
+/// no pair: who is sent the records is the person's to say, and `command`,
+/// what they ran, comes back with each way to say it.
 pub fn served(
+    command: &str,
     local: bool,
     provider: Option<Provider>,
     model: Option<&str>,
@@ -828,10 +832,91 @@ pub fn served(
     match (local, provider) {
         (true, _) if named.is_some() => Ok((Server::Yours, named)),
         (true, _) => Ok((Server::Ollama, None)),
+        (false, Some(provider)) => Ok((Server::Hosted(provider), named)),
         (false, None) if named.is_some() => bail!(
             "--model names a hosted model with --provider, or with --local a model server of your own"
         ),
-        (false, provider) => Ok((Server::Hosted(provider.unwrap_or(Provider::Anthropic)), named)),
+        (false, None) => {
+            let mut ways = providers(command, set);
+            ways.push(match no_inkling() {
+                None => (
+                    format!("{command} --local"),
+                    "Inkling 2 Mini on this Mac: no record leaves it".to_string(),
+                ),
+                Some(_) => (
+                    format!("{command} --local --model <name>"),
+                    "a model server of your own: no record leaves this machine".to_string(),
+                ),
+            });
+            bail!(
+                "say who judges your records. A hosted provider is sent every one:\n\n{}",
+                table(&ways)
+            )
+        }
+    }
+}
+
+/// Whether the environment has a value for `var`.
+pub fn set(var: &str) -> bool {
+    std::env::var(var).is_ok_and(|v| !v.trim().is_empty())
+}
+
+/// A way to name each provider: `command` with `--provider`, and whether
+/// the variable its models read is set, by `set`. The ones that are set
+/// come first, since they are ready to run. Nothing is sent anywhere to
+/// find out: a variable that is set may still hold a key that is refused.
+pub fn providers(command: &str, set: impl Fn(&str) -> bool) -> Vec<(String, String)> {
+    use clap::ValueEnum as _;
+    let mut ways: Vec<(bool, (String, String))> = Provider::value_variants()
+        .iter()
+        .map(|provider| {
+            let name = provider.to_possible_value().expect("no provider is hidden");
+            let (var, _) = Server::Hosted(*provider).pair().needs[0];
+            let state = match (set(var), provider) {
+                (true, _) => format!("{var} is set"),
+                // its config falls back to the profile named `default`
+                (false, Provider::Bedrock) => {
+                    format!("{var} is not set: your AWS profile `default`")
+                }
+                (false, _) => format!("needs {var}"),
+            };
+            (
+                set(var),
+                (format!("{command} --provider {}", name.get_name()), state),
+            )
+        })
+        .collect();
+    ways.sort_by_key(|(set, _)| !set);
+    ways.into_iter().map(|(_, way)| way).collect()
+}
+
+/// The ways as lines to print: each command, and what is to be said of it,
+/// in a column.
+pub fn table(ways: &[(String, String)]) -> String {
+    let width = ways
+        .iter()
+        .map(|(command, _)| command.len())
+        .max()
+        .unwrap_or(0);
+    let lines: Vec<String> = ways
+        .iter()
+        .map(|(command, note)| format!("  {command:width$}   ({note})"))
+        .collect();
+    lines.join("\n")
+}
+
+/// What was run, for a line that says how to run it again: `tangent
+/// <verb> cloud`, with its sources.
+pub fn command(verb: &str, sources: &[Source]) -> String {
+    use clap::ValueEnum as _;
+    let names: Vec<String> = sources
+        .iter()
+        .filter_map(|s| s.to_possible_value())
+        .map(|v| v.get_name().to_string())
+        .collect();
+    match names.is_empty() {
+        true => format!("tangent {verb} cloud"),
+        false => format!("tangent {verb} cloud --sources {}", names.join(",")),
     }
 }
 
@@ -932,7 +1017,7 @@ fn unfit(memory: Option<u64>) -> Option<String> {
     }
     let memory = memory.filter(|gib| *gib < INKLING_MEMORY)?;
     Some(format!(
-        "this Mac has {memory} GB of memory, and Inkling 2 Mini takes about 24 GB to itself: under {INKLING_MEMORY} GB it is slow or does not load, so tangent does not start it"
+        "this Mac has {memory} GB of memory, and Inkling 2 Mini needs {INKLING_MEMORY}"
     ))
 }
 
@@ -942,7 +1027,7 @@ pub fn runs_here(server: Server) -> Result<()> {
     if server == Server::Ollama {
         if let Some(why) = no_inkling() {
             bail!(
-                "{why}. `--local --model <name>` is a model server of your own, and without --local the models are served for you"
+                "{why}. `--local --model <name>` is a model server of your own, and `--provider` names who serves a hosted one"
             );
         }
     }
@@ -1357,33 +1442,84 @@ pub(crate) mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn inkling_is_not_started_under_its_memory() {
         let why = unfit(Some(16)).expect("16 GB is under what Inkling needs");
-        assert!(why.contains("this Mac has 16 GB of memory"), "{why}");
+        assert_eq!(
+            why,
+            "this Mac has 16 GB of memory, and Inkling 2 Mini needs 32"
+        );
         assert!(unfit(Some(INKLING_MEMORY - 1)).is_some());
         assert_eq!(unfit(Some(INKLING_MEMORY)), None);
         assert_eq!(unfit(Some(64)), None);
         assert_eq!(unfit(None), None);
     }
 
-    /// The models are hosted unless `--local`: Anthropic's pair or a
-    /// provider's models by name, and with `--local` Inkling or, with a
-    /// model named, a server of your own.
+    /// `--provider` is that provider's pair, or with `--model` its models
+    /// by name, and `--local` is Inkling or, with a model named, a server
+    /// of your own. With neither nothing is picked: the commands come
+    /// back, one for each provider and one that keeps the records here.
     #[test]
     fn the_flags_say_who_judges() {
+        let ran = "tangent watch cloud --sources okta";
         let both = |name: &str| Some((name.to_string(), name.to_string()));
         assert_eq!(
-            served(false, None, None).unwrap(),
-            (Server::Hosted(Provider::Anthropic), None)
+            served(ran, false, Some(Provider::Bedrock), None).unwrap(),
+            (Server::Hosted(Provider::Bedrock), None)
         );
         assert_eq!(
-            served(false, Some(Provider::Openai), Some("gpt-6-luna")).unwrap(),
+            served(ran, false, Some(Provider::Openai), Some("gpt-6-luna")).unwrap(),
             (Server::Hosted(Provider::Openai), both("gpt-6-luna"))
         );
-        assert_eq!(served(true, None, None).unwrap(), (Server::Ollama, None));
         assert_eq!(
-            served(true, None, Some("glm-4.7-flash")).unwrap(),
+            served(ran, true, None, None).unwrap(),
+            (Server::Ollama, None)
+        );
+        assert_eq!(
+            served(ran, true, None, Some("glm-4.7-flash")).unwrap(),
             (Server::Yours, both("glm-4.7-flash"))
         );
-        assert!(served(false, None, Some("gpt-6-luna")).is_err());
+        assert!(served(ran, false, None, Some("gpt-6-luna")).is_err());
+
+        let none = served(ran, false, None, None).unwrap_err().to_string();
+        for provider in ["anthropic", "bedrock", "openrouter", "openai"] {
+            assert!(
+                none.contains(&format!("  {ran} --provider {provider} ")),
+                "{none}"
+            );
+        }
+        assert!(none.contains(&format!("  {ran} --local")), "{none}");
+    }
+
+    /// Each provider's command says whether its key is in the environment,
+    /// the ones that are set first; Bedrock's profile has a fallback, which
+    /// is said. The commands stand in a column.
+    #[test]
+    fn a_provider_s_command_says_whether_its_key_is_set() {
+        let ways = providers("tangent watch mac", |var| var == "OPENAI_API_KEY");
+        let lines = table(&ways);
+        assert_eq!(
+            lines,
+            "  tangent watch mac --provider openai       (OPENAI_API_KEY is set)\n\
+             \x20 tangent watch mac --provider anthropic    (needs ANTHROPIC_API_KEY)\n\
+             \x20 tangent watch mac --provider bedrock      (AWS_PROFILE is not set: your AWS profile `default`)\n\
+             \x20 tangent watch mac --provider openrouter   (needs OPENROUTER_API_KEY)"
+        );
+        let ways = providers("tangent init cloud", |var| var == "AWS_PROFILE");
+        assert_eq!(
+            ways[0],
+            (
+                "tangent init cloud --provider bedrock".to_string(),
+                "AWS_PROFILE is set".to_string()
+            )
+        );
+    }
+
+    /// What was run is said back with its sources, as the flag takes them.
+    #[test]
+    fn the_command_is_said_back_with_its_sources() {
+        assert_eq!(command("init", &[]), "tangent init cloud");
+        assert_eq!(
+            command("watch", &[Source::Okta, Source::Github]),
+            "tangent watch cloud --sources okta,github"
+        );
     }
 
     /// The file's head and init's last lines say where the records go: a
