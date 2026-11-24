@@ -27,7 +27,7 @@ It installs `wasm-tools` and TinyGo if they are missing. Installing TinyGo puts
 it in `~/.local/opt/tinygo/<version>`, links `~/.local/bin/tinygo`, and adds
 `PATH` and `TINYGOROOT` lines to your shell profiles (`~/.zshrc`, `~/.bashrc`,
 `~/.profile` and the like); open a new shell afterwards. You also need Go 1.26
-or newer and the `tangent` CLI (see [Install](../../README.md#install)).
+or newer and the `tangent` CLI (see [Install](../../docs/reference.md#install)).
 
 ## Test
 ```bash
