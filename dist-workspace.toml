@@ -13,7 +13,7 @@ cargo-dist-version = "0.30.0"
 # The installers to generate for each app
 installers = ["shell", "homebrew"]
 # A GitHub repo to push Homebrew formulas to
-tap = "telophasehq/homebrew-telophase"
+tap = "EthanBlackburn/homebrew-tangent"
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Publish jobs to run in CI: Homebrew, then the packs' components attested and
