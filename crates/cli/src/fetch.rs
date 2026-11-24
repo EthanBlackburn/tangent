@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 use tangent_shared::plugins::{self, PluginConfig, Prebuilt};
+use tangent_shared::sources::common::SourceConfig;
 use tangent_shared::Config;
 
 use crate::attest::{self, Attested};
@@ -106,9 +107,10 @@ fn remove_local_build(
 
 /// Before `tangent run` starts: each prebuilt plugin it has neither a local
 /// build of nor a copy fetched for its `prebuilt`, fetched and checked as
-/// `tangent plugin fetch` does, once per tangent version. With none missing
-/// it returns at once, so a machine whose cache has them never needs the
-/// network.
+/// `tangent plugin fetch` does, once per tangent version; and the Mac's
+/// sensor, for a `macos` source that names none ([`sensor`]). With none
+/// missing it returns at once, so a machine whose cache has them never
+/// needs the network.
 pub async fn missing(config_path: &Path) -> Result<()> {
     let cfg = Config::load(config_path)?.config;
     cfg.validate()?;
@@ -116,23 +118,83 @@ pub async fn missing(config_path: &Path) -> Result<()> {
     let cache = tangent_shared::cache::plugins();
     let plugins_dir = config_dir.join(&cfg.runtime.plugins_path);
     let wanted = wanted(&cfg, &plugins_dir, cache.as_deref().ok());
-    if wanted.is_empty() {
-        return Ok(());
+    if !wanted.is_empty() {
+        let cache = cache?;
+        let names: Vec<&str> = wanted.iter().map(|(name, ..)| *name).collect();
+        println!(
+            "tangent {VERSION}: fetching {} (once per version)",
+            names.join(", ")
+        );
+        let client = client()?;
+        for (name, plugin, prebuilt) in wanted {
+            let out = plugins::fetched(&cache, prebuilt);
+            fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
+            fetch_one(&client, name, plugin, prebuilt, &out)
+                .await
+                .map_err(|e| unreached(name, "each pack's plugin", e))?;
+        }
     }
-    let cache = cache?;
-    let names: Vec<&str> = wanted.iter().map(|(name, ..)| *name).collect();
+    if cfg!(target_os = "macos") && names_no_sensor(&cfg) {
+        let dir = tangent_shared::sensor::dir()?;
+        if !tangent_shared::sensor::binary(&dir).is_file() {
+            sensor(&dir)
+                .await
+                .map_err(|e| unreached("the Mac's sensor", "it", e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether a `macos` source of `cfg` names no sensor, and so runs the
+/// release's.
+fn names_no_sensor(cfg: &Config) -> bool {
+    cfg.sources
+        .values()
+        .any(|source| matches!(source, SourceConfig::Macos(mac) if mac.sensor.is_none()))
+}
+
+/// This version's sensor, from its release into `dir`: the archive, unpacked
+/// by macOS's own `ditto` beside `dir` and checked there
+/// ([`tangent_shared::sensor::check`]), and given its name only once it has
+/// passed. One that does not pass is removed.
+async fn sensor(dir: &Path) -> Result<()> {
+    let url = tangent_shared::sensor::url(VERSION);
+    println!("tangent {VERSION}: fetching the Mac's sensor (once per version)");
+    let Some(bytes) = download(&client()?, &url).await? else {
+        bail!(
+            "the Mac's sensor: {url} is not there: a release without a sensor, or a tangent built \
+             from a checkout whose version has no release yet. A `macos` source's `sensor` names \
+             one you built from packs/macos/sensor"
+        );
+    };
+    let parent = dir.parent().expect("the sensor is kept under the cache");
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    // Unpacked beside its destination, so the move into place is a rename.
+    let tmp = tempfile::tempdir_in(parent)?;
+    let archive = tmp.path().join(tangent_shared::sensor::ARCHIVE);
+    fs::write(&archive, &bytes)?;
+    let unpacked = tmp.path().join("sensor");
+    let status = tokio::process::Command::new("/usr/bin/ditto")
+        .args(["-x", "-k"])
+        .arg(&archive)
+        .arg(&unpacked)
+        .status()
+        .await
+        .context("running /usr/bin/ditto")?;
+    if !status.success() {
+        bail!("the Mac's sensor: {url} did not unpack ({status})");
+    }
+    tangent_shared::sensor::check(&unpacked)
+        .context("the Mac's sensor did not verify, and is not kept")?;
+    // What a fetch that died left under the name is not a sensor.
+    if dir.exists() {
+        fs::remove_dir_all(dir).with_context(|| format!("removing {}", dir.display()))?;
+    }
+    fs::rename(&unpacked, dir).with_context(|| format!("naming {}", dir.display()))?;
     println!(
-        "tangent {VERSION}: fetching {} (once per version)",
-        names.join(", ")
+        "✅ the Mac's sensor: signed by tangent's team and notarized by Apple\n   {}",
+        tangent_shared::sensor::binary(dir).display()
     );
-    let client = client()?;
-    for (name, plugin, prebuilt) in wanted {
-        let out = plugins::fetched(&cache, prebuilt);
-        fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
-        fetch_one(&client, name, plugin, prebuilt, &out)
-            .await
-            .map_err(|e| unreached(name, e))?;
-    }
     Ok(())
 }
 
@@ -152,14 +214,14 @@ fn wanted<'a>(
         .collect()
 }
 
-/// A fetch for `tangent run` that could not reach the release: the plugin
-/// and the request's error, which names the URL, then why tangent needs the
-/// network. Any other failure is left as it is.
-fn unreached(name: &str, e: anyhow::Error) -> anyhow::Error {
+/// A fetch for `tangent run` that could not reach the release: `name` and
+/// the request's error, which names the URL, then why tangent needs the
+/// network, for `what` it fetches. Any other failure is left as it is.
+fn unreached(name: &str, what: &str, e: anyhow::Error) -> anyhow::Error {
     if !e.chain().any(|c| c.is::<reqwest::Error>()) {
         return e;
     }
-    anyhow!("{name}: {e:#}\ntangent fetches each pack's plugin once per version and needs the network for it")
+    anyhow!("{name}: {e:#}\ntangent fetches {what} once per version and needs the network for it")
 }
 
 fn client() -> reqwest::Result<reqwest::Client> {
@@ -358,6 +420,22 @@ mod tests {
         assert_eq!(names(wanted(&cfg, &built, Some(&cache))), ["stray"]);
     }
 
+    /// The release's sensor is fetched for a `macos` source that names
+    /// none, and not for one that names its own or a config without one.
+    #[test]
+    fn a_macos_source_with_no_sensor_named_runs_the_release_s() {
+        let cfg = |sources: &str| -> Config {
+            serde_yaml::from_str(&format!("sources:\n{sources}")).unwrap()
+        };
+        assert!(names_no_sensor(&cfg("  mac: { type: macos }\n")));
+        assert!(!names_no_sensor(&cfg(
+            "  mac: { type: macos, sensor: build/TangentSensor.app/Contents/MacOS/tangent-sensor }\n"
+        )));
+        assert!(!names_no_sensor(&cfg(
+            "  logs: { type: socket, socket_path: /tmp/x.sock }\n"
+        )));
+    }
+
     /// A release out of reach fails the run naming the plugin and the
     /// request's error, then why tangent needs the network, and sends no one
     /// to `tangent plugin compile`, which has nothing to build for a pack's
@@ -367,7 +445,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let url = "http://127.0.0.1:0/cloudtrail.component.wasm";
         let e = download(&client, url).await.unwrap_err();
-        let err = format!("{:#}", unreached("cloudtrail", e));
+        let err = format!("{:#}", unreached("cloudtrail", "each pack's plugin", e));
         assert!(
             err.starts_with(&format!(
                 "cloudtrail: error sending request for url ({url})"
@@ -385,7 +463,7 @@ mod tests {
         let other =
             anyhow!("cloudtrail: cloudtrail.component.wasm did not verify, and is not kept");
         assert_eq!(
-            format!("{:#}", unreached("cloudtrail", other)),
+            format!("{:#}", unreached("cloudtrail", "each pack's plugin", other)),
             "cloudtrail: cloudtrail.component.wasm did not verify, and is not kept"
         );
     }

@@ -18,9 +18,12 @@ sources:
   # Claude Code is read from the transcripts under ~/.claude, as you. The
   # terminal tangent runs in needs Full Disk Access (System Settings,
   # Privacy & Security), and a restart after the grant.
+  #
+  # The sensor is this release's, signed by tangent's team and notarized by
+  # Apple: tangent fetches it once for each of its versions, and checks its
+  # signature before each start. `sensor:` names one you built instead.
   mac:
     type: macos
-    sensor: {{sensor}}
 
 plugins:
   # `prebuilt` is the release a plugin comes from, compiled: tangent fetches
