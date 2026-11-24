@@ -8,6 +8,8 @@ everything it ran) is summed up five minutes at a time for the judge, whose
 answer is pass, look or flag; each look or flag goes to `alerts.ndjson`,
 once a turn. One config, one process.
 
+`tangent watch mac` runs this pipeline with nothing to keep, and `tangent init mac` writes it as one file ([Try it](/docs/try-it.md#this-mac-tangent-watch-mac)). This directory is the same pipeline from the packs, for working on them:
+
 ```bash
 ../enrich/setup.sh data                        # once: the address tables that name a connection's network owner
 tangent plugin compile --config review.yaml    # once: the pack's plugins, and the reviewer's

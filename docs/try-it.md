@@ -108,3 +108,28 @@ It starts only with what it needs. A variable from the table above that is not s
 It reads what `tangent run` reads: each source as it happens, from an hour back. CloudTrail is among them only when `CLOUDTRAIL_QUEUE_URL` holds its trail's queue; its last day is step 3's replay, on a config of your own.
 
 To change more than the flags do, `tangent init cloud` with the same flags writes the same pipeline for you to edit.
+
+## This Mac: `tangent watch mac`
+
+```bash
+SENSOR=/path/to/TangentSensor.app/Contents/MacOS/tangent-sensor tangent watch mac
+```
+
+It watches the Mac it runs on: what each program runs, opens and connects to, and what you ask Claude Code, a session (a terminal tab, an app, an agent) at a time. There is nothing to choose but who judges:
+
+| | judges and reviews | where your records go | it needs |
+|---|---|---|---|
+| alone | Inkling 2 Mini, on a server tangent starts | nowhere: the model runs on this Mac | Apple Silicon with 32 GB of memory or more; the model (17 GB) is downloaded first, after asking |
+| `--hosted` | Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews, through Anthropic's API | each session's summary is sent there, with its command lines, its paths and your prompts; a review sends the records it queries and the files it reads | `ANTHROPIC_API_KEY` |
+
+Inkling's settings here are the ones measured on cloud logs, with room for the longer answer a session takes. Its results on the recorded Mac attacks in [tangent-eval](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos) are not published yet; the hosted pair's are there.
+
+Three things are yours to do:
+
+- **The sensor.** A release has it built, signed and notarized, as `tangent-sensor-macos.zip` beside the binaries: unzip it, and `SENSOR` names `tangent-sensor` inside the app.
+- **Your password,** once, when it starts: sudo runs the sensor and macOS's tcpdump as root.
+- **Full Disk Access** for the terminal it runs in (System Settings, Privacy & Security), and a restart of the terminal after the grant.
+
+It keeps its pipeline in `~/.local/share/tangent/mac`, as `watch cloud` keeps its own, and says each alert as the judge marks a session `look` or `flag`, and each review about seven minutes after.
+
+`tangent init mac` writes the same pipeline where you are, to edit and to run with `tangent run --config tangent.yaml`: tangent.yaml, the two briefs, and profiles.yaml, which says what each known program is expected to read, start and connect to. [packs/macos](../packs/macos) describes each part.

@@ -16,6 +16,7 @@ Tangent ships with everything you need to develop, test, and benchmark your own 
 * `tangent bench` – measure throughput and latency before deploying
 * `tangent run` – start the Tangent runtime
 * `tangent watch cloud` – `tangent init` and `tangent run` in one: your audit logs watched, with no config to keep ([Try it](/docs/try-it.md#tangent-watch-cloud-both-steps-in-one))
+* `tangent watch mac` – the same for the Mac it runs on, judged by a model on that Mac ([Try it](/docs/try-it.md#this-mac-tangent-watch-mac))
 * `tangent config` – print a config as the runtime reads it, its includes merged
 * `tangent query` – one read-only SQL statement over a lake's Parquet files
 
