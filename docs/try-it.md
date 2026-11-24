@@ -2,6 +2,8 @@
 
 `tangent init cloud` writes the whole pipeline for your cloud and SaaS audit logs to `tangent.yaml`: what you watch, and the models that judge it.
 
+To watch without a config to keep, [`tangent watch cloud`](#tangent-watch-cloud-both-steps-in-one) does steps 2 and 3 in one command.
+
 1. Install tangent:
 
 ```bash
@@ -82,3 +84,17 @@ Replay reads a past range of CloudTrail from the account's Event history, up to 
 The models' calls are billed to your model account: replay prints about how many records the range holds before it judges any, and Ctrl-C stops it. The README's [Volume and cost](../README.md#volume-and-cost) prices a day.
 
 What the judge flagged is in alerts.ndjson and every verdict in verdicts.ndjson. Each alert is in reviews.ndjson too, with `review`: a verdict (`malicious`, `benign` or `unresolved`), a finding and what to check first; those are the ones to read. Tangent warns that four enrichment files are missing and runs without them; tangent.yaml says where they come from.
+
+## `tangent watch cloud`: both steps in one
+
+```bash
+tangent watch cloud --sources okta,github
+```
+
+It takes init's flags, and runs the pipeline init would write for them, leaving no file where you are. The config goes to tangent's own directory, `~/.local/share/tangent/cloud` (under `$XDG_DATA_HOME` when that is set), written again at each start, and tangent runs there: the alerts, their reviews, the lake and each actor's history are kept there too, and the next start goes on from them. It prints where they are.
+
+It starts only with what it needs. A variable from the table above that is not set stops it, with the list, where `tangent run` would leave the source idle. With `--local` it downloads the model first, after asking. One `watch cloud` runs at a time.
+
+It reads what `tangent run` reads: each source as it happens, from an hour back. CloudTrail is among them only when `CLOUDTRAIL_QUEUE_URL` holds its trail's queue; its last day is step 3's replay, on a config of your own.
+
+To change more than the flags do, `tangent init cloud` with the same flags writes the same pipeline for you to edit.

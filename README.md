@@ -35,6 +35,7 @@ Tangent ships with everything you need to develop, test, and benchmark your own 
 * `tangent plugin test` – run plugin tests
 * `tangent bench` – measure throughput and latency before deploying
 * `tangent run` – start the Tangent runtime
+* `tangent watch cloud` – `tangent init` and `tangent run` in one: your audit logs watched, with no config to keep ([Try it](/docs/try-it.md#tangent-watch-cloud-both-steps-in-one))
 * `tangent config` – print a config as the runtime reads it, its includes merged
 * `tangent query` – one read-only SQL statement over a lake's Parquet files
 

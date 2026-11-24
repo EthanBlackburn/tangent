@@ -467,6 +467,9 @@ pub struct Choices {
     /// The model that judges and the one that reviews, each by the name
     /// its provider takes. Without them, the provider's two as measured.
     models: Option<(String, String)>,
+    /// Whether the file is tangent's own, which `tangent watch` writes again
+    /// at each start, and not one init leaves to be edited.
+    watched: bool,
 }
 
 /// What `--model` names: one model, which judges and reviews, or the
@@ -505,11 +508,26 @@ impl Choices {
             watch,
             server,
             models,
+            watched: false,
         }
     }
 
+    /// These choices for `tangent watch`, which keeps the file itself.
+    pub fn watched(mut self) -> Self {
+        self.watched = true;
+        self
+    }
+
+    pub fn watch(&self) -> &[Source] {
+        &self.watch
+    }
+
+    pub fn server(&self) -> Server {
+        self.server
+    }
+
     /// Who judges, who reviews, and who serves them, as the file says it.
-    fn models(&self) -> String {
+    pub fn models(&self) -> String {
         let pair = self.server.pair();
         match &self.models {
             Some((judge, reviewer)) if judge == reviewer => {
@@ -524,7 +542,7 @@ impl Choices {
 
     /// Where the records go to be judged, as the file and init say it: a
     /// hosted model is sent every one.
-    fn records(&self) -> String {
+    pub fn records(&self) -> String {
         match self.server {
             Server::Yours | Server::Mtplx => {
                 "stay on this machine: the model that judges them runs here".to_string()
@@ -601,7 +619,7 @@ impl Choices {
     }
 
     /// The variables the config reads, each once, the models' first.
-    fn needs(&self) -> Vec<(&'static str, &'static str)> {
+    pub fn needs(&self) -> Vec<(&'static str, &'static str)> {
         let mut needs: Vec<(&'static str, &'static str)> = Vec::new();
         let packs = self.watch.iter().flat_map(|w| w.pack().needs);
         for need in self.server.pair().needs.iter().chain(packs) {
@@ -615,7 +633,13 @@ impl Choices {
     /// The file's first lines: what it watches, who judges, how to run it
     /// and where the answers go.
     fn header(&self) -> String {
-        let mut header = String::from("# tangent.yaml, written by `tangent init`.\n#\n");
+        let mut header = String::from(match self.watched {
+            false => "# tangent.yaml, written by `tangent init`.\n#\n",
+            true => {
+                "# tangent.yaml, written by `tangent watch cloud` each time it starts: an edit\n\
+                 # here is lost. `tangent init cloud` with the same flags writes one to keep.\n#\n"
+            }
+        });
         if self.watch.is_empty() {
             header.push_str("#   watches  nothing yet\n");
         }
@@ -625,17 +649,30 @@ impl Choices {
         }
         header.push_str(&format!("#   models   {}\n", self.models()));
         header.push_str(&format!("#   records  {}\n", self.records()));
-        for (i, command) in self.commands().iter().enumerate() {
+        // the commands that run a file of your own; `tangent watch` is its own
+        let commands = match self.watched {
+            false => self.commands(),
+            true => Vec::new(),
+        };
+        for (i, command) in commands.iter().enumerate() {
             let gap = if i == 0 { "#\n" } else { "" };
             header.push_str(&format!("{gap}#   {command}\n"));
         }
         header.push_str(
             "#\n# What the judge flagged is in alerts.ndjson, each alert with its review in\n\
              # reviews.ndjson (those are the ones to read), and every verdict in\n\
-             # verdicts.ndjson.\n#\n\
-             # To watch something else, or have other models judge it, edit this file as\n",
+             # verdicts.ndjson.\n#\n",
         );
-        header.push_str(&format!("# {DIRECTIONS} says.\n#"));
+        match self.watched {
+            false => header.push_str(&format!(
+                "# To watch something else, or have other models judge it, edit this file as\n\
+                 # {DIRECTIONS} says.\n#"
+            )),
+            true => header.push_str(
+                "# To watch something else, or have other models judge it, give\n\
+                 # `tangent watch cloud` other flags.\n#",
+            ),
+        }
         header
     }
 
@@ -734,6 +771,16 @@ impl Choices {
         }
         Ok(written)
     }
+
+    /// Writes the files to `dir`, over the ones there: for a directory that
+    /// is tangent's own, where each start writes what its flags say.
+    pub fn place(&self, dir: &Path) -> Result<()> {
+        for (name, text) in self.files() {
+            let path = dir.join(name);
+            std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+        }
+        Ok(())
+    }
 }
 
 fn remove(paths: &[PathBuf]) {
@@ -743,7 +790,7 @@ fn remove(paths: &[PathBuf]) {
 }
 
 /// Every value of a flag, as it is written, joined by `sep`.
-fn names<T: clap::ValueEnum>(sep: &str) -> String {
+pub fn names<T: clap::ValueEnum>(sep: &str) -> String {
     let names: Vec<String> = T::value_variants()
         .iter()
         .filter_map(|v| v.to_possible_value())
@@ -801,7 +848,7 @@ fn placed(text: &str, cache: &str) -> String {
 
 /// Asks, at a terminal, whether to download what `missing` lists now. No
 /// terminal is no.
-fn ask_to_fetch(missing: &local::Missing, root: &Path) -> bool {
+pub fn ask_to_fetch(missing: &local::Missing, root: &Path) -> bool {
     use std::io::IsTerminal as _;
     println!(
         "\nInkling 2 Mini runs on MTPLX, and {}: {} to download, into {}.",
@@ -864,17 +911,24 @@ fn local_needs(server: Server) -> Vec<String> {
     }
 }
 
+/// Whether this machine can serve the models as `server` would: tangent
+/// starts MTPLX on Apple Silicon Macs only.
+pub fn runs_here(server: Server) -> Result<()> {
+    if server == Server::Mtplx && !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        bail!(
+            "tangent starts Inkling 2 Mini on Apple Silicon Macs only. `--local --model <name>` is a model server of your own, and without --local the models are served for you"
+        );
+    }
+    Ok(())
+}
+
 pub async fn run(
     dir: &Path,
     watch: Vec<Source>,
     server: Server,
     models: Option<(String, String)>,
 ) -> Result<()> {
-    if server == Server::Mtplx && !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        bail!(
-            "tangent starts Inkling 2 Mini on Apple Silicon Macs only. `--local --model <name>` is a model server of your own, and without --local the models are served for you"
-        );
-    }
+    runs_here(server)?;
     let choices = Choices::new(watch, server, models);
     let written = choices.write(dir)?;
     let config = dir.join("tangent.yaml");
@@ -1509,6 +1563,35 @@ mod tests {
             }
         }
         assert!(DIRECTIONS.ends_with("docs/config.md"));
+    }
+
+    /// `tangent watch` keeps the file itself: it says so, names no command
+    /// that runs a file of your own, loads as init's does, and is written
+    /// over what was there, where init's is not.
+    #[test]
+    fn a_watched_file_is_tangents_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tangent.yaml");
+        for server in &Server::ALL {
+            let kept = Choices::new(vec![Source::Okta], *server, None);
+            let watched = kept.clone().watched();
+            watched.place(dir.path()).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                text.contains("written by `tangent watch cloud`"),
+                "{server:?}"
+            );
+            assert!(!text.contains("--config tangent.yaml"), "{server:?}");
+            assert!(!text.contains(DIRECTIONS), "{server:?}");
+            let cfg = Config::load(&path).unwrap().config;
+            cfg.validate()
+                .unwrap_or_else(|e| panic!("{server:?}: {e:#}"));
+            assert_eq!(cfg.warnings(), Vec::<String>::new(), "{server:?}");
+            // but for its first lines, it is the file init writes
+            let body = |text: &str| text[text.find("\nsources:").unwrap()..].to_string();
+            assert_eq!(body(&text), body(&kept.config()), "{server:?}");
+            assert!(kept.write(dir.path()).is_err(), "init writes over nothing");
+        }
     }
 
     /// A variable two parts read is asked for once: on Bedrock, the profile

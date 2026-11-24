@@ -16,6 +16,7 @@ use tangent_runtime::query;
 mod scaffold;
 mod state;
 mod test;
+mod watch;
 mod wit_assets;
 
 #[global_allocator]
@@ -28,7 +29,7 @@ struct Cli {
     command: Commands,
 }
 
-/// What `tangent init` writes a pipeline for.
+/// What `tangent init` writes a pipeline for, and `tangent watch` runs one for.
 #[derive(Subcommand, Debug)]
 enum Watch {
     /// Your cloud and SaaS audit logs (CloudTrail, GitHub, Okta, ...)
@@ -40,12 +41,12 @@ enum Watch {
     /// this machine.
     Cloud {
         /// What to watch, one or more: --sources cloudtrail,github. Without
-        /// it the pipeline is written with no source yet
+        /// it init writes the pipeline with no source yet
         #[arg(long, value_enum, value_delimiter = ',')]
         sources: Vec<init::Source>,
         /// A model on this machine in place of a hosted one, so no record
         /// leaves it: Inkling 2 Mini judges and reviews, on a server
-        /// tangent starts with `tangent run` (Apple Silicon, 32 GB of
+        /// tangent starts with the pipeline (Apple Silicon, 32 GB of
         /// memory or more). With --model, a model server of your own at
         /// http://localhost:8080/v1 instead, which tangent does not start
         #[arg(long)]
@@ -148,7 +149,19 @@ enum Commands {
         watch: Watch,
     },
 
-    /// The model that runs on this machine with `tangent init cloud --local`
+    /// Watch it now, with nothing to keep: `tangent init` and `tangent run`
+    /// in one. The pipeline init would write for the same flags is kept in
+    /// tangent's own directory (~/.local/share/tangent), written again at
+    /// each start, and run from there, where its alerts and reviews are
+    /// written and the next start goes on from what it has learned. It
+    /// starts only with what it needs: a variable that is not set stops
+    /// it, and --local downloads the model first
+    Watch {
+        #[command(subcommand)]
+        watch: Watch,
+    },
+
+    /// The model that runs on this machine with `--local`
     Model {
         #[command(subcommand)]
         command: ModelCommand,
@@ -335,6 +348,19 @@ async fn main() -> Result<()> {
             init::run(Path::new("."), sources, server, models).await?
         }
 
+        Commands::Watch {
+            watch:
+                Watch::Cloud {
+                    sources,
+                    local,
+                    provider,
+                    model,
+                },
+        } => {
+            let (server, models) = init::served(local, provider, model.as_deref())?;
+            watch::cloud(sources, server, models).await?
+        }
+
         Commands::Model {
             command: ModelCommand::Fetch,
         } => local::fetch(&local::root()?).await?,
@@ -499,42 +525,44 @@ fn sort_keys(v: &mut Value) {
 mod tests {
     use super::*;
 
-    /// Init's command line: what to watch is its subcommand, a provider
-    /// goes with its model, and a model on this machine is --local, not a
-    /// provider.
+    /// Init's command line, and watch's, which is the same: what to watch
+    /// is its subcommand, a provider goes with its model, and a model on
+    /// this machine is --local, not a provider.
     #[test]
-    fn init_takes_what_to_watch_and_who_judges_it() {
-        let parses =
-            |args: &[&str]| Cli::try_parse_from([&["tangent", "init"], args].concat()).is_ok();
-        assert!(!parses(&[]), "init alone lists what it can watch");
-        assert!(parses(&["cloud"]));
-        assert!(parses(&["cloud", "--sources", "okta,github"]));
-        assert!(parses(&["cloud", "--local"]));
-        assert!(parses(&["cloud", "--local", "--model", "glm-4.7-flash"]));
-        assert!(parses(&[
-            "cloud",
-            "--provider",
-            "openai",
-            "--model",
-            "gpt-6-luna"
-        ]));
-        assert!(!parses(&["cloud", "--provider", "openai"]));
-        assert!(!parses(&[
-            "cloud",
-            "--local",
-            "--provider",
-            "openai",
-            "--model",
-            "gpt-6-luna"
-        ]));
-        assert!(!parses(&[
-            "cloud",
-            "--provider",
-            "local",
-            "--model",
-            "glm-4.7-flash"
-        ]));
-        assert!(!parses(&["--sources", "okta"]), "the sources are cloud's");
+    fn init_and_watch_take_what_to_watch_and_who_judges_it() {
+        for command in ["init", "watch"] {
+            let parses =
+                |args: &[&str]| Cli::try_parse_from([&["tangent", command], args].concat()).is_ok();
+            assert!(!parses(&[]), "{command} alone lists what it can watch");
+            assert!(parses(&["cloud"]));
+            assert!(parses(&["cloud", "--sources", "okta,github"]));
+            assert!(parses(&["cloud", "--local"]));
+            assert!(parses(&["cloud", "--local", "--model", "glm-4.7-flash"]));
+            assert!(parses(&[
+                "cloud",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-6-luna"
+            ]));
+            assert!(!parses(&["cloud", "--provider", "openai"]));
+            assert!(!parses(&[
+                "cloud",
+                "--local",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-6-luna"
+            ]));
+            assert!(!parses(&[
+                "cloud",
+                "--provider",
+                "local",
+                "--model",
+                "glm-4.7-flash"
+            ]));
+            assert!(!parses(&["--sources", "okta"]), "the sources are cloud's");
+        }
     }
 
     #[test]
