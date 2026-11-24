@@ -16,6 +16,7 @@ mod local;
 mod mac;
 use tangent_runtime::query;
 mod scaffold;
+mod simulate;
 mod state;
 mod test;
 mod watch;
@@ -177,6 +178,11 @@ enum Commands {
         #[command(subcommand)]
         watch: Watch,
     },
+
+    /// Run one attack on this Mac, for `tangent watch mac` to catch: a
+    /// credential sweep of a project made up for the run, uploaded to this
+    /// command itself. Nothing of yours is opened and nothing leaves the Mac
+    Simulate,
 
     /// The model that runs on this machine with `--local`
     Model {
@@ -382,6 +388,8 @@ async fn main() -> Result<()> {
         Commands::Watch {
             watch: Watch::Mac { hosted },
         } => watch::mac(hosted).await?,
+
+        Commands::Simulate => simulate::run()?,
 
         Commands::Model {
             command: ModelCommand::Fetch,

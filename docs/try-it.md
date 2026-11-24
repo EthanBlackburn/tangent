@@ -135,4 +135,14 @@ The sensor, which reads what each program does, is the release's: tangent downlo
 
 It keeps its pipeline in `~/.local/share/tangent/mac`, as `watch cloud` keeps its own, and says each alert as the judge marks a session `look` or `flag`, and each review about seven minutes after.
 
+### See it catch something: `tangent simulate`
+
+```bash
+tangent simulate      # in another terminal, while `tangent watch mac` runs
+```
+
+It runs one attack for real, a credential theft of the kind a poisoned package carries, and lists each step as it does: a script piped from curl into bash asks the Mac who it is, finds a project's `.env` files, archives and encrypts them, uploads them and removes its traces. It is safe to run on the Mac you work on. The project is a directory made for the run, its two `.env` files hold made-up keys, and the server it downloads from and uploads to is the command itself, on 127.0.0.1, which keeps nothing: no file of yours is opened, nothing leaves the Mac, and nothing is left behind.
+
+`tangent watch mac` then says what it makes of it, in its own terminal: the session is flagged a minute or two later (up to five in a busy terminal) and reviewed about seven minutes after that. With the hosted pair the judge flagged it and the reviewer then called it benign, rightly: it worked out from the records that the files were made by the command that took them and went no further than this Mac. That is the two passes doing their work, and the alert is the thing to look for.
+
 `tangent init mac` writes the same pipeline where you are, to edit and to run with `tangent run --config tangent.yaml`: tangent.yaml, the two briefs, and profiles.yaml, which says what each known program is expected to read, start and connect to. [packs/macos](../packs/macos) describes each part.

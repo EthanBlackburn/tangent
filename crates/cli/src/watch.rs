@@ -102,6 +102,8 @@ struct Pipeline {
     said: Vec<String>,
     /// When an alert and a review come.
     pace: &'static str,
+    /// How to see it catch something now, where there is a way.
+    shown: Option<&'static str>,
 }
 
 /// `tangent watch cloud`: the pipeline `tangent init cloud` writes for
@@ -146,6 +148,7 @@ pub async fn cloud(
         pace: "an actor's\n\
                records are judged together, thirty at a time or an hour after the first, and an alert\n\
                is reviewed a little over an hour after it.",
+        shown: None,
     })
     .await
 }
@@ -170,6 +173,7 @@ pub async fn mac(hosted: bool) -> Result<()> {
         pace: "a session\n\
                is judged five minutes at a time, or an agent's turn at its end, and an alert is\n\
                reviewed about seven minutes after it.",
+        shown: Some("To see it catch an attack, run `tangent simulate` in another terminal."),
     })
     .await
 }
@@ -206,6 +210,9 @@ async fn start(pipeline: Pipeline) -> Result<()> {
         "They are kept, with the pipeline and its lake, in {}",
         dir.display()
     );
+    if let Some(shown) = pipeline.shown {
+        println!("{shown}");
+    }
     println!("Ctrl-C stops it.\n");
 
     let (stop, stopped) = tokio::sync::oneshot::channel();
