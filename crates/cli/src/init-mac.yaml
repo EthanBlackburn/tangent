@@ -1,0 +1,186 @@
+{{header}}
+# The whole pipeline is in this file. Each node names the nodes it takes
+# records from, as `inputs`:
+#
+#   mac -> macos                                     what this Mac did, an event a record
+#            -> lake                                 each kept
+#            -> macos_sessions -> judge              each session summed up, and judged
+#                 judge -> fresh -> verdicts         every verdict
+#                 judge -> macos_verdicts -> alerts  a `look` or a `flag`, told once
+#                          macos_verdicts -> macos_review -> reviews
+#
+# judge.md and review.md, beside this file, are what the two models are told.
+
+sources:
+  # The whole capture. Tangent asks for your password once, through sudo, and
+  # starts the sensor and macOS's tcpdump as root: the sensor sees what each
+  # program runs and opens, and tcpdump what it connects to. What you ask
+  # Claude Code is read from the transcripts under ~/.claude, as you. The
+  # terminal tangent runs in needs Full Disk Access (System Settings,
+  # Privacy & Security), and a restart after the grant.
+  mac:
+    type: macos
+    sensor: {{sensor}}
+
+plugins:
+  # `prebuilt` is the release a plugin comes from, compiled: tangent fetches
+  # it once for each of its versions, and keeps it only if the attestation of
+  # its build checks out.
+
+  # The sensor's events, with the connections and the prompts joined to the
+  # same process tree, and what profiles.yaml says of each program.
+  macos:
+    inputs: [mac]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+
+  # A session is a terminal tab, an app or an agent, with everything it ran.
+  # Its records are held as a group and summed up: what each program ran,
+  # read, wrote and connected to.
+  macos_sessions:
+    inputs: [macos]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+    group_by: [session.id, session.window]   # a session's five minutes, or an agent's turn: from one prompt to the next
+    max_age_ms: 900000           # no later than fifteen minutes after the first of them: a long turn comes in parts
+    expire_after_ms: 60000       # or a minute of the session's quiet
+
+  # After the judge. macos_verdicts keeps the judge's account of a session
+  # for the session's next summary, and passes on what a person has not been
+  # told: a `look` or a `flag`, once a turn.
+  fresh:
+    inputs: [judge]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+  flagged:
+    inputs: [fresh]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+  macos_verdicts:
+    inputs: [judge]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+
+  # An alert waits here until the lake has its records, about seven minutes,
+  # and is reviewed in a conversation with the reviewer, which can query the
+  # lake and read the scripts and agent settings the records point to.
+  macos_review:
+    inputs: [macos_verdicts]
+    module_type: rust
+    prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
+    inference: [reviewer]
+    tables:
+      lake: lake                 # table `lake` is what sink `lake` has written
+    data: /                      # the records' paths are absolute. It reads only a file a record gives a reason to, never credentials or transcripts
+    group_by: [session.id, session.window]
+    expire_after_ms: 400000
+    config:
+      model: reviewer
+      table: lake
+      days: 7                    # how far back from the alert the table reaches
+      settle_seconds: 400        # the table ends this long after the alert's last event
+      queries: 20                # the most queries and file reads one review may make
+      files: true                # false: no file's text goes to the model
+
+# The models: where each is served, and how hard it may be asked. The judge
+# and the reviewer, under `inference`, each name theirs.
+models:
+{{models}}
+
+inference:
+  # The judge reads each session's summary, with its own account of the
+  # session so far, and answers: what it did, and pass, look or flag.
+  judge:
+    inputs: [macos_sessions]
+    model: {{judge_entry}}
+{{judge}}
+    prompt_file: judge.md
+    schema_file: judge.schema.json   # the shape its answer is held to
+    group_by: [_norm.org, _norm.actor]
+    batch_bytes: {{batch_bytes}}
+    encoding: { type: ndjson }   # a summary is sent as it is, a JSON line
+
+  # The reviewer settles what the judge marked. It has no inputs: plugin
+  # macos_review holds the conversation with it.
+  reviewer:
+    model: {{reviewer_entry}}
+{{reviewer}}
+    prompt_file: review.md
+    max_tokens: 8000             # a turn: its thinking, and a query or the report
+
+sinks:
+  # Every record, kept as Parquet, a directory an hour: what the reviewer
+  # queries, and `tangent query` reads. Delete old hours to trim it.
+  lake:
+    inputs: [macos]
+    type: rolling_file
+    path: lake/logs/%Y/%m/%d/%H
+    wal_path: lake/wal
+    max_file_age_seconds: 300    # a file is sealed, and the reviewer can read it, five minutes on
+    compression: { type: zstd, level: 3 }
+    encoding:
+      type: parquet
+      record_column: record      # each record whole, for the fields the schema leaves out
+      schema:
+        ts: timestamp
+        source: string
+        _norm: { org: string, actor: string, kind: string, ip: string }
+        event: string
+        session: { id: string, entry: string, turn: string, window: string }
+        process: { pid: int, ppid: int, path: string, name: string, signer: string, team: string, platform: bool, tty: string, uid: int }
+        parents: [string]
+        responsible: string
+        exec: { args: [string], cwd: string }
+        file: string
+        from: string
+        access: string
+        modified: bool
+        connect: { host: string, dst: string, port: int }
+        prompt: { text: string }
+        _facts:
+          credentials: bool
+          persistence: bool
+          agent_settings: bool
+          agent_instructions: bool
+          agent_mcp: bool
+          agent_state: bool
+          agent_extensions: bool
+          steering_env: bool
+          scratch_program: bool
+          unsigned: bool
+          rename_over: bool
+          notes: [string]
+  verdicts:                      # every summary the judge answered, with its answer
+    inputs: [fresh]
+    type: file
+    path: verdicts.ndjson
+    compression: { type: none }
+  alerts:                        # the ones it marked `look` or `flag`
+    inputs: [flagged, macos_verdicts]
+    type: file
+    path: alerts.ndjson
+    compression: { type: none }
+  reviews:                       # each alert with its review: malicious, benign or unresolved
+    inputs: [macos_review]
+    type: file
+    path: reviews.ndjson
+    compression: { type: none }
+
+# Files beside this one. profiles.yaml is written with it: what each known
+# program is expected to read, start and connect to; add your own. The data/
+# files name each address's country and owner, and are not shipped; without
+# them a connection's owner is left out, with a warning:
+# https://github.com/EthanBlackburn/tangent/blob/main/examples/enrich/README.md#data
+enrichment_tables:
+  programs: { type: document, path: profiles.yaml }
+  geo: { type: mmdb, path: data/GeoLite2-Country.mmdb }
+  asn: { type: mmdb, path: data/GeoLite2-ASN.mmdb }
+  networks: { type: cidr, path: data/networks.csv }
+
+runtime:
+  workers: 1                     # one worker keeps a process's events in order, which the judge's account of a session rests on
+  state:                         # where the judge's account of each session is kept
+    backend: sqlite
+    path: state.sqlite
+    default_ttl_ms: 0
+    max_ttl_ms: 0

@@ -97,42 +97,63 @@ fn when(record: &Value) -> String {
     }
 }
 
+/// Who a record is about: the actor every cloud source names, or on a Mac
+/// the session, by what started it.
+fn who(record: &Value) -> String {
+    match text(record, &["_norm", "actor"]) {
+        actor if actor.is_empty() => text(record, &["session", "entry"]),
+        actor => actor,
+    }
+}
+
 /// An alert, as the lines that say it: when, from which log, who, and why
-/// the judge flagged it.
+/// the judge marked it. A Mac's judge marks a session `look` or `flag`, and
+/// says why or, of a `look`, what the session did.
 fn alert(record: &Value) -> Vec<String> {
+    let mark = match text(record, &["judge", "warrants_investigation"]).as_str() {
+        "look" => "look",
+        _ => "flagged",
+    };
+    let why = match text(record, &["judge", "why"]) {
+        why if why.is_empty() => text(record, &["judge", "assessment"]),
+        why => why,
+    };
     vec![
         format!(
-            "flagged   {}  {}  {}",
+            "{mark:<8}  {}  {}  {}",
             when(record),
             text(record, &["source"]),
-            text(record, &["_norm", "actor"])
+            who(record)
         ),
-        format!("          {}", text(record, &["judge", "why"])),
+        format!("          {why}"),
     ]
 }
 
-/// A review, as the lines that say it, from the first of its alerts, which
-/// carries `reviewed`; the others say nothing more.
+/// A review, as the lines that say it. A cloud pipeline's review covers an
+/// actor's alerts and is on each of them: it is said from the first, which
+/// carries `reviewed`, and the others say nothing more. A Mac's is a record
+/// of its own for each alert.
 fn review(record: &Value) -> Vec<String> {
-    let Some(about) = record.get("reviewed") else {
+    let about = record.get("reviewed");
+    if about.is_none() && text(record, &["source"]) != "macos_review" {
         return Vec::new();
-    };
-    let actor = text(record, &["_norm", "actor"]);
-    let alerts = match about.get("alerts").and_then(Value::as_u64) {
-        Some(1) => "1 alert".to_string(),
-        Some(n) => format!("{n} alerts"),
-        None => "its alerts".to_string(),
+    }
+    let who = who(record);
+    let alerts = match about.and_then(|a| a.get("alerts")).and_then(Value::as_u64) {
+        Some(1) => ", 1 alert".to_string(),
+        Some(n) => format!(", {n} alerts"),
+        None => String::new(),
     };
     let error = text(record, &["review", "error"]);
     if !error.is_empty() {
         return vec![
-            format!("review failed  {actor}, {alerts}: they stand"),
+            format!("review failed  {who}{alerts}: the judge's mark stands"),
             format!("          {error}"),
         ];
     }
     let mut lines = vec![
         format!(
-            "reviewed  {actor}, {alerts}: {}",
+            "reviewed  {who}{alerts}: {}",
             text(record, &["review", "verdict"])
         ),
         format!("          {}", text(record, &["review", "finding"])),
@@ -326,8 +347,50 @@ mod tests {
         assert_eq!(
             review(&failed),
             [
-                "review failed  ci, 2 alerts: they stand",
+                "review failed  ci, 2 alerts: the judge's mark stands",
                 "          no reply"
+            ]
+        );
+    }
+
+    /// A Mac's alert is a session the judge marked `look` or `flag`, and
+    /// its review a record of its own: each is said, by what started the
+    /// session.
+    #[test]
+    fn a_macs_alert_and_review_are_said() {
+        let look = json!({
+            "ts": "2026-11-24T03:09:43Z", "source": "macos_session",
+            "_norm": {"actor": "~/bin/agent#501"},
+            "session": {"id": "501", "entry": "~/bin/agent"},
+            "judge": {"warrants_investigation": "look", "assessment": "An agent read a key.", "so_far": "..."},
+        });
+        assert_eq!(
+            alert(&look),
+            [
+                "look      2026-11-24 03:09Z  macos_session  ~/bin/agent#501",
+                "          An agent read a key."
+            ]
+        );
+        let mut flag = look.clone();
+        flag["judge"] = json!({"warrants_investigation": "flag", "assessment": "It read a key.", "why": "It then sent it."});
+        assert_eq!(
+            alert(&flag)[0],
+            "flagged   2026-11-24 03:09Z  macos_session  ~/bin/agent#501"
+        );
+        assert_eq!(alert(&flag)[1], "          It then sent it.");
+
+        let reviewed = json!({
+            "ts": "2026-11-24T03:17:00Z", "source": "macos_review",
+            "session": {"id": "501", "entry": "~/bin/agent"},
+            "judge": {"warrants_investigation": "flag"},
+            "review": {"verdict": "unresolved", "finding": "It read a key and connected out.", "check": "Rotate the key."},
+        });
+        assert_eq!(
+            review(&reviewed),
+            [
+                "reviewed  ~/bin/agent: unresolved",
+                "          It read a key and connected out.",
+                "          check: Rotate the key."
             ]
         );
     }

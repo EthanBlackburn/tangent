@@ -13,6 +13,7 @@ mod fetch;
 mod follow;
 mod init;
 mod local;
+mod mac;
 use tangent_runtime::query;
 mod scaffold;
 mod state;
@@ -60,6 +61,21 @@ enum Watch {
         /// then the reviewer's (--model gpt-6-luna,gpt-6.1-terra)
         #[arg(long)]
         model: Option<String>,
+    },
+    /// This Mac: what each program runs, opens and connects to, and what
+    /// you ask Claude Code
+    ///
+    /// A model on this Mac judges it, so nothing the sensor reads leaves
+    /// the machine: Inkling 2 Mini, on a server tangent starts with the
+    /// pipeline (Apple Silicon, 32 GB of memory or more). --hosted has
+    /// Claude judge it through Anthropic's API instead.
+    Mac {
+        /// Models served for you in place of one on this Mac: Claude Haiku
+        /// 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's
+        /// API, with ANTHROPIC_API_KEY. Each session's summary is sent
+        /// there, with its command lines, its paths and your prompts
+        #[arg(long)]
+        hosted: bool,
     },
 }
 
@@ -354,6 +370,9 @@ async fn main() -> Result<()> {
             let (server, models) = init::served(local, provider, model.as_deref())?;
             init::run(Path::new("."), sources, server, models).await?
         }
+        Commands::Init {
+            watch: Watch::Mac { hosted },
+        } => mac::run(Path::new("."), hosted).await?,
 
         Commands::Watch {
             watch:
@@ -367,6 +386,9 @@ async fn main() -> Result<()> {
             let (server, models) = init::served(local, provider, model.as_deref())?;
             watch::cloud(sources, server, models).await?
         }
+        Commands::Watch {
+            watch: Watch::Mac { hosted },
+        } => watch::mac(hosted).await?,
 
         Commands::Model {
             command: ModelCommand::Fetch,
@@ -569,6 +591,16 @@ mod tests {
                 "glm-4.7-flash"
             ]));
             assert!(!parses(&["--sources", "okta"]), "the sources are cloud's");
+            assert!(parses(&["mac"]));
+            assert!(parses(&["mac", "--hosted"]));
+            assert!(
+                !parses(&["mac", "--sources", "okta"]),
+                "a Mac is watched whole"
+            );
+            assert!(
+                !parses(&["mac", "--local"]),
+                "a Mac is judged here unless --hosted"
+            );
         }
     }
 
