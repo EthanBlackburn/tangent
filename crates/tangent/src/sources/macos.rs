@@ -27,7 +27,7 @@
 //! source stops.
 
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -62,12 +62,10 @@ pub async fn run_consumer(
     if !cfg!(target_os = "macos") {
         bail!("source {name}: a macos source reads the Mac it runs on, and this is not one");
     }
-    if !cfg.sensor.is_file() {
-        bail!(
-            "source {name}: no sensor at {}: `sensor` names tangent-sensor inside TangentSensor.app, \
-             from a release's tangent-sensor-macos.zip or a build of packs/macos/sensor",
-            cfg.sensor.display()
-        );
+    let (path, release) = sensor(&name, &cfg)?;
+    // The release's sensor is checked before the password is asked for.
+    if let Some(dir) = &release {
+        checked(&name, dir.clone()).await?;
     }
     allow_root(&name).await?;
 
@@ -76,14 +74,19 @@ pub async fn run_consumer(
     first.push(monitor(std::process::id(), Utc::now()));
     router.forward(&from, first, Vec::new()).await?;
 
-    let mut sensor = as_root(cfg.sensor.as_os_str(), &[])
-        .with_context(|| format!("source {name}: starting {}", cfg.sensor.display()))?;
+    // And again last, with nothing between the check and the start but the
+    // start.
+    if let Some(dir) = release {
+        checked(&name, dir).await?;
+    }
+    let mut sensor = as_root(path.as_os_str(), &[])
+        .with_context(|| format!("source {name}: starting {}", path.display()))?;
     let mut out = sensor.stdout.take().expect("the sensor's stdout is piped");
     let err = sensor.stderr.take().expect("the sensor's stderr is piped");
     // What the sensor says of itself: the events the kernel dropped, and why
     // it stopped.
     let said = tokio::spawn(said(name.clone(), Some("sensor"), err));
-    tracing::info!(source = %name, sensor = %cfg.sensor.display(), "the sensor is started");
+    tracing::info!(source = %name, sensor = %path.display(), "the sensor is started");
 
     // The connections are read beside the sensor, and stop with it however
     // this returns.
@@ -125,6 +128,49 @@ pub async fn run_consumer(
     drop(out);
     let _ = tokio::join!(network, asked);
     Ok(())
+}
+
+/// The sensor to start, and for this release's the directory it is kept
+/// in. One the config names is taken as it is: yours, built and signed by
+/// you. With none named it is the release's, from tangent's cache
+/// ([`tangent_shared::sensor`]).
+fn sensor(name: &str, cfg: &MacosConfig) -> Result<(PathBuf, Option<PathBuf>)> {
+    if let Some(sensor) = &cfg.sensor {
+        if !sensor.is_file() {
+            bail!(
+                "source {name}: no sensor at {}: `sensor` names tangent-sensor inside a \
+                 TangentSensor.app you built from packs/macos/sensor. Left out, tangent fetches \
+                 its release's",
+                sensor.display()
+            );
+        }
+        return Ok((sensor.clone(), None));
+    }
+    let dir = tangent_shared::sensor::dir()?;
+    let sensor = tangent_shared::sensor::binary(&dir);
+    if !sensor.is_file() {
+        bail!(
+            "source {name}: this release's sensor is not at {}: `tangent run` fetches it before \
+             it starts",
+            sensor.display()
+        );
+    }
+    Ok((sensor, Some(dir)))
+}
+
+/// The release's sensor under `dir` is the one tangent's releases are
+/// signed as, or the source does not start.
+async fn checked(name: &str, dir: PathBuf) -> Result<()> {
+    let kept = dir.clone();
+    tokio::task::spawn_blocking(move || tangent_shared::sensor::check(&dir))
+        .await?
+        .with_context(|| {
+            format!(
+                "source {name}: the sensor is not started. Remove {}, and the next `tangent run` \
+                 fetches it again",
+                kept.display()
+            )
+        })
 }
 
 /// A program started as root, for its output: `sudo -n`, which asks

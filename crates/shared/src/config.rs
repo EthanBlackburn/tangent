@@ -18,6 +18,7 @@ pub mod models;
 pub mod packs;
 pub mod plugins;
 pub mod runtime;
+pub mod sensor;
 pub mod sinks;
 pub mod sources;
 pub mod wasm_engine;

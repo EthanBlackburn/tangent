@@ -9,6 +9,10 @@ sources:
     sensor: build/TangentSensor.app/Contents/MacOS/tangent-sensor
 ```
 
+`sensor:` names a build of your own, as here. Left out, tangent runs its
+release's, which it fetches and checks itself (the pack's
+[README](../README.md)).
+
 It subscribes to ten events (`exec fork exit open close create rename unlink
 btm_launch_item_add tcc_modify`) and writes each as one JSON line to stdout.
 The lines are in the shape of `eslogger`'s, Apple's own Endpoint Security

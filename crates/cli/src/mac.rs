@@ -19,7 +19,7 @@ use tangent_shared::packs;
 use crate::init::{self, Provider, Server, INKLING};
 use crate::{fetch, local};
 
-/// tangent.yaml with the sensor and the two models' settings left out:
+/// tangent.yaml with the two models' settings left out:
 /// `{{name}}` where each goes.
 const CONFIG: &str = include_str!("init-mac.yaml");
 
@@ -31,12 +31,6 @@ const BESIDE: &[(&str, &str)] = &[
     ("review.md", "macos/review.md"),
     ("profiles.yaml", "macos/profiles.yaml"),
 ];
-
-/// Where the sensor is, as the config names it.
-const SENSOR: (&str, &str) = (
-    "SENSOR",
-    "the path of tangent-sensor inside TangentSensor.app, from a release's tangent-sensor-macos.zip",
-);
 
 /// What a model brings to the config.
 struct Models {
@@ -152,11 +146,10 @@ impl Mac {
         self.brought().records.to_string()
     }
 
-    /// The variables the config reads: the sensor's place, then the models'.
+    /// The variables the config reads: the models', and none for a model
+    /// that runs here.
     pub fn needs(&self) -> Vec<(&'static str, &'static str)> {
-        let mut needs = vec![SENSOR];
-        needs.extend(self.brought().needs);
-        needs
+        self.brought().needs.to_vec()
     }
 
     /// The file's first lines: what it watches, who judges, how to run it
@@ -194,13 +187,6 @@ impl Mac {
         let (judge, reviewer) = models.names;
         [
             ("{{header}}", self.header()),
-            (
-                "{{sensor}}",
-                format!(
-                    "\"${{{}}}\"          # tangent-sensor inside TangentSensor.app, from a release's tangent-sensor-macos.zip",
-                    SENSOR.0
-                ),
-            ),
             ("{{models}}", models.entries.trim_end().to_string()),
             (
                 "{{judge_entry}}",
@@ -254,8 +240,8 @@ pub const BY_HAND: &str = "It asks for your password once: sudo starts the senso
 The terminal it runs in needs Full Disk Access (System Settings, Privacy & Security), and a restart after the grant.";
 
 /// `tangent init mac` in `dir`: the files, and the plugins the config
-/// names, fetched and checked. A fetch that fails takes the files with it,
-/// so what is left loads or is nothing.
+/// names and the sensor, fetched and checked. A fetch that fails takes the
+/// files with it, so what is left loads or is nothing.
 pub async fn run(dir: &Path, hosted: bool) -> Result<()> {
     let mac = Mac::new(hosted);
     runs_here(&mac)?;
@@ -263,9 +249,7 @@ pub async fn run(dir: &Path, hosted: bool) -> Result<()> {
     let config = dir.join("tangent.yaml");
     if let Err(e) = fetch::missing(&config.canonicalize().unwrap_or(config)).await {
         init::remove(&written);
-        return Err(
-            e.context("a plugin the config names could not be fetched, so nothing is written")
-        );
+        return Err(e.context("a plugin or the sensor could not be fetched, so nothing is written"));
     }
 
     // The model and what serves it, when it is to run here and is not here.
@@ -285,8 +269,10 @@ pub async fn run(dir: &Path, hosted: bool) -> Result<()> {
         .collect();
     println!("\nWrote {}.", wrote.join(", "));
     println!("\nYour records {}.", mac.records());
-    println!("\nIt reads these from the environment:");
     let needs = mac.needs();
+    if !needs.is_empty() {
+        println!("\nIt reads these from the environment:");
+    }
     let width = needs.iter().map(|(var, _)| var.len()).max().unwrap_or(0);
     for (var, what) in needs {
         let set = std::env::var(var).is_ok_and(|v| !v.trim().is_empty());
@@ -364,7 +350,7 @@ mod tests {
         assert_eq!(&*here.inference["judge"].model, "inkling");
         assert_eq!(&*here.inference["reviewer"].model, "inkling");
         assert!(Mac::new(false).records().starts_with("stay on this Mac"));
-        assert_eq!(Mac::new(false).needs(), [SENSOR]);
+        assert!(Mac::new(false).needs().is_empty());
 
         let (_dir, hosted) = written(Mac::new(true));
         assert_eq!(hosted.models.len(), 2);
@@ -372,7 +358,10 @@ mod tests {
         assert_eq!(hosted.models["judge"].model, "claude-haiku-5-5");
         assert_eq!(hosted.models["reviewer"].model, "claude-sonnet-5-5");
         assert!(Mac::new(true).records().contains("sent to Anthropic's API"));
-        assert_eq!(Mac::new(true).needs().len(), 2);
+        assert_eq!(
+            Mac::new(true).needs(),
+            [("ANTHROPIC_API_KEY", "a key from console.anthropic.com")]
+        );
     }
 
     /// The file is what the packs say: the config it writes loads to the
@@ -385,7 +374,7 @@ mod tests {
         let (_dir, ours) = written(Mac::new(true));
         let theirs = r#"include: [pack:macos, pack:macos/judge, pack:macos/lake, pack:judge/hosted, pack:macos/review]
 sources:
-  mac: { type: macos, sensor: "${SENSOR}" }
+  mac: { type: macos }
 plugins:
   macos: { inputs: [mac] }
   macos_sessions: { inputs: [macos] }
