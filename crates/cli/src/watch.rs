@@ -5,6 +5,10 @@
 //! (its lake, each actor's history, the alerts and their reviews) is there
 //! too and the next start goes on from it.
 //!
+//! While it runs it says what the judge flags and what each review finds
+//! ([`crate::follow`]), and the runtime's own lines are kept to its
+//! warnings (main.rs sets that, before the first of them).
+//!
 //! It starts only what can run: a variable the config reads and the
 //! environment lacks stops it with the list, where `tangent run` would
 //! leave a source idle, and a model that is to run here is downloaded
@@ -17,11 +21,23 @@ use anyhow::{bail, Context, Result};
 use fs2::FileExt as _;
 use tangent_runtime::RuntimeOptions;
 
+use crate::follow::Follow;
 use crate::init::{self, Choices, Server, Source};
 use crate::{fetch, local};
 
 /// The queue a CloudTrail source reads its trail from as it is written.
 const QUEUE: &str = "CLOUDTRAIL_QUEUE_URL";
+
+/// The files a pipeline reads when they are beside it, none of them
+/// shipped: one of each kind, and what it is.
+const OPTIONAL: &[(&str, &str)] = &[
+    ("profile.yaml", "your company's profile (profile.yaml)"),
+    ("data/networks.csv", "the address tables (data/)"),
+];
+
+/// Where the profile and the address tables are described.
+const PROFILE: &str =
+    "https://github.com/EthanBlackburn/tangent/blob/main/packs/README.md#the-profile";
 
 /// Where `tangent watch <what>` keeps its pipeline:
 /// `$XDG_DATA_HOME/tangent/<what>`, else `$HOME/.local/share/tangent/<what>`.
@@ -133,17 +149,61 @@ pub async fn cloud(
     }
     println!("{}.", choices.models());
     println!("Your records {}.", choices.records());
+    let absent: Vec<&str> = OPTIONAL
+        .iter()
+        .filter(|(file, _)| !dir.join(file).exists())
+        .map(|(_, what)| *what)
+        .collect();
+    if !absent.is_empty() {
+        println!(
+            "It judges without {}: {PROFILE} says what each adds, and they go in the directory below.",
+            absent.join(" and ")
+        );
+    }
     println!(
-        "\nWhat the judge flags, each alert with its review: {}",
-        dir.join("reviews.ndjson").display()
+        "\nEach alert is said here as the judge flags it, and each review as it is written: an actor's\n\
+         records are judged together, thirty at a time or an hour after the first, and an alert\n\
+         is reviewed a little over an hour after it."
     );
     println!(
-        "The pipeline, and all it keeps:                   {}",
+        "They are kept, with the pipeline and its lake, in {}",
         dir.display()
     );
     println!("Ctrl-C stops it.\n");
 
-    tangent_runtime::run(&config, RuntimeOptions::default()).await
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let said = tokio::spawn(Follow::new(&dir).run(stopped));
+    tokio::spawn(async {
+        if signalled().await {
+            println!(
+                "Stopping: the requests a model already has are waited for, and what was waiting is saved for the next start. Ctrl-C again ends them."
+            );
+        }
+    });
+    let ran = tangent_runtime::run(&config, RuntimeOptions::default()).await;
+    let _ = stop.send(());
+    let _ = said.await;
+    ran
+}
+
+/// Waits for the signal that stops the pipeline, which the runtime hears
+/// too. False when this process cannot listen for one.
+async fn signalled() -> bool {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let Ok(mut term) = signal(SignalKind::terminate()) else {
+            return false;
+        };
+        tokio::select! {
+            got = tokio::signal::ctrl_c() => got.is_ok(),
+            _ = term.recv() => true,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.is_ok()
+    }
 }
 
 #[cfg(test)]
