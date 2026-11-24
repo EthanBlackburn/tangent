@@ -19,7 +19,7 @@ goes out as one JSON line:
 `blackhole`, a sink that counts what reaches it and keeps none of it.
 
 ## Prerequisites
-- The `tangent` CLI ([Install](../../README.md#install)).
+- The `tangent` CLI ([Install](../../docs/reference.md#install)).
 - Go 1.26 or later.
 - [TinyGo](https://tinygo.org/getting-started/install/) that supports your Go:
   a TinyGo release builds only with the Go versions it lists (0.39 stops at
