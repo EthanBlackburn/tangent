@@ -47,7 +47,7 @@ Grant your terminal Full Disk Access (System Settings → Privacy & Security, th
 tangent watch mac
 ```
 
-- **Local by default:** On Apple Silicon (32 GB+ RAM), Tangent downloads a SHA-256-verified local server (MTPLX) and Inkling 2 Mini (~17 GB) into `~/.cache/tangent/models` after asking, starts it automatically, and stops it when you exit. Nothing leaves your Mac.
+- **Local by default:** On Apple Silicon (32 GB+ RAM), Tangent downloads a SHA-256-verified local server (its own copy of Ollama) and Inkling 2 Mini (~20 GB) into `~/.cache/tangent/models` after asking, starts it automatically, and stops it when you exit. Nothing leaves your Mac.
 - **Zero manual sensor setup:** Tangent downloads the Apple-signed, notarized Endpoint Security sensor once per version and verifies its signature and notarization before each start. It asks for `sudo` once to start the sensor and `tcpdump`.
 - **Hosted option:** Pass `--hosted` with `ANTHROPIC_API_KEY` set to use Claude Haiku 5.5 + Claude Sonnet 5.5 instead (works on any Mac, regardless of RAM). On an Intel Mac or one with under 32 GB, `tangent watch mac` stops before downloading anything and tells you to add it; it never switches to a hosted model on its own.
 - **What it sees:** Every program run and its process tree, reads/writes of credentials, AI-agent configs, and login items, per-process outbound connections, and what you ask Claude Code (from `~/.claude` transcripts).

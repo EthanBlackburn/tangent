@@ -55,7 +55,7 @@ tangent init cloud --sources okta --local --model glm-4.7-flash   # a model serv
 
 | `--local` | the model | measured | it needs |
 |---|---|---|---|
-| alone | Inkling 2 Mini, open weights, judges and reviews, on MTPLX. `tangent watch` starts the server, waits until it answers and stops it after | not on the corpus above | an Apple Silicon Mac with 32 GB of memory or more (on another machine `--local` stops and says so, before anything is downloaded). MTPLX and the model (17 GB) are downloaded into tangent's cache, each file checked: init offers to, and `tangent model fetch` does it later |
+| alone | Inkling 2 Mini, open weights, judges and reviews, on Ollama. `tangent watch` starts the server, waits until it answers and stops it after | not on the corpus above | an Apple Silicon Mac with 32 GB of memory or more (on another machine `--local` stops and says so, before anything is downloaded). An Ollama of tangent's own and the model (20 GB) are downloaded into tangent's cache, each checked, apart from any Ollama of yours: init offers to, and `tangent model fetch` does it later |
 | with `--model` | the model a server you run gives at `http://localhost:8080/v1` (llama-server, mlx_lm.server, Ollama, vLLM), by the name it gives it | not measured | the server running before tangent |
 
 The corpus is one made-up company, and 36 of its attacks are cases the judge's brief was written against: it says nothing of how much a model flags on your logs.
@@ -121,7 +121,7 @@ It watches the Mac it runs on: what each program runs, opens and connects to, an
 
 | | judges and reviews | where your records go | it needs |
 |---|---|---|---|
-| alone | Inkling 2 Mini, on a server tangent starts | nowhere: the model runs on this Mac | Apple Silicon with 32 GB of memory or more; the model (17 GB) is downloaded first, after asking. On another Mac tangent stops before it downloads anything and gives the `--hosted` command: it does not send your records to a hosted model unasked |
+| alone | Inkling 2 Mini, on a server tangent starts | nowhere: the model runs on this Mac | Apple Silicon with 32 GB of memory or more; the model (20 GB) is downloaded first, after asking. On another Mac tangent stops before it downloads anything and gives the `--hosted` command: it does not send your records to a hosted model unasked |
 | `--hosted` | Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews, through Anthropic's API | each session's summary is sent there, with its command lines, its paths and your prompts; a review sends the records it queries and the files it reads | `ANTHROPIC_API_KEY` |
 
 Inkling's settings here are the ones measured on cloud logs, with room for the longer answer a session takes. Its results on the recorded Mac attacks in [tangent-eval](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos) are not published yet; the hosted pair's are there.
