@@ -9,6 +9,6 @@ test: build
 	tangent plugin test --config tangent.yaml
 
 run: build
-	tangent run --config tangent.yaml
+	tangent watch --config tangent.yaml
 
 .PHONY: build data test run

@@ -290,7 +290,7 @@ mod tests {
         })
     }
 
-    /// A rolling_file sink `name` from YAML, as `tangent run` reads one: its
+    /// A rolling_file sink `name` from YAML, as `tangent watch` reads one: its
     /// `path` is `rest` below `root/out`, its WAL in `root/wal`.
     fn config(root: &Path, name: &Arc<str>, rest: &str) -> BTreeMap<Arc<str>, SinkConfig> {
         let yaml = format!(
@@ -302,7 +302,7 @@ mod tests {
         BTreeMap::from([(name.clone(), serde_yaml::from_str(&yaml).unwrap())])
     }
 
-    /// From YAML through the sink manager, as `tangent run` builds it: a
+    /// From YAML through the sink manager, as `tangent watch` builds it: a
     /// write is in a file once the manager is joined, in the directory its
     /// time renders.
     #[tokio::test]

@@ -15,12 +15,12 @@ tangent init cloud --sources okta --local --model glm-4.7-flash   # a model serv
 |---|---|---|
 | `--sources` | what to watch, one or more of `cloudtrail`, `github`, `okta`, `google_workspace`, `supabase` | the pipeline has no source yet |
 | `--provider` and `--model`, together | who serves the models (`anthropic`, `bedrock`, `openrouter`, `openai`), and each model by the exact name the provider takes: one name judges and reviews, and two with a comma are the judge's, then the reviewer's | Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API |
-| `--local` | a model on this machine in place of a hosted one: Inkling 2 Mini judges and reviews, on a server tangent starts with `tangent run` (Apple Silicon, with 32 GB of memory or more) | the models are hosted, and every record is sent to who serves them |
+| `--local` | a model on this machine in place of a hosted one: Inkling 2 Mini judges and reviews, on a server tangent starts with `tangent watch` (Apple Silicon, with 32 GB of memory or more) | the models are hosted, and every record is sent to who serves them |
 | `--model`, with `--local` | the model a server of your own gives at `http://localhost:8080/v1`, which tangent does not start | `--local` is Inkling 2 Mini |
 
 Init writes over nothing, so the flags are for a new file. This page is how to change one already written: to add or take out a source, and to change who serves the models.
 
-Every block below is what init writes, with its indentation: paste it as it is. To check an edit, `tangent config --config tangent.yaml` loads the file and prints it, or says what is wrong with it. A plugin the file names is fetched, and its build's attestation checked, the first time `tangent replay` or `tangent run` reads the file.
+Every block below is what init writes, with its indentation: paste it as it is. To check an edit, `tangent config --config tangent.yaml` loads the file and prints it, or says what is wrong with it. A plugin the file names is fetched, and its build's attestation checked, the first time `tangent replay` or `tangent watch` reads the file.
 
 ## Watch another source
 
@@ -35,7 +35,7 @@ To stop watching a source, take it out of the same four places. A file written w
 
 The comment at the top of the file says what it watches, who serves the models, where the records go to be judged and how to run it. Nothing reads it: bring it up to date for whoever opens the file next.
 
-`tangent replay --config tangent.yaml --from 1d` reads CloudTrail's past and no other source. `tangent run --config tangent.yaml` reads the others from an hour back and as it happens, and CloudTrail too once `queue_url` names the SQS queue the trail's bucket notifies.
+`tangent replay --config tangent.yaml --from 1d` reads CloudTrail's past and no other source. `tangent watch --config tangent.yaml` reads the others from an hour back and as it happens, and CloudTrail too once `queue_url` names the SQS queue the trail's bucket notifies.
 
 ### AWS: CloudTrail
 
@@ -50,7 +50,7 @@ Its node, under `sources:`:
     type: cloudtrail
     profile: "${AWS_PROFILE:-default}"   # the AWS profile (~/.aws/config) that reads CloudTrail; EDIT to name another
     region: us-east-1            # for looking up its credentials; replay reads every region
-    queue_url: ${CLOUDTRAIL_QUEUE_URL}   # for `tangent run`: the SQS queue the trail's bucket notifies; replay needs none
+    queue_url: ${CLOUDTRAIL_QUEUE_URL}   # for `tangent watch`: the SQS queue the trail's bucket notifies; replay needs none
 ```
 
 Its plugin, under `plugins:`:
@@ -419,7 +419,7 @@ The reviewer has no lines of its own under `inference:`: take out the ones that 
 
 ### Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (MTPLX)
 
-`--local` writes this. The judge and the reviewer are one model, so `models:` holds one entry, `inkling`, in place of `judge` and `reviewer`, and both nodes under `inference:` say `model: inkling`. `tangent run` starts the server (`serve`), waits until it answers and stops it after. It needs an Apple Silicon Mac with 32 GB of memory or more.
+`--local` writes this. The judge and the reviewer are one model, so `models:` holds one entry, `inkling`, in place of `judge` and `reviewer`, and both nodes under `inference:` say `model: inkling`. `tangent watch` starts the server (`serve`), waits until it answers and stops it after. It needs an Apple Silicon Mac with 32 GB of memory or more.
 
 MTPLX and the model are tangent's own copies, under its cache, and nothing else on the Mac is touched. Init offers to download them, and `tangent model fetch` does it at any time: uv, a Python, MTPLX 2.13.1 and the model (17 GB), each a pinned version checked against its SHA-256. A fetch that was stopped goes on where it was.
 
@@ -435,7 +435,7 @@ The whole of `models:`:
     timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
     retries: 2
     concurrency: 1               # one request at a time, the judge's and the reviewer's together
-    # `tangent run` starts this server, waits until it answers and stops it
+    # `tangent watch` starts this server, waits until it answers and stops it
     # after; one already answering at `url` is used and left running.
     serve:
       # MTPLX and the model, where `tangent model fetch` keeps them

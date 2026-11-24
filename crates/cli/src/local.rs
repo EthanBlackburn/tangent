@@ -1,5 +1,5 @@
 //! A model on this machine, fetched: what `tangent init cloud --local` and
-//! `tangent model fetch` download so that `tangent run` can start Inkling 2
+//! `tangent model fetch` download so that `tangent watch` can start Inkling 2
 //! Mini on MTPLX with nothing else installed.
 //!
 //! Everything goes under tangent's cache ([`tangent_shared::cache::models`]),

@@ -6,7 +6,6 @@ use serde_yaml::Value;
 use tracing_subscriber::EnvFilter;
 
 use tangent_bench::BenchOptions;
-use tangent_runtime::RuntimeOptions;
 
 mod attest;
 mod fetch;
@@ -94,15 +93,6 @@ enum ModelCommand {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Run {
-        /// Path to YAML config
-        #[arg(long, value_name = "FILE")]
-        config: PathBuf,
-        /// Exit after one drain cycle (for tests)
-        #[arg(long, default_value_t = false)]
-        once: bool,
-    },
-
     Bench {
         /// Path to tangent.yaml
         #[arg(long, value_name = "FILE")]
@@ -135,7 +125,7 @@ enum Commands {
         #[arg(long)]
         object_prefix: Option<String>,
 
-        /// disable metrics. Only use if benchmarking outside of tangent run.
+        /// disable metrics. Only use if benchmarking outside of tangent watch.
         #[arg(long, default_value_t = false)]
         disable_metrics: bool,
 
@@ -167,16 +157,30 @@ enum Commands {
         watch: Watch,
     },
 
-    /// Watch it now, with nothing to keep: `tangent init` and `tangent run`
-    /// in one. The pipeline init would write for the same flags is kept in
-    /// tangent's own directory (~/.local/share/tangent), written again at
-    /// each start, and run from there, where its alerts and reviews are
-    /// written and the next start goes on from what it has learned. It
-    /// starts only with what it needs: a variable that is not set stops
-    /// it, and --local downloads the model first
+    /// Run a pipeline and say what it finds: `watch cloud` and `watch mac`
+    /// with nothing to keep, or `watch --config tangent.yaml` for a
+    /// pipeline of your own.
+    ///
+    /// `watch cloud` and `watch mac` run the pipeline init would write for
+    /// the same flags. It is kept in tangent's own directory
+    /// (~/.local/share/tangent), written again at each start, and run from
+    /// there, where its alerts and reviews are written and the next start
+    /// goes on from what it has learned. It starts only with what it
+    /// needs: a variable that is not set stops it, and --local downloads
+    /// the model first
+    #[command(args_conflicts_with_subcommands = true, arg_required_else_help = true)]
     Watch {
         #[command(subcommand)]
-        watch: Watch,
+        watch: Option<Watch>,
+        /// A pipeline of your own, run where you are: the file `tangent
+        /// init` wrote, or any other. What it writes to alerts.ndjson,
+        /// reviews.ndjson and verdicts.ndjson here is said as it is
+        /// written, as init's pipelines do
+        #[arg(long, value_name = "FILE")]
+        config: Option<PathBuf>,
+        /// Exit after one drain cycle (for tests)
+        #[arg(long, requires = "config")]
+        once: bool,
     },
 
     /// Run one attack on this Mac, for `tangent watch mac` to catch: a
@@ -298,7 +302,7 @@ enum PluginCommands {
     /// repository's CI, and check GitHub's attestation of each before it is
     /// kept, in tangent's cache for this version
     /// (~/.cache/tangent/<version>/plugins), in place of any `tangent plugin
-    /// compile` build: no WASM toolchain needed, only `gh`. `tangent run`
+    /// compile` build: no WASM toolchain needed, only `gh`. `tangent watch`
     /// fetches the ones it is missing; this fetches them again, or ahead of
     /// time
     Fetch {
@@ -318,16 +322,6 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     match cli.command {
-        Commands::Run { config, once } => {
-            let cfg = config.canonicalize().unwrap_or(config);
-            fetch::missing(&cfg).await?;
-            let opts = RuntimeOptions {
-                once,
-                ..Default::default()
-            };
-
-            tangent_runtime::run(&cfg, opts).await?
-        }
         Commands::Bench {
             config,
             seconds,
@@ -375,19 +369,32 @@ async fn main() -> Result<()> {
 
         Commands::Watch {
             watch:
-                Watch::Cloud {
+                Some(Watch::Cloud {
                     sources,
                     local,
                     provider,
                     model,
-                },
+                }),
+            ..
         } => {
             let (server, models) = init::served(local, provider, model.as_deref())?;
             watch::cloud(sources, server, models).await?
         }
         Commands::Watch {
-            watch: Watch::Mac { hosted },
+            watch: Some(Watch::Mac { hosted }),
+            ..
         } => watch::mac(hosted).await?,
+        Commands::Watch {
+            watch: None,
+            config,
+            once,
+        } => {
+            // clap shows the help when neither is given.
+            let Some(config) = config else {
+                anyhow::bail!("watch cloud, watch mac, or watch --config <FILE>");
+            };
+            watch::config(config, once).await?
+        }
 
         Commands::Simulate => simulate::run()?,
 

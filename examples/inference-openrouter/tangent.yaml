@@ -1,7 +1,7 @@
 # A model on OpenRouter reads every record; a plugin keeps what it flagged.
 #
 #   export OPENROUTER_API_KEY=...               (a key from openrouter.ai/keys)
-#   tangent run --config tangent.yaml
+#   tangent watch --config tangent.yaml
 #   nc -w 1 localhost 9000 < events.ndjson
 #   cat flagged.ndjson
 runtime:

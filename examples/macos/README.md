@@ -13,11 +13,11 @@ once a turn. One config, one process.
 ```bash
 ../enrich/setup.sh data                        # once: the address tables that name a connection's network owner
 tangent plugin compile --config review.yaml    # once: the pack's plugins, and the reviewer's
-tangent run --config haiku.yaml                # Claude Haiku on Bedrock, AWS_PROFILE set; or tangent.yaml, a local model
+tangent watch --config haiku.yaml                # Claude Haiku on Bedrock, AWS_PROFILE set; or tangent.yaml, a local model
 tail -f alerts.ndjson                          # in another terminal
 ```
 
-`tangent run` is the whole capture: the `macos` source in tangent.yaml
+`tangent watch` is the whole capture: the `macos` source in tangent.yaml
 (packs/macos/README.md) asks for your password once, through sudo, starts
 the sensor and macOS's tcpdump as root, and reads what was already running,
 each new connection, and what you ask Claude Code, from the transcripts
@@ -29,7 +29,7 @@ after the grant.
 
 The sensor is [packs/macos/sensor](/packs/macos/sensor), the pack's
 Endpoint Security client. A release has it built, signed and notarized, as
-`tangent-sensor-macos.zip` beside the binaries, and `tangent run` fetches
+`tangent-sensor-macos.zip` beside the binaries, and `tangent watch` fetches
 it once per version: there is nothing to download or name. Since it runs as
 root, tangent checks before each start that it is the one its team signed
 and Apple notarized.
@@ -42,7 +42,7 @@ Your prompts to Claude Code reach the model that judges, and the lake, with
 the command lines that already do (packs/macos/README.md, "What the agent
 was asked").
 
-`tangent run --config review.yaml` also gives each alert a second look
+`tangent watch --config review.yaml` also gives each alert a second look
 (packs/macos/README.md, "The second reviewer"): a stage of the pipeline in
 which Claude Sonnet 5.5 on Bedrock (REVIEW_MODEL for another) reads the
 alert, queries the lake, reads the scripts and the agent settings the log
@@ -70,7 +70,7 @@ a sink that takes the source itself (packs/macos/README.md has the lines).
   of the judge's, the summaries sent as JSON lines; a local
   OpenAI-compatible model by default (`JUDGE_URL`, `JUDGE_MODEL`,
   packs/judge/README.md). The judge pack brings behavior-baseline's two
-  plugins, which nothing routes to here: `tangent run` says so, and they
+  plugins, which nothing routes to here: `tangent watch` says so, and they
   never run.
 - `haiku.yaml`: the same on Claude Haiku 5.5 through Bedrock,
   `us.anthropic.claude-haiku-5-5` (the cross-region profile; Converse refuses

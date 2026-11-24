@@ -868,7 +868,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// `tangent run` stops at a key_prefix that is not a strftime template,
+    /// `tangent watch` stops at a key_prefix that is not a strftime template,
     /// naming the sink, before any sink starts: a sink named before it has
     /// not made its WAL, so none recovers or sends what it finds there.
     #[tokio::test]

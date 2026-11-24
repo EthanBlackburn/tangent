@@ -234,7 +234,7 @@ tests/expected.json  # JSON of the output: an array of the emitted records (an o
 
 * `make build` — `./setup.sh`, then `tangent plugin compile`: the plugin lands in `plugins/<name>.cwasm`.
 * `make test` — builds, then runs the fixture comparison.
-* `make run` — builds, then `tangent run`, the pipeline in `tangent.yaml`: it listens on tcp 0.0.0.0:9000 and does not read the fixtures.
+* `make run` — builds, then `tangent watch`, the pipeline in `tangent.yaml`: it listens on tcp 0.0.0.0:9000 and does not read the fixtures.
 
 > Tests must pass without external resources or environment tweaks.
 

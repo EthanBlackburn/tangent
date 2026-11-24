@@ -50,10 +50,10 @@ compile:
 test: $(PLUGINS)
 	$(TANGENT) plugin test --config $(CONFIG)
 
-# `tangent run` fetches the plugins it has no copy of, once per tangent
+# `tangent watch` fetches the plugins it has no copy of, once per tangent
 # version, so only `compile` comes first; `make fetch` fetches them again,
 # in place of a compiled build.
 run: $(if $(filter compile,$(PLUGINS)),compile,setup)
-	$(TANGENT) run --config $(CONFIG)
+	$(TANGENT) watch --config $(CONFIG)
 
 .PHONY: setup fetch compile test run

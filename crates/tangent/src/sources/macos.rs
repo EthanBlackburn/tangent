@@ -150,7 +150,7 @@ fn sensor(name: &str, cfg: &MacosConfig) -> Result<(PathBuf, Option<PathBuf>)> {
     let sensor = tangent_shared::sensor::binary(&dir);
     if !sensor.is_file() {
         bail!(
-            "source {name}: this release's sensor is not at {}: `tangent run` fetches it before \
+            "source {name}: this release's sensor is not at {}: `tangent watch` fetches it before \
              it starts",
             sensor.display()
         );
@@ -166,7 +166,7 @@ async fn checked(name: &str, dir: PathBuf) -> Result<()> {
         .await?
         .with_context(|| {
             format!(
-                "source {name}: the sensor is not started. Remove {}, and the next `tangent run` \
+                "source {name}: the sensor is not started. Remove {}, and the next `tangent watch` \
                  fetches it again",
                 kept.display()
             )

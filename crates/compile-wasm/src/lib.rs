@@ -110,7 +110,7 @@ pub fn compile_from_config(cfg_path: &PathBuf, wit: Wit, only: Option<&str>) -> 
 }
 
 /// The component at `component` serialized for this machine's wasmtime at
-/// `cwasm`: what `tangent run` loads. A component is portable; its `.cwasm`
+/// `cwasm`: what `tangent watch` loads. A component is portable; its `.cwasm`
 /// is not, so it is made where it runs.
 pub fn precompile(component: &Path, cwasm: &Path) -> Result<()> {
     let engine = tangent_shared::wasm_engine::build()?;

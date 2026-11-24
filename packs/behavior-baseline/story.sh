@@ -14,7 +14,7 @@ export RUST_LOG=${RUST_LOG:-warn}
 
 "$T" plugin compile --config test.yaml
 rm -f test_out.ndjson
-"$T" run --once --config test.yaml
+"$T" watch --once --config test.yaml
 
 python3 -I - "${1:-check}" <<'PY'
 import json, os, sys

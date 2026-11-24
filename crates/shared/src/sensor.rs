@@ -1,7 +1,7 @@
 //! The Mac's sensor as a release has it: packs/macos/sensor built, signed
 //! with tangent's Developer ID and notarized by Apple, the asset
 //! `tangent-sensor-macos.zip` beside the binaries. A `macos` source that
-//! names no `sensor` runs this one from tangent's cache, where `tangent run`
+//! names no `sensor` runs this one from tangent's cache, where `tangent watch`
 //! puts it once per version.
 //!
 //! The sensor runs as root, so it is checked where it is kept and again

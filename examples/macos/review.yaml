@@ -5,7 +5,7 @@
 # its review: malicious, benign or unresolved. It costs money and sends
 # records to a second model, so it is its own config.
 #
-#   tangent run --config review.yaml
+#   tangent watch --config review.yaml
 #
 # Each review that stands is then put to you in a dialog on this Mac, and
 # your answer kept in feedback.ndjson: sink `ask` gives each review to

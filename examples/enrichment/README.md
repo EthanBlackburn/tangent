@@ -66,7 +66,7 @@ the countries come back empty, and the test fails on them.
 ## Run
 
 ```bash
-tangent run --config tangent.yaml              # listens on :9000, writes out.ndjson
+tangent watch --config tangent.yaml              # listens on :9000, writes out.ndjson
 ```
 
 In a second terminal, send records, one JSON object per line (the `tcp`
@@ -90,5 +90,5 @@ Lines come out in no fixed order: the workers run in parallel.
 
 ```bash
 make test    # ./setup.sh, compile, then the test with --enable-http
-make run     # ./setup.sh, compile, then tangent run
+make run     # ./setup.sh, compile, then tangent watch
 ```

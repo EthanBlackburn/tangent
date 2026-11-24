@@ -49,7 +49,7 @@ in-process `lru` store with the config's TTLs.
 
 ## Run
 ```bash
-make run          # setup and compile, then: tangent run --config tangent.yaml
+make run          # setup and compile, then: tangent watch --config tangent.yaml
 ```
 
 The pipeline reads NDJSON, one record per line, on TCP port 9000 and appends

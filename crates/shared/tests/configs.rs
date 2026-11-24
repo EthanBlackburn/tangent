@@ -1,6 +1,6 @@
 //! Every config in the repo loads: alone, or through a config that includes
 //! it (a pack's ingest.yaml, say, is a plugin whose tables enrich-ip gives).
-//! And the pipelines pass the checks `tangent run` makes before it starts:
+//! And the pipelines pass the checks `tangent watch` makes before it starts:
 //! with the judge, as the examples run, and without it.
 
 use std::collections::BTreeSet;
@@ -89,7 +89,7 @@ fn every_config_in_the_repo_loads() {
     eprintln!("{} configs load", found.len());
 }
 
-/// Every edge's nodes exist, which `tangent run` checks before it starts and
+/// Every edge's nodes exist, which `tangent watch` checks before it starts and
 /// loading does not: in examples/cloud-infra and examples/macos, and in a
 /// pipeline of every pack in packs/ without the judge, so no pack names a
 /// node of the judge's. The configs `tangent init` writes are checked where

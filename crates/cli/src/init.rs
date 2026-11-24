@@ -41,7 +41,7 @@ pub const PREBUILT: &str =
 /// The command that reads a source's past, and the one that reads sources
 /// as they are written.
 const REPLAY: &str = "tangent replay --config tangent.yaml --from 1d";
-const RUN: &str = "tangent run --config tangent.yaml";
+const RUN: &str = "tangent watch --config tangent.yaml";
 
 /// Where the directions for changing a written config by hand are.
 const DIRECTIONS: &str = "https://github.com/EthanBlackburn/tangent/blob/main/docs/config.md";
@@ -107,7 +107,7 @@ impl Source {
     type: cloudtrail
     profile: "${AWS_PROFILE:-default}"   # the AWS profile (~/.aws/config) that reads CloudTrail; EDIT to name another
     region: us-east-1            # for looking up its credentials; replay reads every region
-    queue_url: ${CLOUDTRAIL_QUEUE_URL}   # for `tangent run`: the SQS queue the trail's bucket notifies; replay needs none
+    queue_url: ${CLOUDTRAIL_QUEUE_URL}   # for `tangent watch`: the SQS queue the trail's bucket notifies; replay needs none
 "#,
                 rows: r#"        cloudtrail:
           principal: [_norm.actor, userIdentity.arn]
@@ -309,7 +309,7 @@ pub const INKLING: &str = r#"    type: openai                 # MTPLX serves the
     timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
     retries: 2
     concurrency: 1               # one request at a time, the judge's and the reviewer's together
-    # `tangent run` starts this server, waits until it answers and stops it
+    # `tangent watch` starts this server, waits until it answers and stops it
     # after; one already answering at `url` is used and left running.
     serve:
       # MTPLX and the model, where `tangent model fetch` keeps them
@@ -652,7 +652,7 @@ impl Choices {
         }
         header.push_str(&format!("#   models   {}\n", self.models()));
         header.push_str(&format!("#   records  {}\n", self.records()));
-        // the commands that run a file of your own; `tangent watch` is its own
+        // the commands that run a file of your own; `watch cloud` is its own
         let commands = match self.watched {
             false => self.commands(),
             true => Vec::new(),
@@ -897,7 +897,7 @@ pub fn local_needs(server: Server) -> Vec<String> {
         Server::Yours => vec!["Start your model's server first.".to_string()],
         Server::Mtplx => {
             let mut lines = vec![
-                "`tangent run` starts the model, waits until it answers and stops it after."
+                "`tangent watch` starts the model, waits until it answers and stops it after."
                     .to_string(),
             ];
             if let Ok(root) = local::root() {
@@ -1007,7 +1007,7 @@ pub async fn run(
     }
     if !choices.runs() {
         println!(
-            "\n`tangent run` reads CloudTrail as it is written once tangent.yaml's `queue_url` names the trail's queue."
+            "\n`tangent watch` reads CloudTrail as it is written once tangent.yaml's `queue_url` names the trail's queue."
         );
     }
     fetched.context("the config is written, and the model is not all here: `tangent model fetch` goes on where this stopped")
@@ -1045,7 +1045,7 @@ pub(crate) mod tests {
     }
 
     /// Every source alone, and all five together, with every pair: the
-    /// config loads, passes what `tangent run` checks, and warns of nothing
+    /// config loads, passes what `tangent watch` checks, and warns of nothing
     /// in its wiring.
     #[test]
     fn every_choice_is_a_pipeline_that_loads() {

@@ -5,7 +5,7 @@
 # config, one process.
 #
 #   tangent plugin compile --config tangent.yaml
-#   tangent run --config tangent.yaml       # a local model: JUDGE_URL, JUDGE_MODEL (packs/judge/README.md); haiku.yaml for Claude Haiku
+#   tangent watch --config tangent.yaml       # a local model: JUDGE_URL, JUDGE_MODEL (packs/judge/README.md); haiku.yaml for Claude Haiku
 #   tail -f alerts.ndjson                   # in another terminal
 #
 # The `macos` source is the whole capture (packs/macos/README.md). Tangent

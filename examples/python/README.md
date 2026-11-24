@@ -24,7 +24,7 @@ This runs [`tests/input.json`](tests/input.json) through the plugin and compares
 
 ## Run
 ```bash
-tangent run --config tangent.yaml
+tangent watch --config tangent.yaml
 ```
 From another terminal, send it one record the probe wants and one it doesn't, then read the counters on the metrics endpoint (`:9184`):
 ```bash
@@ -38,10 +38,10 @@ tangent_consumer_objects_total 2
 tangent_sink_bytes_total 97
 tangent_unrouted_records_total{node="source:network_input"} 1
 ```
-The sink is `blackhole`, which keeps nothing, so the counters are how you see the plugin work: both records arrived, and the 97 bytes are the one line `mapper.py` wrote for the `myservice` record. The other matched no probe: `tangent run` warns that it was dropped and `tangent_unrouted_records_total` counts it.
+The sink is `blackhole`, which keeps nothing, so the counters are how you see the plugin work: both records arrived, and the 97 bytes are the one line `mapper.py` wrote for the `myservice` record. The other matched no probe: `tangent watch` warns that it was dropped and `tangent_unrouted_records_total` counts it.
 
 ## Benchmark
-With `tangent run` still going (`tangent bench` reads its metrics on `:9184`), from another terminal:
+With `tangent watch` still going (`tangent bench` reads its metrics on `:9184`), from another terminal:
 ```bash
 tangent bench --config tangent.yaml --seconds 20 --connections 16 --payload tests/bench.json --synthesize
 ```
