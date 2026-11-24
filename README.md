@@ -2,8 +2,8 @@
   <img src="https://github.com/user-attachments/assets/7da02584-0a4e-4e41-af6d-61cb081029c4" alt="Tangent logo" height=170>
 </p>
 <h1 align="center">Tangent</h1>
-<p align="center"><em>Have an LLM watch your logs.</em></p>
-
+<p align="center"><strong>Have an LLM watch your Mac and cloud accounts for break-ins.</strong></p>
+<p align="center"><em>Catch poisoned packages, rogue AI-agent actions, and stolen-key abuse — locally on Apple Silicon or with your own API key. No SIEM. No rules to write.</em></p>
 
 <p align="center">
   <a href="https://github.com/EthanBlackburn/tangent/actions">
@@ -11,353 +11,162 @@
   <a href="https://twitter.com/telophasehq">
   <img src="https://img.shields.io/twitter/follow/telophasehq?style=social" alt="X">
   </a>
-
 </p>
 
 <p align="center">
-  <a href="https://docs.telophasehq.com">Documentation</a>
+  <a href="/docs/try-it.md">Quickstart</a>
+  <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
+  <a href="/docs/reference.md">Runtime Reference</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="https://discord.gg/ZUHB3BRa8c">Discord</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="https://github.com/EthanBlackburn/tangent/issues/new">Issues</a>
 </p>
 
-Shai-Hulud. The axios and LiteLLM compromises. The fake recruiter's take-home
-project. The poisoned editor extensions. Each one landed on developers'
-machines, and at most companies nothing was watching when it did: no SIEM,
-no detection rules, no one whose job it is to read the logs.
+---
 
-Tangent pulls logs from your Macs and your cloud (AWS, GitHub, Okta, Google
-Workspace), feeds them to a model, and lets you know when something is
-wrong.
+Modern compromises start on a developer's laptop — a poisoned npm or PyPI package, a trojanised editor extension, a fake take-home repo, or a prompt-injected coding agent grabbing `~/.aws`, `~/.ssh`, Keychain, or browser tokens — and finish in your cloud accounts. At most startups, nothing watches either side.
 
-## What it catches
+Tangent is a single binary that watches both. A fast model reads your activity and flags anything suspicious; a second model investigates every alert against the full local log before paging you, and tells you in plain English what happened and what to check first.
 
-We re-created each of these attacks, ran it for real on a developer's Mac
-(a VM) with tangent watching, and beside each one recorded a developer doing
-the same kinds of things for honest reasons. Each recording went through
-tangent three times.
+## Quickstart
 
-| Attack | What it does on the Mac | Caught | Look-alike left alone |
-|---|---|---|---|
-| Shai-Hulud | An npm install script hunts the Mac for tokens and keys, and republishes the developer's own packages with itself added | 3 of 3 | 3 of 3 |
-| axios compromise | An npm install script drops a remote-access tool made to look like an Apple daemon and leaves it running | 3 of 3 | 3 of 3 |
-| LiteLLM compromise | A file the PyPI package installs runs on every Python start and sweeps credentials | 3 of 3 | 3 of 3 |
-| Contagious Interview | Running a fake recruiter's take-home project reads wallet, browser and keychain files, uploads them, and leaves a backdoor running | 3 of 3 | 3 of 3 |
-| Contagious Interview, by the editor | Opening the same project's folder in the editor is enough: a hidden task pipes a script into bash | 3 of 3 | 3 of 3 |
-| GlassWorm | An editor extension copies the login keychain, wallets and credentials, uploads them and installs a login item | 3 of 3 | 3 of 3 |
-| Trojanised Claude Code extension | An editor extension adds an SSH key, opens a reverse tunnel and installs a login item | 3 of 3 | 3 of 3 |
-
-Every case, what is real in its recording and what is stood in, and how to
-run it yourself: [tangent-eval/macos](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos).
-
-## What it costs
-
-For a company of 50, with Claude Haiku 5.5 reading, billed to your own model
-account:
-
-| | a day |
-|---|---|
-| AWS (CloudTrail) | $2–20 |
-| Okta | $0.60 |
-| Google Workspace | $0.35–0.70 |
-| GitHub | $0.30 |
-
-About a cent a day for each person in each source that sees them. With a
-model on your own machine, nothing. These are our estimates;
-[the working](#the-cost-worked-out) is below.
-
-## What you get
-
-Not a rule name and a severity. This is tangent's alert on a re-creation of
-the trojanised Claude Code extension that Cursor's marketplace carried in
-October 2026, run on a Mac with tangent watching (shortened):
-
-> VS Code's Code Helper (Plugin) process, acting on behalf of the extension
-> acme-tools.acme-assist-2.1.3, ran a hidden script `~/.config/.mtr` […]
-> Before launching it, the same helper contacted ifconfig.me and
-> api.ipify.org to learn the host's public IP, created
-> `~/.ssh/authorized_keys` and a LaunchAgent masquerading as
-> `~/Library/LaunchAgents/com.apple.sysstatd.plist`, and ran
-> `/usr/sbin/systemsetup -setremotelogin on` […] The `.mtr` script then
-> repeatedly (every 60s […]) launched `ssh -N -R *:0:localhost:22 […]`,
-> opening a persistent reverse SSH tunnel from the Mac to an external host
-> using a hidden private key. This was not requested by the owner […] and
-> was triggered purely by the extension loading.
->
-> **What to do:** Immediately disable remote login, remove/inspect
-> `~/.ssh/authorized_keys` for the injected key, remove the LaunchAgent
-> […], kill any running reverse-tunnel ssh processes […], and
-> delete/quarantine the acme-tools.acme-assist VS Code extension […]
-
-And this is what it said of a developer on the same Mac adding their own SSH
-key, checking it against GitHub and installing a database that starts at
-login:
-
-> That key is this Mac's own public key, so it grants login only to someone
-> who already holds the owner's private key. […] Homebrew installed redis
-> and created its sh.brew.redis LaunchAgent, which is Homebrew's normal
-> service setup. `ssh -T git@github.com` checked GitHub access.
-
-No alert. Both wrote `authorized_keys`, ran `ssh` and made a launch item. A
-rule on any one of those fires on both or on neither. Rule sets that tell
-them apart exist (Elastic's did, below) and are the work of a detection
-team; nobody at a company of 50 writes or keeps them. A model can tell them
-apart with no rules at all.
-
-## Against detection rules
-
-The usual way to watch logs is a SIEM and its detection rules. We put the
-same logs to tangent and to the two public rule sets, Elastic's and Sigma's.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/cards-dark.png">
-  <img src="docs/img/cards-light.png" alt="An LLM watching the logs, against detection rules. Attacks caught of 71: tangent with an open model 71, Elastic rules 51, Sigma rules 13. Ordinary records flagged of 5,304: tangent 12, Elastic rules 43, Sigma rules 121. A second look takes the model's first pass from 221 to 12. DeepSeek V4 Flash, open weights: $2.25 for the year of logs.">
-</picture>
-
-A year of a made-up startup's AWS, Okta, GitHub, Google Workspace and CI
-logs, 59,342 records, with 71 attacks placed in them: 35 AWS techniques
-from Stratus Red Team, and 36 cases we wrote. Tangent with DeepSeek V4
-Flash, an open-weight model, caught all 71 and flagged 12 ordinary records.
-Elastic's rules caught 51 and flagged 43; Sigma's caught 13 and flagged 121.
-
-The model reads every record once and flags freely: 221 ordinary records on
-that first pass. Then it investigates its own alerts with the whole log to
-query, and 12 are left. Both passes together cost $2.25 in hosted fees for
-the year of logs.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/board-dark.png">
-  <img src="docs/img/board-light.png" alt="Attacks caught of 71, false alarms and fees a run. Qwen3.5 122B: 71, 2, $15.50. MiniMax M3.1 Flash: 71, 5, $4.18. DeepSeek V4.1 Flash with GLM 5.3: 71, 10, $5.06. DeepSeek V4 Flash: 71, 12, $2.25. DeepSeek V4.1 Flash: 71, 13, $3.54. Claude Haiku 5.5 with Sonnet 5.5: 70, 40, about $12.85. Qwen3-Next 80B: 69 to 70, 128, $6.26. Elastic detection rules: 51, 43. Sigma rules: 13, 121.">
-</picture>
-
-Which model matters less than you would think for catching the attacks, and
-a great deal for the noise. Every open model that fits a 128 GB machine or larger
-caught all 71; what they differ in is how much ordinary work they flag, and
-that does not follow their size.
-
-Where the rules hold their own:
-
-- **The gap is in the cases we wrote.** Tangent caught 36 of 36 and
-  Elastic's rules 16; eight of them are in CI job logs and runner egress,
-  which no public rule reads. On the 35 Stratus techniques Elastic's rules
-  caught every one too.
-- **Telling an attack from the same person's harmless work.** Each Stratus
-  technique has a twin: the same member, from the office, at the same hour,
-  on the same resources, with every call a harmless read. Elastic's rules
-  flag the technique and leave its twin alone for 24 of the 35. The models
-  land on both sides of that, from 19 to 32, and two runs of one model
-  differ by up to 7.
-- **From an address never seen, nobody tells them apart.** Every model, and
-  Elastic's rules, flag the harmless twin about as often as the attack.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/mac-dark.svg">
-  <img src="docs/img/mac-light.svg" alt="A developer's Mac. Attacks caught of 7: tangent 7, Elastic rules 7, Sigma rules 2. Look-alikes flagged of 7: tangent 0, Elastic rules 0, Sigma rules 4.">
-</picture>
-
-On the seven Mac attacks above, Elastic's rules did as well as tangent: all
-seven caught and no look-alike flagged. Sigma's caught two and flagged four
-of the look-alikes.
-
-So good rules get there on the Mac, and most of the way in the cloud.
-Elastic's are written and kept by a detection team and run in Elastic's
-stack, with its agent on every machine. Tangent gets there with a model and
-no rules.
-
-How it was measured:
-
-- The open-weight models ran twice each on 2026-11-16, served by OpenRouter;
-  a figure is the two runs' mean. Each model judged, then reviewed its own
-  alerts, except where two are named. Run that way your records go to
-  whoever serves the model; the weights are open, so they need not.
-- Claude Haiku 5.5 with Sonnet 5.5 reviewing is one earlier run, and its
-  fee is an estimate.
-- False alarms are ordinary records flagged, of the 5,304 a model read that
-  belong to no case.
-- A rule counts at medium severity or higher.
-- Elastic's cloud rules were run by Elasticsearch 9.5 itself: 350 of them,
-  leaving out the machine-learning rules and those that read logs the corpus
-  does not have. Its Mac rules were run by Elastic's `eql` package, with 13
-  rules in other languages translated by hand; one of those is the only rule
-  that caught GlassWorm.
-- The mapping from each provider's records to the fields Elastic's rules
-  read is ours, not Elastic's ingest pipelines.
-- The startup, its logs and the 36 cases are ours, the model's brief was
-  written while running those 36, and the look-alikes on the Mac were built
-  to test tangent, not rules.
-
-## What it has not shown
-
-How often it cries wolf on a real working day. The look-alikes above were
-left alone, but false alarms over real days are a separate measurement, and
-it is not done. The cloud numbers above are from logs we made. The rules'
-side of the comparison is in
-[tangent-eval/compare](https://github.com/EthanBlackburn/tangent-eval/tree/main/compare)
-for you to repeat; the open-weight runs are not there yet.
-
-## Try it on your own AWS account
-
-Your account's last day of CloudTrail, read by Claude Haiku 5.5 on Bedrock.
-Three commands and an AWS profile; nothing to deploy.
+### 1. Install
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/EthanBlackburn/tangent/releases/latest/download/tangent-cli-installer.sh | sh
-tangent init                                     # writes tangent.yaml
-tangent replay --config tangent.yaml --from 1d   # says how many records there are before it judges any
 ```
 
-What it flagged is in `alerts.ndjson`. [docs/try-it.md](/docs/try-it.md) has
-the permissions it needs and what the first run fetches.
+Also available via Homebrew (`brew tap telophasehq/telophase && brew install tangent-cli`) and Cargo (`cargo install --git https://github.com/EthanBlackburn/tangent tangent-cli`).
 
-`tangent init` and the packs are newer than 0.1.9, the latest release, which
-the installer fetches: until the next release, these three lines stop at
-`init`.
+### 2. Watch your Mac (100% local by default)
 
-On a Mac: [examples/macos](/examples/macos) starts the sensor, the model and
-a second look at each alert together, and asks you about what is left in a
-dialog.
+Grant your terminal Full Disk Access (System Settings → Privacy & Security, then restart the terminal) and run:
 
-## What it watches
+```bash
+tangent watch mac
+```
 
-| | reads | grows with |
-|---|---|---|
-| [AWS](/packs/cloudtrail) | CloudTrail, every account of an organization trail | services, scheduled jobs and deploys, more than people |
-| [GitHub](/packs/github) | the org audit log, Actions job logs, runner egress | engineers |
-| [Okta](/packs/okta) | the System Log | people |
-| [Google Workspace](/packs/google_workspace) | login, token, Drive and admin activity | people |
-| [Supabase](/packs/supabase) | a project's Auth logs | your product's users |
-| [a developer's Mac](/packs/macos) | every program run, and reads and writes of credentials, AI-agent settings and what starts at login | what the developer and their coding agents do |
+- **Local by default:** On Apple Silicon (32 GB+ RAM), Tangent downloads a SHA-256-verified local server (MTPLX) and Inkling 2 Mini (~17 GB) into `~/.cache/tangent/models` after asking, starts it automatically, and stops it when you exit. Nothing leaves your Mac.
+- **Zero manual sensor setup:** Tangent downloads the Apple-signed, notarized Endpoint Security sensor once per version and verifies its signature and notarization before each start. It asks for `sudo` once to start the sensor and `tcpdump`.
+- **Hosted option:** Pass `--hosted` with `ANTHROPIC_API_KEY` set to use Claude Haiku 5.5 + Claude Sonnet 5.5 instead (works on any Mac, regardless of RAM).
+- **What it sees:** Every program run and its process tree, reads/writes of credentials, AI-agent configs, and login items, per-process outbound connections, and what you ask Claude Code (from `~/.claude` transcripts).
 
-Anything else comes in as JSON lines over a socket and wants a
-[pack](/docs/reference.md#writing-a-pack) of its own: a small plugin that
-says who did what, from where, to what.
+### 3. Watch your cloud & SaaS accounts
+
+Watch [AWS CloudTrail](/packs/cloudtrail), [GitHub](/packs/github), [Okta](/packs/okta), [Google Workspace](/packs/google_workspace), and [Supabase](/packs/supabase) with read-only credentials:
+
+```bash
+export ANTHROPIC_API_KEY=...
+tangent watch cloud --sources okta,github
+```
+
+- **Test on the last 24 hours of AWS CloudTrail:**
+  ```bash
+  tangent init cloud --sources cloudtrail
+  tangent replay --config tangent.yaml --from 1d
+  ```
+- **Choose any model or run locally:** Add `--local` to keep every cloud record on your Mac with Inkling 2 Mini, `--local --model <name>` for your own local server (`llama-server`, `mlx_lm.server`, Ollama, vLLM), or `--provider openrouter|openai|bedrock --model <judge>,<reviewer>`.
+
+While `tangent watch` runs, alerts and settled reviews stream cleanly to your terminal:
+
+```text
+flagged   2026-11-24 03:09Z  okta  ana@acme.example
+          a sign-in from a Tor exit, with no second factor
+reviewed  ana@acme.example, 3 alerts: malicious
+          ...
+          check: ...
+```
+
+Want to edit the prompts, route alerts to Slack, or customize the pipeline? Run `tangent init mac` or `tangent init cloud` with the same flags to write a standalone `tangent.yaml` and prompt files in your current directory. See [docs/try-it.md](/docs/try-it.md) for full details and required credentials.
+
+## What an alert actually looks like
+
+Not a cryptic rule ID and a severity score. Here is Tangent's review of a recreated trojanised Claude Code extension run on a Mac (shortened):
+
+> VS Code's Code Helper (Plugin) process, acting on behalf of the extension `acme-tools.acme-assist-2.1.3`, ran a hidden script `~/.config/.mtr` […] contacted `ifconfig.me` and `api.ipify.org`, created `~/.ssh/authorized_keys` and a LaunchAgent masquerading as `~/Library/LaunchAgents/com.apple.sysstatd.plist`, and ran `/usr/sbin/systemsetup -setremotelogin on` […] opening a persistent reverse SSH tunnel to an external host. This was not requested by the owner and was triggered purely by the extension loading.
+>
+> **What to check first:** Disable remote login, inspect `~/.ssh/authorized_keys` for the injected key, remove the LaunchAgent, kill any reverse-tunnel `ssh` processes, and remove `acme-tools.acme-assist`.
+
+And here is what Tangent said of a benign look-alike on the same Mac — a developer adding their own SSH key, testing GitHub SSH access, and installing Redis via Homebrew:
+
+> That key is this Mac's own public key, so it grants login only to someone who already holds the owner's private key. […] Homebrew installed redis and created its `sh.brew.redis` LaunchAgent, which is Homebrew's normal service setup. `ssh -T git@github.com` checked GitHub access.
+
+**Result: cleared — no alert.** Both sessions wrote `authorized_keys`, ran `ssh`, and created a LaunchAgent. Static rules fire on both or neither; Tangent's reviewer inspects the session history and files and tells them apart.
 
 ## How it works
 
-1. **It reads the log where it already is.** Tangent's sources read the
-   providers' own audit logs with a read-only credential. No agents on
-   servers.
-2. **It makes each record plain.** A pack turns a provider's record into who
-   did what, from where, to what, and adds what a reader would look up: the
-   address's country and owner, whether it is a hosting provider, Tor or
-   your office, whether the actor is one of your people.
-3. **It gives the model the history.** Before the model sees someone's
-   records it is told who they are, how long they have been seen, and what
-   they are doing for the first time: an API, a country, a client, an OAuth
-   app. Facts, kept on your machine, not a score.
-4. **The model decides.** There are no rules to write and none to tune. You
-   tell it about your company in a few lines of YAML (who works there, which
-   countries, what your office's addresses are) and the rest it reads.
-5. **You hear about what is left.** A second model investigates each alert
-   with the history to query before you see it, and clears what turns out
-   to be ordinary work.
+1. **Collect & compress.** On a Mac, Tangent joins Endpoint Security events, per-process network connections, and Claude Code prompts into compact per-session summaries. In the cloud, source packs normalize provider audit logs and annotate what is new for each actor (new API, country, client, network, OAuth app).
+2. **Judge fast, then investigate.** A fast judge reads every window and marks anything suspicious freely (`pass`, `look`, `flag`). A second reviewer investigates each alert by running read-only SQL over your local Parquet log lake — and on a Mac, reading scripts or agent settings an alert points to (never credentials or transcripts) — to confirm real attacks and drop ordinary work.
+3. **Keep everything local.** Raw logs stay on your machine as zstd-compressed Parquet files you can query anytime with `tangent query`.
 
-It runs as one process, on a laptop or a small server. Your logs stay on
-that machine, as Parquet files you can query with SQL. What the model is
-shown goes to the model you chose: Amazon Bedrock in your own account, any
-OpenAI-compatible endpoint, or a model on the same machine, in which case
-nothing leaves it.
+## What it has caught
 
-## The cost, worked out
+### On the Mac
 
-What the model charges, and nothing else. Rough ranges for a company of 50
-people, each active about eight hours a day, with Claude Haiku 5.5 reading
-($0.10 a million tokens in, $0.50 out):
+We recreated seven real-world developer attacks inside a Mac VM with Tangent watching, alongside seven benign developer look-alikes doing similar things for legitimate reasons. Each recording was run three times with Claude Haiku 5.5 (judge) and Claude Sonnet 5.5 (reviewer):
 
-| | grows with | a day | Haiku 5.5, a day |
-|---|---|---|---|
-| [AWS](/packs/cloudtrail) | services, scheduled jobs and deploys, more than people | 50k–500k events | $2–20 |
-| [Google Workspace](/packs/google_workspace) | people: 100–500 events each, most of them Drive | 5k–25k events | $0.35–0.70 |
-| [Okta](/packs/okta) | people: 20–100 events each | 1k–5k events | $0.60 |
-| [GitHub](/packs/github) | engineers: 20–200 events each | 1k–10k events | $0.30 |
+| Attack | What it does on the Mac |
+|---|---|
+| **Shai-Hulud** | An `npm` install script sweeps tokens and keys and republishes the developer's packages with itself added |
+| **axios compromise** | An `npm` install script drops a remote-access tool disguised as an Apple daemon |
+| **LiteLLM compromise** | A PyPI package installs a hook that runs on every Python startup and harvests credentials |
+| **Contagious Interview (CLI)** | A fake recruiter's take-home repo exfiltrates wallets, browser data, and Keychain, and installs a backdoor |
+| **Contagious Interview (editor)** | Opening the repo folder triggers a hidden editor task that pipes a script into `bash` |
+| **GlassWorm** | An editor extension steals Keychain, wallets, and credentials and adds a login item |
+| **Trojanised Claude Code extension** | An editor extension injects an SSH key, opens a reverse tunnel, and installs a LaunchAgent |
 
-A person costs about a cent a day or less in each source that sees them.
-The Mac is not priced yet. For your own volume:
+- **Caught:** **7 of 7** attacks in all 3 runs.
+- **False alarms:** The judge alone marked look-alikes in 16 of 21 runs; after the reviewer investigated, **0 of 7** stood.
+- All recordings and harness code: [tangent-eval/macos](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos). *(Note: local Inkling 2 Mini results on this Mac suite are not published yet.)*
 
-```
-$15 for each million logs  +  $12 for each GB of them
-```
+### In the cloud
 
-| logs a day | 250 B each | 500 B | 1 KB | 2 KB |
-|---|---|---|---|---|
-| 100k | $1.80 | $2.10 | $2.70 | $3.90 |
-| 1M | $18 | $21 | $27 | $39 |
-| 10M | $180 | $210 | $270 | $390 |
+Evaluated against 59,342 records across ~13.5 months of a synthetic startup's AWS, Okta, GitHub, Google Workspace, and CI logs with 71 planted attacks (35 AWS techniques from Stratus Red Team + 36 cases we wrote). Models read the 6,832 records in the hours around those attacks (5,304 ordinary):
 
-A month is thirty times as much. The count matters more than the size. A log
-reaches the model as a trimmed line, about a token for every 9 bytes it had,
-but each one also carries who did it and what is known of them, a share of
-the prompt and of the actor's history, and gets an answer (about 11 tokens to
-pass, 150 to flag): below 1 KB, that is most of what a log costs. The rule
-fits real CloudTrail, GitHub and Google Workspace logs, and overstates
-Okta's, which trim further.
+| Setup | Attacks caught (of 71) | Ordinary records flagged (of 5,304) |
+|---|---|---|
+| **Tangent: Claude Haiku 5.5 + Sonnet 5.5** *(1 run; default hosted)* | **70** | **40** after review *(462 before)* |
+| **Tangent: DeepSeek V4 Flash** *(2 runs via OpenRouter)* | **71** | **10–13** after review *(~220 before)* |
+| **Tangent: GPT-6 Luna + GPT-6.1 Terra** *(1 run via OpenAI)* | **71** | **20** after review |
+| Elastic public detection rules *(350 rules)* | 51 | 43 |
+| Sigma public detection rules *(102 rules)* | 13 | 121 |
 
-Two things the count must include:
+**Being candid about what this doesn't prove yet:**
+- The cloud logs are synthetic, and our 36 custom cases were written while developing the judge's brief.
+- Elastic's rules matched Tangent on the Mac suite and caught all 35 Stratus AWS techniques — the difference is that Tangent gets there with one binary and no detection-engineering team.
+- False-alarm volume across a real company's working week has not been benchmarked yet.
 
-- People. A request is one actor's logs: up to thirty new ones, and its
-  latest ten already judged again, which the model answers too. A busy
-  actor, a service role or an app server, fills one with new logs. A quiet
-  one, a person, goes an hour after its first new log. Count a person as
-  their logs plus ten for each hour they are active.
-- Throughput. At 2–10 s a Haiku 5.5 request, four requests at once keep up
-  with 35k–170k requests a day, 1.4M–6.8M logs; raise
-  `inference.judge.concurrency` past that.
+## Privacy & cost
 
-Where it stops being cheap: a trail that also logs data events (S3 objects,
-Lambda invocations) can have ten to a hundred times CloudTrail's events, and
-VPC Flow Logs, 5M–30M records a day at a startup, would be $80–500 a day.
-There is no pack for flow logs: one would roll them up before the model.
+**Where your data goes:** Raw logs never leave your machine unless you route them somewhere. When running locally (`tangent watch mac` default, or `tangent watch cloud --local`), **nothing leaves your machine at all**. With a hosted model, only the compiled summaries/records (and the queries/files the reviewer inspects during an alert) are sent directly to the model provider you chose.
 
-Storage is small: every log is kept once, about 20 bytes each on a day of
-CloudTrail, and deleting old hours trims it.
+**Cost:** Tangent is Apache-2.0 licensed with no subscription. Running locally costs $0 in API fees. On hosted models, you pay only your model provider's token usage — rough cloud judge estimates for a 50-person company on Claude Haiku 5.5:
 
-These are estimates. Log sizes are measured on samples (CloudTrail on 20k
-events, the others on tens to hundreds), tokens with Claude Haiku 4.5's
-count scaled to 5.5's, the prices are Anthropic's own (Bedrock sets its
-own), and the volumes are typical of startups, not yours: `tangent replay`
-on a day of your own logs says what yours are.
+| Source | Estimated judge fees / day |
+|---|---|
+| AWS (CloudTrail) | $2 – $20 |
+| Okta | ~$0.60 |
+| Google Workspace | $0.35 – $0.70 |
+| GitHub | ~$0.30 |
 
-## What it is not
+Reviewer fees depend on how often the judge flags (roughly matching the judge's fees with DeepSeek, and several times the judge's fees with Sonnet in the cloud eval). See [Volume and cost](/docs/reference.md#volume-and-cost) for the token math.
 
-- **Not a SIEM.** No dashboards, no search UI, no case management. It keeps
-  your logs as Parquet and writes alerts to a file; where they go from there
-  is yours.
-- **Not the same answer every time.** A model reads the logs, and models
-  vary: that is why every result above is a count over three runs.
-- **Not a wall.** It tells you. It does not block anything.
+## What Tangent is not
 
-## Under it, a stream processor
+- **Not a SIEM.** No dashboards, no search UI, no case management.
+- **Not a blocker.** It investigates and tells you what happened; it does not kill processes or revoke keys.
+- **Not deterministic.** LLMs vary from run to run — every benchmark above states how many runs it came from.
+- **Not fleet-managed yet.** Mac monitoring is set up one machine at a time today.
 
-Tangent is a log pipeline first: sources, sinks, and plugins that are real
-code (Rust, Go, Python) compiled to WASM and run in a sandbox, at up to
-480 MB/s end to end ([benchmarks](/docs/reference.md#benchmarks)). The packs
-are plugins, and the model is one more node. So anything here can be
-changed, replaced or extended in a language you already write:
-[docs/reference.md](/docs/reference.md) is the manual, and
-[packs](/packs/README.md) says what a pack is.
+## Under the hood: a Rust + WASM stream processor
 
-## Install
-```bash
-# Homebrew
-brew tap telophasehq/telophase
-brew install tangent-cli
-tangent --version
+Everything above is built on a single generic Rust runtime: sandboxed WASM plugins (Rust, Go, Python), transactional SQLite state, shared in-memory enrichment tables, Parquet lakes (`tangent query`), and built-in model/agent nodes. Every provider integration is just a [pack](/packs/README.md) — so you can add your own logs or build custom streaming pipelines without touching a DSL.
 
-# with install script
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/EthanBlackburn/tangent/releases/latest/download/tangent-cli-installer.sh | sh
-tangent --version
-
-# cargo
-cargo install --git https://github.com/EthanBlackburn/tangent tangent-cli
-
-# docker
-docker pull ghcr.io/telophasehq/tangent-toolchain
-docker run --rm --init ghcr.io/telophasehq/tangent-toolchain <command>
-
-```
-
+- [Quickstart & watch/init guide](/docs/try-it.md)
+- [Runtime & plugin manual](/docs/reference.md)
+- [Packs & examples](/packs/README.md)
 
 ## License
 
-Apache-2.0. See `LICENSE`.
+Apache-2.0. See [`LICENSE`](/LICENSE).
