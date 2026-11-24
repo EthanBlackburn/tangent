@@ -516,7 +516,7 @@ tangent bench --config examples/rust/tangent.yaml --seconds 20 --connections 16 
 ## Install
 ```bash
 # Homebrew
-brew tap telophasehq/telophase
+brew tap ethanblackburn/tangent
 brew install tangent-cli
 tangent --version
 

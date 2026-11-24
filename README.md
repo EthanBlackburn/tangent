@@ -37,7 +37,7 @@ Tangent is a single binary that watches both. A fast model reads your activity a
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/EthanBlackburn/tangent/releases/latest/download/tangent-cli-installer.sh | sh
 ```
 
-Also available via Homebrew (`brew tap telophasehq/telophase && brew install tangent-cli`) and Cargo (`cargo install --git https://github.com/EthanBlackburn/tangent tangent-cli`).
+Also available via Homebrew (`brew tap ethanblackburn/tangent && brew install tangent-cli`) and Cargo (`cargo install --git https://github.com/EthanBlackburn/tangent tangent-cli`).
 
 ### 2. Watch your Mac (100% local by default)
 
