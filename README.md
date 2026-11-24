@@ -49,7 +49,7 @@ tangent watch mac
 
 - **Local by default:** On Apple Silicon (32 GB+ RAM), Tangent downloads a SHA-256-verified local server (its own copy of Ollama) and Inkling 2 Mini (~20 GB) into `~/.cache/tangent/models` after asking, starts it automatically, and stops it when you exit. Nothing leaves your Mac.
 - **Zero manual sensor setup:** Tangent downloads the Apple-signed, notarized Endpoint Security sensor once per version and verifies its signature and notarization before each start. It asks for `sudo` once to start the sensor and `tcpdump`.
-- **Hosted option:** Pass `--hosted` with `ANTHROPIC_API_KEY` set to use Claude Haiku 5.5 + Claude Sonnet 5.5 instead (works on any Mac, regardless of RAM). On an Intel Mac or one with under 32 GB, `tangent watch mac` stops before downloading anything and tells you to add it; it never switches to a hosted model on its own.
+- **Hosted option:** Pass `--provider anthropic|bedrock|openai|openrouter` to use that provider's pair instead (works on any Mac, regardless of RAM). Claude Haiku 5.5 + Claude Sonnet 5.5 (`anthropic`, `bedrock`) is the pair measured on the Mac attacks below; OpenAI's and OpenRouter's are not yet. On an Intel Mac or one with under 32 GB, `tangent watch mac` stops before downloading anything and lists the command for each provider, with whether its key is already in your environment; it never switches to a hosted model on its own.
 - **What it sees:** Every program run and its process tree, reads/writes of credentials, AI-agent configs, and login items, per-process outbound connections, and what you ask Claude Code (from `~/.claude` transcripts).
 
 ### 3. Watch your cloud & SaaS accounts
@@ -58,15 +58,16 @@ Watch [AWS CloudTrail](/packs/cloudtrail), [GitHub](/packs/github), [Okta](/pack
 
 ```bash
 export ANTHROPIC_API_KEY=...
-tangent watch cloud --sources okta,github
+tangent watch cloud --sources okta,github --provider anthropic
 ```
 
+- **You pick who reads your records:** `--provider anthropic|bedrock|openai|openrouter` uses the pair measured with that provider, and every record is sent there. Leave it out and Tangent starts nothing: it lists the command for each, with whether its key is already in your environment.
 - **Test on the last 24 hours of AWS CloudTrail:**
   ```bash
-  tangent init cloud --sources cloudtrail
+  tangent init cloud --sources cloudtrail --provider anthropic
   tangent replay --config tangent.yaml --from 1d
   ```
-- **Choose any model or run locally:** Add `--local` to keep every cloud record on your Mac with Inkling 2 Mini, `--local --model <name>` for your own local server (`llama-server`, `mlx_lm.server`, Ollama, vLLM), or `--provider openrouter|openai|bedrock --model <judge>,<reviewer>`.
+- **Or run locally, or name other models:** `--local` keeps every cloud record on your Mac with Inkling 2 Mini, `--local --model <name>` is your own local server (`llama-server`, `mlx_lm.server`, Ollama, vLLM), and `--provider <name> --model <judge>,<reviewer>` names other models than the provider's pair.
 
 While `tangent watch` runs, what it checked, each alert and each settled review stream to your terminal:
 

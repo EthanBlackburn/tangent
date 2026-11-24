@@ -3,10 +3,10 @@
 `tangent init cloud` writes the whole pipeline for your cloud and SaaS audit logs to tangent.yaml, and asks nothing. Its flags say what goes in:
 
 ```bash
-tangent init cloud                                # the pipeline, with no source yet
-tangent init cloud --sources cloudtrail,github    # with those two watched
-tangent init cloud --sources okta --provider openrouter --model deepseek/deepseek-v4-flash-0731
-tangent init cloud --sources okta --provider openai --model gpt-6-luna,gpt-6.1-terra
+tangent init cloud --provider anthropic           # the pipeline, with no source yet
+tangent init cloud --sources cloudtrail,github --provider anthropic   # with those two watched
+tangent init cloud --sources okta --provider bedrock                  # the provider's pair, as measured
+tangent init cloud --sources okta --provider openai --model gpt-6-luna,gpt-6.1-terra   # its models by name
 tangent init cloud --sources okta --local         # Inkling 2 Mini on this Mac, started by tangent
 tangent init cloud --sources okta --local --model glm-4.7-flash   # a model server of your own
 ```
@@ -14,8 +14,9 @@ tangent init cloud --sources okta --local --model glm-4.7-flash   # a model serv
 | flag | names | without it |
 |---|---|---|
 | `--sources` | what to watch, one or more of `cloudtrail`, `github`, `okta`, `google_workspace`, `supabase` | the pipeline has no source yet |
-| `--provider` and `--model`, together | who serves the models (`anthropic`, `bedrock`, `openrouter`, `openai`), and each model by the exact name the provider takes: one name judges and reviews, and two with a comma are the judge's, then the reviewer's | Claude Haiku 5.5 judges and Claude Sonnet 5.5 reviews, through Anthropic's API |
-| `--local` | a model on this machine in place of a hosted one: Inkling 2 Mini judges and reviews, on a server tangent starts with `tangent watch` (Apple Silicon, with 32 GB of memory or more) | the models are hosted, and every record is sent to who serves them |
+| `--provider` | who serves the models (`anthropic`, `bedrock`, `openrouter`, `openai`), and is sent every record: the pair measured with that provider, a model that judges and one that reviews | with no `--local` either, init writes nothing: it lists the command for each and says which has its key in the environment already |
+| `--model`, with `--provider` | other models than the provider's pair, each by the exact name the provider takes: one name judges and reviews, and two with a comma are the judge's, then the reviewer's | the provider's pair |
+| `--local` | a model on this machine, so no record leaves it: Inkling 2 Mini judges and reviews, on a server tangent starts with `tangent watch` (Apple Silicon, with 32 GB of memory or more) | the models are a provider's |
 | `--model`, with `--local` | the model a server of your own gives at `http://localhost:8080/v1`, which tangent does not start | `--local` is Inkling 2 Mini |
 
 Init writes over nothing, so the flags are for a new file. This page is how to change one already written: to add or take out a source, and to change who serves the models.
