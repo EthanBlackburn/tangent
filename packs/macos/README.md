@@ -424,22 +424,23 @@ brief, where it is cached, which brings the cost back; it also gives text an
 attacker wrote the standing of the brief, which is why it is not the
 default.
 
-`review/ask.py` puts each review that stands to the Mac's owner: one not
-called `benign`. It is a dialog (`osascript`'s `display dialog`) with the
-session, the verdict, the finding and what to check, a field for a note,
-and three buttons: "Not me", "Not sure", "That was me". The answer is a
-line of `feedback.ndjson`: the session, both verdicts, the review's time
-(`reviewed`, which with the session says which review it answers), `answer`
-and `note`. The dialog waits, the next review behind it, so nothing is told
-to an empty room; `--give-up` closes it after a while, and `--all` asks
-about the `benign` ones too. It is the command of an `exec` sink
-(examples/macos/review.yaml), which gives it each review as it is written:
-when tangent stops, it is still asked about the reviews written as it
-stopped, and it ends when it has asked about them all. Its text is the reviewer's, written
-about records an attacker can write into, so it reaches the script as an
-argument and is never part of the AppleScript that runs, and each value is
-cut and kept to its own line, so none can pass for another. Nothing reads the answers yet:
-they are the record of what you said each alert was.
+`tangent watch` puts each review that stands to the Mac's owner, as a
+notification: one called `malicious`, with a sound, or `unresolved`,
+without. It has three buttons, "Not me", "Not sure" and "That was me", and
+a click on the banner itself opens the whole finding and what to check,
+with the same buttons. The answer is a line of
+`feedback.ndjson`, beside `reviews.ndjson`: the session, both verdicts, the
+review's time (`reviewed`, which with the session says which review it
+answers) and `answer` (`not_mine`, `unsure` or `mine`). Nothing
+waits for it: a banner left alone stays in Notification Center, and is
+answered there when you get to it, after tangent has stopped too. A review
+called `benign` and one that failed are in the terminal and
+`reviews.ndjson` only. The notifications come from the sensor's app, run as
+you ([sensor/README.md](sensor/README.md)); `--no-notify` shows none, and
+then nothing asks. Their text is the reviewer's, written about records an
+attacker can write into, so it reaches the app as data and is only ever
+shown. Nothing reads the answers yet: they are the record of what you said
+each alert was.
 
 A review that fails is an `error` in the alert's `review` and the alert
 stands: the model's content filter stopped it, which what a worm leaves in
@@ -531,9 +532,9 @@ shows and refuses (a key, a link to a file it may not read, a directory;
 a binary's text), and which files the log lets it read. tangent's own tests
 cover what a statement can read and cannot do (`lake.query`), and the
 source: the snapshot's rows, the connections tcpdump's packets make and the
-prompts a transcript holds (`cargo test -p tangent-runtime sources::macos`). `review/ask_test.py`
-checks which reviews are asked about, the dialog's wording, and that the
-script holds none of a review's text; it shows no dialog.
+prompts a transcript holds (`cargo test -p tangent-runtime sources::macos`),
+and which reviews are notifications and what each asks
+(`cargo test -p tangent-cli follow`); no test shows one.
 
 ## Not here
 

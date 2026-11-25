@@ -1,6 +1,7 @@
 //! What `tangent watch` says while its pipeline runs: each minute what the
 //! judge checked, each alert as the judge flags it, and each review as it
-//! is written. It reads them where the pipeline writes them
+//! is written. A review that upholds its alert is a notification too, at a
+//! Mac ([`crate::notify`]). It reads them where the pipeline writes them
 //! (alerts.ndjson, reviews.ndjson and verdicts.ndjson, in the pipeline's
 //! directory), from where each file ended when the watch began, so the
 //! runtime knows nothing of it and a restart says nothing twice.
@@ -14,8 +15,10 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::oneshot;
+
+use crate::notify::{Note, Notifier};
 
 /// How often the files are read for what is new.
 const EVERY: Duration = Duration::from_secs(1);
@@ -143,15 +146,20 @@ fn name(record: &Value) -> String {
     }
 }
 
-/// A review, as the lines that say it. A cloud pipeline's review covers an
-/// actor's alerts and is on each of them: it is said from the first, which
-/// carries `reviewed`, and the others say nothing more. A Mac's is a record
-/// of its own for each alert.
+/// Whether a record of reviews.ndjson is a review to say. A cloud
+/// pipeline's review covers an actor's alerts and is on each of them: it is
+/// said from the first, which carries `reviewed`, and the others say
+/// nothing more. A Mac's is a record of its own for each alert.
+fn says_a_review(record: &Value) -> bool {
+    record.get("reviewed").is_some() || text(record, &["source"]) == "macos_review"
+}
+
+/// A review, as the lines that say it.
 fn review(record: &Value) -> Vec<String> {
-    let about = record.get("reviewed");
-    if about.is_none() && text(record, &["source"]) != "macos_review" {
+    if !says_a_review(record) {
         return Vec::new();
     }
+    let about = record.get("reviewed");
     let who = who(record);
     let alerts = match about.and_then(|a| a.get("alerts")).and_then(Value::as_u64) {
         Some(1) => ", 1 alert".to_string(),
@@ -179,8 +187,66 @@ fn review(record: &Value) -> Vec<String> {
     lines
 }
 
+/// A review, as the notification it is when it upholds its alert:
+/// `malicious` with a sound, `unresolved` without. A review that clears
+/// its alert has none, nor has one that failed, nor the judge's mark
+/// before its review: a notification is for what a person should look at,
+/// and those are said in the terminal. Behind its click is the finding
+/// whole, what to check, and where the review is kept, in `dir`.
+///
+/// A Mac's asks whether the session was its reader's doing, and the answer
+/// is a line of feedback.ndjson in `dir`: the session, the judge's mark,
+/// the verdict and the review's time, which with the session says which
+/// review it answers. A cloud review is about someone else's account, and
+/// asks nothing.
+fn note(record: &Value, dir: &Path) -> Option<Note> {
+    if !says_a_review(record) {
+        return None;
+    }
+    let (title, sound) = match text(record, &["review", "verdict"]).as_str() {
+        "malicious" => ("Tangent: malicious activity", true),
+        "unresolved" => ("Tangent: needs a look", false),
+        _ => return None,
+    };
+    // A Mac's review is about a session; a cloud's, an actor in a log.
+    let mac = text(record, &["source"]) == "macos_review";
+    let subtitle = match text(record, &["source"]) {
+        source if source.is_empty() || mac => who(record),
+        source => format!("{} ({source})", who(record)),
+    };
+    let finding = text(record, &["review", "finding"]);
+    let mut detail = vec![finding.clone()];
+    let check = text(record, &["review", "check"]);
+    if !check.is_empty() {
+        detail.push(format!("Check: {check}"));
+    }
+    detail.push(format!(
+        "The review is kept in {}",
+        dir.join("reviews.ndjson").display()
+    ));
+    let answer = || {
+        json!({
+            "source": "macos_feedback",
+            "session": record.get("session"),
+            "judge": record.pointer("/judge/warrants_investigation"),
+            "review": record.pointer("/review/verdict"),
+            "reviewed": record.get("ts"),
+        })
+    };
+    Some(Note {
+        title: title.to_string(),
+        subtitle,
+        body: finding,
+        detail: detail.join("\n\n"),
+        sound,
+        feedback: mac.then(|| (dir.join("feedback.ndjson"), answer())),
+    })
+}
+
 /// What the pipeline in a directory has written, said as it is written.
 pub struct Follow {
+    /// The directory the pipeline writes in.
+    dir: PathBuf,
     alerts: Tail,
     reviews: Tail,
     verdicts: Tail,
@@ -192,11 +258,16 @@ pub struct Follow {
     marked: u64,
     /// When the last such line was said.
     told: Instant,
+    /// The reviews to show as notifications, not yet handed to `notifier`,
+    /// which is there when this watch shows any.
+    notes: Vec<Note>,
+    notifier: Option<Notifier>,
 }
 
 impl Follow {
-    pub fn new(dir: &Path) -> Self {
+    pub fn new(dir: &Path, notifier: Option<Notifier>) -> Self {
         Self {
+            dir: dir.to_path_buf(),
             alerts: Tail::from_end(dir.join("alerts.ndjson")),
             reviews: Tail::from_end(dir.join("reviews.ndjson")),
             verdicts: Tail::from_end(dir.join("verdicts.ndjson")),
@@ -205,6 +276,8 @@ impl Follow {
             checked: Vec::new(),
             marked: 0,
             told: Instant::now(),
+            notes: Vec::new(),
+            notifier,
         }
     }
 
@@ -260,8 +333,22 @@ impl Follow {
         }
         for record in self.reviews.lines().into_iter().filter_map(parsed) {
             lines.extend(review(&record));
+            self.notes.extend(note(&record, &self.dir));
         }
         lines
+    }
+
+    /// Says the lines for what was written since the last call, and hands
+    /// its notifications on.
+    fn say(&mut self, now: bool) {
+        for line in self.said(now) {
+            println!("{line}");
+        }
+        for note in self.notes.drain(..) {
+            if let Some(notifier) = &self.notifier {
+                notifier.show(note);
+            }
+        }
     }
 
     /// Says what is written, as it is written, until `stop`; then what the
@@ -273,12 +360,11 @@ impl Follow {
                 _ = tick.tick() => {}
                 _ = &mut stop => break,
             }
-            for line in self.said(false) {
-                println!("{line}");
-            }
+            self.say(false);
         }
-        for line in self.said(true) {
-            println!("{line}");
+        self.say(true);
+        if let Some(notifier) = self.notifier.take() {
+            notifier.end().await;
         }
         // A pipeline with no judge has nothing to count.
         if self.judged > 0 {
@@ -456,13 +542,101 @@ mod tests {
         );
     }
 
+    /// A review that upholds its alert is a notification: `malicious` with
+    /// a sound and `unresolved` without, about the session or the actor,
+    /// with the finding, what to check and where the review is kept behind
+    /// the click. A Mac's asks whose doing it was, and says where the
+    /// answer goes and as what. One that clears the alert, one that failed,
+    /// and a cloud alert that only repeats its actor's review are none.
+    #[test]
+    fn a_review_that_upholds_its_alert_is_a_notification() {
+        let kept = Path::new("/w");
+        let mac = json!({
+            "ts": "2026-11-24T03:17:00Z",
+            "source": "macos_review", "session": {"id": "501", "entry": "~/bin/agent"},
+            "judge": {"warrants_investigation": "flag"},
+            "review": {"verdict": "unresolved", "finding": "It read a key and connected out.", "check": "Rotate the key."},
+        });
+        assert_eq!(
+            note(&mac, kept),
+            Some(Note {
+                title: "Tangent: needs a look".to_string(),
+                subtitle: "~/bin/agent".to_string(),
+                body: "It read a key and connected out.".to_string(),
+                detail: "It read a key and connected out.\n\nCheck: Rotate the key.\n\nThe review is kept in /w/reviews.ndjson".to_string(),
+                sound: false,
+                feedback: Some((
+                    PathBuf::from("/w/feedback.ndjson"),
+                    json!({
+                        "source": "macos_feedback",
+                        "session": {"id": "501", "entry": "~/bin/agent"},
+                        "judge": "flag", "review": "unresolved",
+                        "reviewed": "2026-11-24T03:17:00Z",
+                    })
+                )),
+            })
+        );
+        let cloud = json!({
+            "source": "okta", "_norm": {"actor": "ana@acme.example"},
+            "review": {"verdict": "malicious", "finding": "She made a key."},
+            "reviewed": {"alerts": 3},
+        });
+        let shown = note(&cloud, kept).unwrap();
+        assert_eq!(shown.title, "Tangent: malicious activity");
+        assert_eq!(shown.subtitle, "ana@acme.example (okta)");
+        assert_eq!(
+            shown.detail,
+            "She made a key.\n\nThe review is kept in /w/reviews.ndjson"
+        );
+        assert!(shown.sound);
+        assert_eq!(shown.feedback, None, "it is about someone else's account");
+
+        let mut repeated = cloud.clone();
+        repeated.as_object_mut().unwrap().remove("reviewed");
+        assert_eq!(note(&repeated, kept), None);
+        for review in [
+            json!({"verdict": "benign", "finding": "A deploy."}),
+            json!({"error": "no reply"}),
+            json!({"verdict": "malicious\u{1b}[0m", "finding": "x"}),
+        ] {
+            let mut none = mac.clone();
+            none["review"] = review;
+            assert_eq!(note(&none, kept), None, "{none}");
+        }
+
+        // The text is a model's: no control character reaches the banner.
+        let mut odd = mac.clone();
+        odd["review"]["finding"] = json!("ok\u{1b}[2J\nall clear\u{7}");
+        let shown = note(&odd, kept).unwrap();
+        assert_eq!(shown.body, "ok [2J all clear");
+    }
+
+    /// What a pipeline writes is said as it is written, and its reviews
+    /// that are notifications are held to hand on.
+    #[test]
+    fn a_pipelines_notifications_are_handed_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut follow = Follow::new(dir.path(), None);
+        let review = |verdict: &str| {
+            json!({"source": "macos_review", "session": {"entry": "~/bin/agent"},
+                "review": {"verdict": verdict, "finding": "It ran."}})
+        };
+        append(
+            &dir.path().join("reviews.ndjson"),
+            &format!("{}\n{}\n", review("benign"), review("malicious")),
+        );
+        assert_eq!(follow.said(false).len(), 4, "both are said in the terminal");
+        assert_eq!(follow.notes.len(), 1);
+        assert_eq!(follow.notes[0].title, "Tangent: malicious activity");
+    }
+
     /// What a pipeline writes is said as it is written: what was checked,
     /// by name and once, then the alert from among it and its review.
     #[test]
     fn what_the_pipeline_writes_is_said() {
         let dir = tempfile::tempdir().unwrap();
         append(&dir.path().join("verdicts.ndjson"), "{}\n");
-        let mut follow = Follow::new(dir.path());
+        let mut follow = Follow::new(dir.path(), None);
         assert!(follow.said(true).is_empty(), "nothing new, nothing said");
 
         let session = |entry: &str| json!({"session": {"entry": entry}}).to_string();

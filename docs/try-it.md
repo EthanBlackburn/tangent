@@ -95,6 +95,8 @@ It takes init's flags, and runs the pipeline init would write for them, leaving 
 
 While it runs, the terminal shows what it finds: each minute what the judge checked (how many, the names judged most, and how many it flagged), each alert as the judge flags it (when, from which log, who, and why), and each review as it is written (the verdict, the finding, what to check first). The runtime's own lines are among them; `RUST_LOG=warn` keeps them to its warnings. A model wrote that text after reading whatever an attacker put in a record, so control characters are taken out of it before it is printed.
 
+On a Mac, a review that upholds its alert is a notification too: `malicious` with a sound, `unresolved` without one, and a click on it shows the finding and what to check. A Mac's review also asks whether the session was your doing, with three buttons, and keeps the answer in `feedback.ndjson` beside the reviews. A review that clears its alert is not a notification, and neither is the judge's flag before its review. macOS asks once whether Tangent may show notifications, and they come from tangent's signed app, which `watch` fetches once per version. `--no-notify` shows none, and over ssh there are none.
+
 ```
 checked   41 (deploy-bot x30, ana@acme.example x9, 2 more): 1 flagged
 flagged   2026-11-24 03:09Z  okta  ana@acme.example
