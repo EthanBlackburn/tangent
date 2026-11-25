@@ -341,6 +341,7 @@ impl Server {
                 reviewer_model: r#"    type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"
     model: claude-sonnet-5-5
+    fallback: claude-sonnet-5    # asked what Sonnet 5.5 declines, as it does some reviews of an attack
 "#,
                 reviewer: r#"    extra:
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
@@ -362,6 +363,7 @@ impl Server {
 "#,
                 reviewer_model: r#"    type: bedrock
     model: us.anthropic.claude-sonnet-5-5
+    fallback: us.anthropic.claude-sonnet-5   # asked what Sonnet 5.5 declines, as it does some reviews of an attack
     aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }
 "#,
                 reviewer: r#"    extra:

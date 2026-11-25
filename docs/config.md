@@ -252,6 +252,7 @@ The reviewer's model, under `models:`:
     type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"
     model: claude-sonnet-5-5
+    fallback: claude-sonnet-5    # asked what Sonnet 5.5 declines, as it does some reviews of an attack
 ```
 
 The judge's lines, under `inference:`:
@@ -288,6 +289,7 @@ The reviewer's model, under `models:`:
 ```yaml
     type: bedrock
     model: us.anthropic.claude-sonnet-5-5
+    fallback: us.anthropic.claude-sonnet-5   # asked what Sonnet 5.5 declines, as it does some reviews of an attack
     aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }
 ```
 

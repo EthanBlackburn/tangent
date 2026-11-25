@@ -114,6 +114,7 @@ impl Mac {
     type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"
     model: claude-sonnet-5-5
+    fallback: claude-sonnet-5    # asked what Sonnet 5.5 declines, as it does some reviews of an attack
     timeout_ms: 120000           # two minutes a try,
     retries: 2                   # three tries, then the review is an error and the alert stands
     concurrency: 1
