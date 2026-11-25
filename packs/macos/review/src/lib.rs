@@ -33,13 +33,13 @@
 //! the queries allowed; tangent stopping) is an `error` in `review`, and the
 //! alert stands.
 //!
-//! The lake has an alert's own records once their file is sealed, minutes
-//! after the alert. The config holds each alert back that long by grouping:
-//! `group_by` an alert's session and window, `expire_after_ms` the wait. A
-//! grouped plugin has workers of its own, so a review that takes minutes
-//! holds up neither the capture nor the judge. A group that closes sooner
-//! (the input ended) is reviewed before the lake has the alert's last
-//! records: the model is told, and the record is marked `early`.
+//! The lake has an alert's own records once its sink has written them,
+//! sealed in a file or not. The config holds each alert a few seconds by
+//! grouping: `group_by` an alert's session and window, `expire_after_ms` the
+//! wait. A grouped plugin has workers of its own, so a review that takes
+//! minutes holds up neither the capture nor the judge. A review that finds
+//! the lake without the alert's last records tells the model, and the record
+//! is marked `early`.
 
 wit_bindgen::generate!({
     path: ".tangent/wit",

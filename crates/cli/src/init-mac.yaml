@@ -64,9 +64,9 @@ plugins:
     module_type: rust
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
 
-  # An alert waits here until the lake has its records, about seven minutes,
-  # and is reviewed in a conversation with the reviewer, which can query the
-  # lake and read the scripts and agent settings the records point to.
+  # An alert is reviewed here ten seconds after the judge raised it, in a
+  # conversation with the reviewer, which can query the lake and read the
+  # scripts and agent settings the records point to.
   macos_review:
     inputs: [macos_verdicts]
     module_type: rust
@@ -76,12 +76,12 @@ plugins:
       lake: lake                 # table `lake` is what sink `lake` has written
     data: /                      # the records' paths are absolute. It reads only a file a record gives a reason to, never credentials or transcripts
     group_by: [session.id, session.window]
-    expire_after_ms: 400000
+    expire_after_ms: 10000       # the lake has a record once it is written, so no alert waits for a file
     config:
       model: reviewer
       table: lake
       days: 7                    # how far back from the alert the table reaches
-      settle_seconds: 400        # the table ends this long after the alert's last event
+      settle_seconds: 10         # the table ends this long after the alert's last event
       queries: 20                # the most queries and file reads one review may make
       files: true                # false: no file's text goes to the model
 
@@ -119,7 +119,7 @@ sinks:
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
-    max_file_age_seconds: 300    # a file is sealed, and the reviewer can read it, five minutes on
+    max_file_age_seconds: 300    # a file is sealed five minutes on, for `tangent query`; the reviewer reads a record before that
     compression: { type: zstd, level: 3 }
     encoding:
       type: parquet
