@@ -139,11 +139,18 @@ It keeps its pipeline in `~/.local/share/tangent/mac`, as `watch cloud` keeps it
 ### See it catch something: `tangent simulate`
 
 ```bash
-tangent simulate      # in another terminal, while `tangent watch mac` runs
+tangent simulate              # in another terminal, while `tangent watch mac` runs: lists the attacks and asks which
+tangent simulate credentials  # or name one
+tangent simulate agent
 ```
 
-It runs one attack for real, a credential theft of the kind a poisoned package carries, and lists each step as it does: a script piped from curl into bash asks the Mac who it is, finds a project's `.env` files, archives and encrypts them, uploads them and removes its traces. It is safe to run on the Mac you work on. The project is a directory made for the run, its two `.env` files hold made-up keys, and the server it downloads from and uploads to is the command itself, on 127.0.0.1, which keeps nothing: no file of yours is opened, nothing leaves the Mac, and nothing is left behind.
+It runs an attack for real, of the kind a poisoned package carries, and lists each step as it does. Both start with a script piped from curl into bash:
 
-`tangent watch mac` then says what it makes of it, in its own terminal: the session is flagged a minute or two later (up to five in a busy terminal) and reviewed in the minute or so after that. With the hosted pair the judge flagged it and the reviewer then called it benign, rightly: it worked out from the records that the files were made by the command that took them and went no further than this Mac. That is the two passes doing their work, and the alert is the thing to look for.
+- **`credentials`** asks the Mac who it is, finds a project's `.env` files, archives and encrypts them, uploads them and removes its traces.
+- **`agent`** takes over a project's AI coding agent: it gives it a hook that sends every tool call to its server, lets it run curl unasked, points its traffic at that server, adds an MCP server of its own, and writes an instruction to fetch and run a script into the project's `CLAUDE.md`.
+
+It is safe to run on the Mac you work on. The project is a directory made for the run, its `.env` files hold made-up keys and its agent files are its own, and the server it downloads from and reports to is the command itself, on 127.0.0.1, which keeps nothing: no file of yours is opened or changed, nothing leaves the Mac, and nothing is left behind.
+
+`tangent watch mac` then says what it makes of it, in its own terminal: the session is flagged a minute or two later (up to five in a busy terminal) and reviewed in the minute or so after that. With the hosted pair the judge flagged both and the reviewer then called them benign, rightly: it worked out from the records that the files were made by the command that took or changed them and went no further than this Mac. That is the two passes doing their work, and the alert is the thing to look for.
 
 `tangent init mac` writes the same pipeline where you are, to edit and to run with `tangent watch --config tangent.yaml`: tangent.yaml, the two briefs, and profiles.yaml, which says what each known program is expected to read, start and connect to. [packs/macos](../packs/macos) describes each part.
