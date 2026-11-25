@@ -66,7 +66,7 @@ impl Mac {
     pub fn new(hosted: bool) -> Self {
         let server = match hosted {
             true => Server::Hosted(Provider::Anthropic),
-            false => Server::Mtplx,
+            false => Server::Ollama,
         };
         Self {
             server,
@@ -86,15 +86,15 @@ impl Mac {
 
     fn brought(&self) -> Models {
         match self.server {
-            Server::Mtplx => Models {
-                label: "Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (MTPLX)",
+            Server::Ollama => Models {
+                label: "Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (Ollama)",
                 entries: init::placed(&format!("  inkling:\n{INKLING}"), &init::cache()),
                 names: ("inkling", "inkling"),
                 judge: r#"    max_tokens: 1200             # an answer: what the session did, why it is marked, and its account so far
     temperature: 0.7
     extra:
       top_p: 0.95
-      chat_template_kwargs: { enable_thinking: false }   # no thinking: the reply is the answer
+      reasoning_effort: none       # no thinking: the reply is the answer
 "#,
                 batch: "32000           # a request past this is split: what the model reads well at once",
                 reviewer: "",
@@ -230,7 +230,7 @@ pub fn runs_here(mac: &Mac) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("this watches a Mac, with macOS's Endpoint Security, and this machine is not one");
     }
-    if mac.server == Server::Mtplx {
+    if mac.server == Server::Ollama {
         if let Some(why) = init::no_inkling() {
             bail!(
                 "{why}.\n\n\
@@ -263,7 +263,7 @@ pub async fn run(dir: &Path, hosted: bool) -> Result<()> {
 
     // The model and what serves it, when it is to run here and is not here.
     let mut fetched = Ok(());
-    if mac.server == Server::Mtplx {
+    if mac.server == Server::Ollama {
         let root = local::root()?;
         let missing = local::missing(&root);
         if !missing.nothing() && init::ask_to_fetch(&missing, &root) {

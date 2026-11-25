@@ -1,25 +1,21 @@
 //! A model on this machine, fetched: what `tangent init cloud --local` and
 //! `tangent model fetch` download so that `tangent watch` can start Inkling 2
-//! Mini on MTPLX with nothing else installed.
+//! Mini on Ollama with nothing else installed.
 //!
-//! Everything goes under tangent's cache ([`tangent_shared::cache::models`]),
-//! and nothing outside it is written: no shell profile, no system Python,
-//! no package manager. Each step downloads one pinned thing and checks it:
+//! Both go under tangent's cache ([`tangent_shared::cache::models`]), apart
+//! from any Ollama the user has, and tangent writes nothing outside it: no
+//! shell profile, no application, no package manager.
 //!
-//! - **uv**, the release named here, from GitHub: its archive's SHA-256 is
-//!   in this file.
-//! - **Python**, which uv downloads for itself and checks against the
-//!   digests it carries; a pinned uv is a pinned list of Pythons.
-//! - **MTPLX** and what it needs, from PyPI, as mtplx.lock lists them: uv
-//!   installs with `--require-hashes`, so a package is one of the files the
-//!   lock names or the install fails. The lock is what the settings init
+//! - **Ollama**, the release named here, from GitHub: its archive's size and
+//!   SHA-256 are in this file, checked as it is written.
+//! - **The model**, which that Ollama pulls from its own library into a
+//!   store under the cache. Ollama checks each file against the model's
+//!   manifest, and the manifest's digest is in this file: a pull that ends
+//!   with another build is refused. The build is the one the settings init
 //!   writes were measured with.
-//! - **The model**, from Hugging Face at one revision: each file's size and
-//!   SHA-256 are in this file, checked as it is written, and a file is
-//!   given its name only once it has passed.
 //!
-//! A fetch that is stopped goes on where it was: a part of a file is kept
-//! and resumed, and a file already there is not fetched again.
+//! A fetch that is stopped goes on where it was: a part of the archive is
+//! kept and resumed, and Ollama takes up a pull where it broke off.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -30,173 +26,73 @@ use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt as _;
 
-/// The uv that installs MTPLX, and its archive for Apple Silicon.
-const UV: &str = "0.13.9";
-const UV_ARCHIVE: File = (
-    "uv-aarch64-apple-darwin.tar.gz",
-    14_554_974,
-    "5aeca67f2283f75235de40d0bd9c0a5bbc5fce23b6d48b3bf9fa1b2db08382ca",
-);
-
-/// The Python MTPLX runs on, which uv downloads.
-const PYTHON: &str = "3.12";
-
-/// MTPLX, and every package it is installed with, each with its hashes.
-const MTPLX: &str = "2.13.1";
-const LOCK: &str = include_str!("mtplx.lock");
-
-/// The model: its repository on Hugging Face, and the revision whose files
-/// are listed.
-const REPO: &str = "Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed";
-const REVISION: &str = "b7570c070c17d2c148979ce2fb9404efa4760bd6";
-const MODEL: &str = "Inkling-2-Mini-MTPLX-Optimized-Speed";
-
 /// A file to fetch: its name, its size in bytes and its SHA-256.
 type File = (&'static str, u64, &'static str);
 
-/// The model's files at [`REVISION`]. The pack's own SHA256SUMS lists the
-/// same digests for the eighteen of them it covers.
-const FILES: &[File] = &[
-    (
-        "README.md",
-        11163,
-        "11e9a49c5147437d000882dd435b495b88e7054db3ae0194c6738cfaaf9c8498",
-    ),
-    (
-        "SHA256SUMS",
-        1602,
-        "472afc7b842d937f543738de80155590c86fe06162e5368aff3a368be0043539",
-    ),
-    (
-        "chat_template.jinja",
-        6868,
-        "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
-    ),
-    (
-        "config.json",
-        16387,
-        "e626ee1f417fffb18ae9fc5d7621b71db9a6a5148adeafcc65d325f955b32fe5",
-    ),
-    (
-        "generation_config.json",
-        98,
-        "a08737c07a65a8fdf69f7cf086576210e5aad4b241437090b26d7b0c4f7905f7",
-    ),
-    (
-        "hf_quant_config.json",
-        67502,
-        "2a5a162df1cb36ce2f1a5ad1a05741a8583f4428622d9e9dc8e87f5a452cca3d",
-    ),
-    (
-        "model-00001-of-00004.safetensors",
-        4843767420,
-        "a5b62917d8436446a435779c43ee2276b7f0afb98020b1d62f8b93af6615bf59",
-    ),
-    (
-        "model-00002-of-00004.safetensors",
-        4859129880,
-        "136d9d020d086a579028936559bc65d33698dd05ae06c088162e0f3d5e544d1d",
-    ),
-    (
-        "model-00003-of-00004.safetensors",
-        4840240336,
-        "f041cf5e4ee73480ac87928f06ca359f16e831996424c48175f156b1ed88200e",
-    ),
-    (
-        "model-00004-of-00004.safetensors",
-        2033850692,
-        "130148560286359e2a8ab633924940110a8413351d89cf85579891081ce2944d",
-    ),
-    (
-        "model.safetensors.index.json",
-        138206,
-        "47ed0b7e27f2613d91a74dcb3d3005cd5fe341e6e88621eb920f95f6483a47a9",
-    ),
-    (
-        "mtp.safetensors",
-        635801416,
-        "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2",
-    ),
-    (
-        "mtplx-pack.json",
-        568,
-        "d145eb704c59b6cf4be8e60ce6e2358c60de14cb96271f5fe0afa1bae014fb7e",
-    ),
-    (
-        "mtplx_runtime.json",
-        2836,
-        "0ca9fb890b3d5b0496fd6aa5df5652a703dfd813dea588bd376a35c79c096a90",
-    ),
-    (
-        "processor_config.json",
-        461,
-        "d7350adce18c8be4b607f261c8f0f7eabbf720bb7aaf648a43d4f8372bbacc2d",
-    ),
-    (
-        "special_tokens_map.json",
-        529,
-        "c16f44b3594563d82743ddb0417a2be1bfe3e2000dfad2da4b8f32554593e1a0",
-    ),
-    (
-        "tiktoken/tokenizer.model",
-        3386494,
-        "f170372dd655728909228220d77cf6b8104a59f38a91262a7d2c4027906ec0d8",
-    ),
-    (
-        "tokenizer.json",
-        26178678,
-        "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6",
-    ),
-    (
-        "tokenizer_config.json",
-        13235,
-        "bf09342d285139fd37ce10c70878af1d52cb390e9901e10248654293a80ee636",
-    ),
-    (
-        "vision-audit.json",
-        399,
-        "f145b6e0cb248f1f09081f1a7ec3ce4c896e6f4c23727386af4a36e136259e5c",
-    ),
-];
+/// Ollama, and its release's archive for a Mac.
+const OLLAMA: &str = "0.40.18";
+const ARCHIVE: File = (
+    "ollama-darwin.tgz",
+    188_838_885,
+    "015261f434d31d7f0781f8ba6b59cc8e1f70ecb562a4e6db44dfdd5e02f7e562",
+);
+
+/// The model as Ollama's library names it, which is its name in a request
+/// too: the build for Apple Silicon, by its own tag, since `latest` is
+/// whichever build the library gives the machine that asks.
+pub const MODEL: &str = "inkling-2-mini:26b-a5b-nvfp4";
+/// The digest of that build's manifest, as Ollama reports it once pulled.
+const DIGEST: &str = "d183b1321cb57f018c738d2a826d70f575656fbcb7cec67f333d15b0f6a3d178";
+/// What the model's files come to.
+const MODEL_BYTES: u64 = 20_188_097_680;
+
+/// Where tangent's Ollama listens while it serves: a port of its own, so
+/// an Ollama the user runs is neither used nor in the way.
+pub const PORT: u16 = 11435;
 
 /// How much room a fetch wants beyond what it downloads.
 const SPARE: u64 = 4_000_000_000;
-/// About what uv, Python and MTPLX's packages take, for what init says.
-const ENGINE_BYTES: u64 = 500_000_000;
 /// How often a download says how far it is.
 const SAY_EVERY: Duration = Duration::from_secs(5);
 /// How many times a download is taken up again after it breaks off.
 const TRIES: usize = 5;
+/// How long a started Ollama has to answer.
+const READY: Duration = Duration::from_secs(60);
 
 /// Where everything is kept.
 pub fn root() -> Result<PathBuf> {
     tangent_shared::cache::models()
 }
 
-/// MTPLX's own directory under `root`, and the program in it.
+/// Ollama's own directory under `root`, with the program in it.
 fn engine(root: &Path) -> PathBuf {
-    root.join(format!("mtplx-{MTPLX}"))
+    root.join(format!("ollama-{OLLAMA}"))
 }
 
-/// The model's directory under `root`, named for its revision.
-fn model(root: &Path) -> PathBuf {
-    root.join(MODEL).join(&REVISION[..12])
+/// Where tangent's Ollama keeps its models under `root`.
+fn store(root: &Path) -> PathBuf {
+    root.join("ollama-models")
 }
 
 /// The two paths the config names, under the cache as the config writes it
-/// (`${HOME}/.cache`, say): the program that serves, and the model's
-/// directory.
+/// (`${HOME}/.cache`, say): the program that serves, and the directory its
+/// models are in.
 pub fn paths(cache: &str) -> (String, String) {
     let root = format!("{cache}/tangent/models");
     (
-        format!("{root}/mtplx-{MTPLX}/bin/mtplx"),
-        format!("{root}/{MODEL}/{}", &REVISION[..12]),
+        format!("{root}/ollama-{OLLAMA}/ollama"),
+        format!("{root}/ollama-models"),
     )
 }
 
-/// Written last into MTPLX's directory, so one that is there is whole.
+/// Written last into Ollama's directory, so one that is there is whole.
 fn installed(root: &Path) -> PathBuf {
     engine(root).join(".tangent-installed")
+}
+
+/// Written into the store once the model is pulled and its digest checked.
+fn pulled(root: &Path) -> PathBuf {
+    store(root).join(format!(".tangent-{}", &DIGEST[..12]))
 }
 
 /// What is not there yet.
@@ -213,7 +109,7 @@ impl Missing {
 
     /// About how much there is to download, in bytes.
     pub fn bytes(&self) -> u64 {
-        self.model + if self.engine { ENGINE_BYTES } else { 0 }
+        self.model + if self.engine { ARCHIVE.1 } else { 0 }
     }
 }
 
@@ -226,41 +122,41 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
-/// What of MTPLX and the model is not under `root` yet. A file of the
-/// model counts once it is there at its full size: it is given its name
-/// only after its digest is checked.
+/// What of Ollama and the model is not under `root` yet. The model counts
+/// once its digest has been checked; until then, what a pull that was
+/// stopped has left in the store counts for what it holds.
 pub fn missing(root: &Path) -> Missing {
-    let dir = model(root);
-    let model = FILES
-        .iter()
-        .map(|(name, size, _)| {
-            let there = std::fs::metadata(dir.join(name)).map_or(0, |m| m.len());
-            let part = std::fs::metadata(partial(&dir.join(name))).map_or(0, |m| m.len());
-            if there == *size {
-                0
-            } else {
-                size.saturating_sub(part)
-            }
-        })
-        .sum();
+    let model = if pulled(root).is_file() {
+        0
+    } else {
+        let have: u64 = std::fs::read_dir(store(root).join("blobs"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+        // never nothing: the pull has still to end and be checked
+        MODEL_BYTES.saturating_sub(have).max(1)
+    };
     Missing {
         engine: !installed(root).is_file(),
         model,
     }
 }
 
-/// Fetches what is missing under `root`: uv and MTPLX, then the model.
+/// Fetches what is missing under `root`: Ollama, then the model.
 pub async fn fetch(root: &Path) -> Result<()> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         bail!(
-            "MTPLX runs on Apple Silicon Macs only, so there is nothing to fetch for this machine"
+            "tangent starts Inkling 2 Mini on Apple Silicon Macs only, so there is nothing to fetch for this machine"
         );
     }
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
     let missing = missing(root);
     if missing.nothing() {
         println!(
-            "MTPLX {MTPLX} and Inkling 2 Mini are already in {}.",
+            "Ollama {OLLAMA} and Inkling 2 Mini are already in {}.",
             root.display()
         );
         return Ok(());
@@ -283,98 +179,121 @@ pub async fn fetch(root: &Path) -> Result<()> {
     if missing.engine {
         install(root, &http).await?;
     }
-    let dir = model(root);
-    for file in FILES {
-        let to = dir.join(file.0);
-        if std::fs::metadata(&to).is_ok_and(|m| m.len() == file.1) {
-            continue;
-        }
-        let url = format!(
-            "https://huggingface.co/{REPO}/resolve/{REVISION}/{}",
-            file.0
-        );
-        download(&http, &url, &to, *file).await?;
+    if missing.model > 0 {
+        pull(root, &http).await?;
     }
     println!(
-        "MTPLX {MTPLX} and Inkling 2 Mini are in {}.",
+        "Ollama {OLLAMA} and Inkling 2 Mini are in {}.",
         root.display()
     );
     Ok(())
 }
 
-/// uv, then a Python and MTPLX in a directory of their own.
+/// Ollama's archive, checked and unpacked into a directory of its own.
 async fn install(root: &Path, http: &reqwest::Client) -> Result<()> {
-    let uv = root.join(format!("uv-{UV}")).join("uv");
-    if !uv.is_file() {
-        let archive = root.join(UV_ARCHIVE.0);
-        let url = format!(
-            "https://github.com/astral-sh/uv/releases/download/{UV}/{}",
-            UV_ARCHIVE.0
-        );
-        download(http, &url, &archive, UV_ARCHIVE).await?;
-        let dir = uv.parent().expect("uv is in a directory");
-        std::fs::create_dir_all(dir)?;
-        // The archive holds one directory, with uv and uvx in it.
-        run(
-            tokio::process::Command::new("tar")
-                .arg("-xzf")
-                .arg(&archive)
-                .args(["--strip-components", "1", "-C"])
-                .arg(dir),
-            "unpacking uv",
-        )
-        .await?;
-        std::fs::remove_file(&archive).ok();
-        if !uv.is_file() {
-            bail!("uv's archive did not hold uv");
-        }
-    }
-
-    // What uv keeps is kept here too, and what the user has set up for
-    // their own uv is not read.
-    let with = |command: &mut tokio::process::Command| {
-        command
-            .env("UV_CACHE_DIR", root.join("uv-cache"))
-            .env("UV_PYTHON_INSTALL_DIR", root.join("python"))
-            .env("UV_PYTHON_PREFERENCE", "only-managed")
-            .env("UV_NO_CONFIG", "1")
-            .env_remove("VIRTUAL_ENV");
-    };
-    // A directory left by an install that did not finish is made again: its
-    // programs name their own path, so it is made where it stays.
-    let venv = engine(root);
-    if venv.exists() {
-        std::fs::remove_dir_all(&venv).with_context(|| format!("removing {}", venv.display()))?;
-    }
-    println!(
-        "Installing Python {PYTHON} and MTPLX {MTPLX} into {}",
-        venv.display()
+    let archive = root.join(ARCHIVE.0);
+    let url = format!(
+        "https://github.com/ollama/ollama/releases/download/v{OLLAMA}/{}",
+        ARCHIVE.0
     );
-    let mut make = tokio::process::Command::new(&uv);
-    make.args(["venv", "--quiet", "--python", PYTHON])
-        .arg(&venv);
-    with(&mut make);
-    run(&mut make, "making MTPLX's Python").await?;
+    download(http, &url, &archive, ARCHIVE).await?;
+    // A directory left by an install that did not finish is made again.
+    let dir = engine(root);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+    }
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    println!("Unpacking Ollama {OLLAMA} into {}", dir.display());
+    run(
+        tokio::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&dir),
+        "unpacking Ollama",
+    )
+    .await?;
+    std::fs::remove_file(&archive).ok();
+    if !dir.join("ollama").is_file() {
+        bail!("Ollama's archive did not hold ollama");
+    }
+    std::fs::write(installed(root), format!("ollama {OLLAMA}\n"))?;
+    Ok(())
+}
 
-    let lock = root.join(format!("mtplx-{MTPLX}.lock"));
-    std::fs::write(&lock, LOCK).with_context(|| format!("writing {}", lock.display()))?;
-    let mut add = tokio::process::Command::new(&uv);
-    add.args([
-        "pip",
-        "install",
-        "--require-hashes",
-        "--only-binary",
-        ":all:",
-        "--python",
-    ])
-    .arg(venv.join("bin").join("python"))
-    .arg("-r")
-    .arg(&lock);
-    with(&mut add);
-    run(&mut add, "installing MTPLX").await?;
-    // What uv downloaded is installed, and its own copy is not kept.
-    std::fs::remove_dir_all(root.join("uv-cache")).ok();
-    std::fs::write(installed(root), format!("mtplx {MTPLX}, uv {UV}\n"))?;
+/// The model, pulled by tangent's Ollama into its store, and its digest
+/// checked. An Ollama is started for the pull, on a port of its own, and
+/// stopped after it.
+async fn pull(root: &Path, http: &reqwest::Client) -> Result<()> {
+    let program = engine(root).join("ollama");
+    let store = store(root);
+    std::fs::create_dir_all(&store).with_context(|| format!("creating {}", store.display()))?;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let host = format!("127.0.0.1:{port}");
+    // its own address and store, and none of Ollama's hosted features
+    let env = [
+        ("OLLAMA_HOST", host.as_str()),
+        ("OLLAMA_MODELS", &*store.to_string_lossy()),
+        ("OLLAMA_NO_CLOUD", "1"),
+    ];
+    let mut server = tokio::process::Command::new(&program)
+        .arg("serve")
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("starting {}", program.display()))?;
+    let version = format!("http://{host}/api/version");
+    let began = Instant::now();
+    while !matches!(http.get(&version).send().await, Ok(r) if r.status().is_success()) {
+        if let Some(status) = server.try_wait()? {
+            bail!("Ollama stopped before it answered ({status})");
+        }
+        if began.elapsed() > READY {
+            bail!("Ollama did not answer at {host} within a minute");
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    println!(
+        "Downloading Inkling 2 Mini ({}) into {}",
+        size(MODEL_BYTES),
+        store.display()
+    );
+    run(
+        tokio::process::Command::new(&program)
+            .args(["pull", MODEL])
+            .envs(env),
+        "downloading the model",
+    )
+    .await?;
+
+    let tags: serde_json::Value = http
+        .get(format!("http://{host}/api/tags"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await
+        .context("reading what Ollama pulled")?;
+    let digest = tags["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|m| m["name"] == MODEL)
+        .and_then(|m| m["digest"].as_str())
+        .with_context(|| format!("Ollama pulled {MODEL} and does not list it"))?;
+    if digest != DIGEST {
+        bail!(
+            "Ollama's library now gives another build of {MODEL} than the one tangent's settings were measured with (digest {digest}, not {DIGEST}); a newer tangent names the build it gives"
+        );
+    }
+    std::fs::write(pulled(root), format!("{MODEL} {DIGEST}\n"))?;
+    server.kill().await.ok();
     Ok(())
 }
 
@@ -510,82 +429,51 @@ mod tests {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// The model's list is whole: each file once, each digest a SHA-256,
-    /// and together the size Hugging Face gives the revision without its
-    /// .gitattributes.
+    /// The archive and the model are pinned by whole SHA-256 digests.
     #[test]
-    fn the_models_files_are_listed_once_with_their_digests() {
-        let mut names: Vec<&str> = FILES.iter().map(|f| f.0).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), FILES.len());
-        for (name, size, sha256) in FILES {
-            assert!(*size > 0, "{name}");
-            assert_eq!(sha256.len(), 64, "{name}");
-            assert!(sha256.bytes().all(|b| b.is_ascii_hexdigit()), "{name}");
+    fn what_is_fetched_is_named_by_its_digest() {
+        for digest in [ARCHIVE.2, DIGEST] {
+            assert_eq!(digest.len(), 64);
+            assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()));
         }
-        assert_eq!(FILES.iter().map(|f| f.1).sum::<u64>(), 17_242_614_770);
+        assert!(ARCHIVE.1 > 0);
+        // a tag of its own, and not whichever build `latest` is
+        assert!(MODEL.starts_with("inkling-2-mini:") && !MODEL.ends_with(":latest"));
     }
 
-    /// The lock pins MTPLX itself, at the version named here, and every
-    /// line that names a package gives it a hash.
-    #[test]
-    fn the_lock_is_for_this_mtplx_and_hashes_every_package() {
-        assert!(
-            LOCK.contains(&format!("\nmtplx[server]=={MTPLX} \\\n"))
-                || LOCK.contains(&format!("\nmtplx=={MTPLX} \\\n"))
-        );
-        let packages = LOCK
-            .lines()
-            .filter(|l| !l.starts_with(' ') && l.contains("=="))
-            .count();
-        let hashed = LOCK
-            .split("\n")
-            .collect::<Vec<_>>()
-            .windows(2)
-            .filter(|w| {
-                !w[0].starts_with(' ')
-                    && w[0].contains("==")
-                    && w[1].trim_start().starts_with("--hash=sha256:")
-            })
-            .count();
-        assert!(packages > 30, "{packages}");
-        assert_eq!(packages, hashed);
-    }
-
-    /// The config's two paths are where the fetch puts MTPLX and the model.
+    /// The config's two paths are where the fetch puts Ollama and its
+    /// models.
     #[test]
     fn the_config_names_what_the_fetch_writes() {
         let root = Path::new("/c/tangent/models");
-        let (program, dir) = paths("/c");
-        assert_eq!(Path::new(&program), engine(root).join("bin").join("mtplx"));
-        assert_eq!(Path::new(&dir), model(root));
+        let (program, models) = paths("/c");
+        assert_eq!(Path::new(&program), engine(root).join("ollama"));
+        assert_eq!(Path::new(&models), store(root));
     }
 
-    /// Nothing fetched is everything missing; a file of the model at its
-    /// full size is not, and a part of one counts for what it holds.
+    /// Nothing fetched is everything missing; what a stopped pull left
+    /// counts for what it holds, and the model is there only once its
+    /// digest was checked.
     #[test]
     fn what_is_missing_is_what_is_not_there_whole() {
         let tmp = tempfile::tempdir().unwrap();
-        let all: u64 = FILES.iter().map(|f| f.1).sum();
         let none = missing(tmp.path());
         assert!(none.engine);
-        assert_eq!(none.model, all);
+        assert_eq!(none.model, MODEL_BYTES);
+        assert_eq!(none.bytes(), MODEL_BYTES + ARCHIVE.1);
         assert!(!none.nothing());
 
-        let dir = model(tmp.path());
-        std::fs::create_dir_all(&dir).unwrap();
-        let (name, size, _) = FILES.iter().min_by_key(|f| f.1).unwrap();
-        std::fs::write(dir.join(name), vec![0u8; *size as usize]).unwrap();
-        assert_eq!(missing(tmp.path()).model, all - size);
-        let (other, _, _) = FILES.iter().find(|f| f.0 != *name).unwrap();
-        std::fs::write(partial(&dir.join(other)), [0u8; 10]).unwrap();
-        assert_eq!(missing(tmp.path()).model, all - size - 10);
+        let blobs = store(tmp.path()).join("blobs");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(blobs.join("sha256-00"), [0u8; 10]).unwrap();
+        assert_eq!(missing(tmp.path()).model, MODEL_BYTES - 10);
+        std::fs::write(pulled(tmp.path()), "").unwrap();
+        assert_eq!(missing(tmp.path()).model, 0);
 
         std::fs::create_dir_all(engine(tmp.path())).unwrap();
         assert!(missing(tmp.path()).engine, "a directory is not an install");
         std::fs::write(installed(tmp.path()), "").unwrap();
-        assert!(!missing(tmp.path()).engine);
+        assert!(missing(tmp.path()).nothing());
     }
 
     /// A server of one file, which sends the rest of it when asked for a

@@ -417,34 +417,35 @@ The judge's lines, under `inference:`:
 
 The reviewer has no lines of its own under `inference:`: take out the ones that were there.
 
-### Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (MTPLX)
+### Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (Ollama)
 
 `--local` writes this. The judge and the reviewer are one model, so `models:` holds one entry, `inkling`, in place of `judge` and `reviewer`, and both nodes under `inference:` say `model: inkling`. `tangent watch` starts the server (`serve`), waits until it answers and stops it after. It needs an Apple Silicon Mac with 32 GB of memory or more.
 
-MTPLX and the model are tangent's own copies, under its cache, and nothing else on the Mac is touched. Init offers to download them, and `tangent model fetch` does it at any time: uv, a Python, MTPLX 2.13.1 and the model (17 GB), each a pinned version checked against its SHA-256. A fetch that was stopped goes on where it was.
+Ollama and the model are tangent's own copies, under its cache: an Ollama of yours, and its models, are neither used nor changed, and tangent's listens on a port of its own. Init offers to download them, and `tangent model fetch` does it at any time: Ollama 0.40.18, its release's archive checked against its SHA-256, and the model (20 GB), which that Ollama pulls from its library and tangent checks against the digest of the build it was measured with. A fetch that was stopped goes on where it was. Ollama keeps a key of its own in `~/.ollama`, as any Ollama does.
 
-The settings are the ones measured with MTPLX 2.13 on an M4 Max with 36 GB. Nothing leaves the machine.
+The settings are the ones measured with Ollama 0.40.18 on an M4 Max with 36 GB. Nothing leaves the machine: Ollama is started with its hosted models and web search off.
 
 The whole of `models:`:
 
 ```yaml
   inkling:
-    type: openai                 # MTPLX serves the OpenAI API
-    url: http://127.0.0.1:8000/v1
-    model: mtplx                 # it answers with the model it loaded
+    type: openai                 # Ollama serves the OpenAI API
+    url: http://127.0.0.1:11435/v1
+    model: "inkling-2-mini:26b-a5b-nvfp4"   # Ollama's build of it for Apple Silicon
     timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
     retries: 2
     concurrency: 1               # one request at a time, the judge's and the reviewer's together
     # `tangent watch` starts this server, waits until it answers and stops it
     # after; one already answering at `url` is used and left running.
     serve:
-      # MTPLX and the model, where `tangent model fetch` keeps them
-      command: ["${HOME}/.cache/tangent/models/mtplx-2.13.1/bin/mtplx", serve, --model, "${HOME}/.cache/tangent/models/Inkling-2-Mini-MTPLX-Optimized-Speed/b7570c070c17", --host, 127.0.0.1, --port, "8000", --ssd-session-cache, "off", --no-stats-footer, --prefill-chunk-tokens, "256"]
+      # tangent's own Ollama, where `tangent model fetch` keeps it
+      command: ["${HOME}/.cache/tangent/models/ollama-0.40.18/ollama", serve]
       env:
-        HF_HUB_OFFLINE: "1"                        # the model is read from this Mac, and never fetched here
-        MTPLX_SESSION_BANK_MAX_BYTES: 3G           # what it keeps of prompts it has read, so the judge's brief is read once
-        MTPLX_SYSTEM_MEMORY_SHED_FLOOR_BYTES: 2G   # it drops that only below 2 GB of free memory
-        MTPLX_GDN_BOUNDARY_TAIL_BACKOFF: "768"     # a restore point inside the brief, for the next record
+        # a port and a store of its own: an Ollama of yours is neither used nor in the way
+        OLLAMA_HOST: "127.0.0.1:11435"
+        OLLAMA_MODELS: "${HOME}/.cache/tangent/models/ollama-models"
+        OLLAMA_NO_CLOUD: "1"             # none of Ollama's hosted models or web search
+        OLLAMA_CONTEXT_LENGTH: "32768"   # what one request may hold: a review's whole conversation
 ```
 
 The judge's lines, under `inference:`, and its `batch_bytes` there is `32000`:
@@ -454,7 +455,7 @@ The judge's lines, under `inference:`, and its `batch_bytes` there is `32000`:
     temperature: 0.7
     extra:
       top_p: 0.95
-      chat_template_kwargs: { enable_thinking: false }   # no thinking: the reply is the answer
+      reasoning_effort: none       # no thinking: the reply is the answer
 ```
 
 The reviewer has no lines of its own under `inference:`: take out the ones that were there.
