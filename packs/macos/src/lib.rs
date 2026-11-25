@@ -951,17 +951,22 @@ fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
 /// The state key the capture's own pid is kept under.
 const MONITOR: &str = "monitor";
 
-/// A line from the capture's start script, `{"monitor": {"pid": N}}`: the
-/// script that runs tangent, the sensor and tcpdump names its own pid, and what
-/// it and everything under it does is left out from here on. A packet capture
-/// piped to a socket is what a sniffer looks like, so the judge flagged the
-/// capture itself in every run; a name or a command line could not exempt
-/// it, since a look-alike is worth a flag. The declaration is itself a
-/// record, in the session of the process it names: anything running as the
-/// person can write this line, and a program that is called the monitor is
-/// seen being so. One that names a pid the tree does not know is not taken:
-/// it would be an exemption with no record of it, for whatever takes the pid
-/// next. The latest declaration stands.
+/// A line from the `macos` source, `{"monitor": {"pid": N}}`: tangent names
+/// its own pid as it starts the sensor, and what it and everything under it
+/// does (the sensor, tcpdump, the snapshot's `ps`) is left out from here on.
+/// A packet capture piped to a socket is what a sniffer looks like, so the
+/// judge flagged the capture itself in every run; a name or a command line
+/// could not exempt it, since a look-alike is worth a flag.
+///
+/// The source builds every line it sends, so no program on the Mac can
+/// write this one. The declaration is a record of the lake, with the
+/// process and its parents, and of no session: in its session the judge
+/// read tangent saying its own activity is left out as a program hiding
+/// itself, and flagged each start of tangent. A config that feeds this
+/// plugin from another source, a socket, lets whatever writes to that
+/// source write this line too. One that names a pid the tree does not know
+/// is not taken: it would be an exemption with no record of it, for
+/// whatever takes the pid next. The latest declaration stands.
 fn monitor(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     let pid = int_at(rec.get("monitor")?, "/pid").filter(|p| *p > 1)?;
     let k = known(pid)?;
@@ -975,6 +980,8 @@ fn monitor(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     out.insert("event".into(), json!("monitor"));
     out.insert("process".into(), Value::Object(proc));
     situate(&mut out, pid, k.ppid, rec);
+    // the lake's, not a session's: no summary has it, and no judge reads it
+    out.remove("session");
     out.insert(
         "detail".into(),
         json!({"declared": "this process says it is the capture: what it and the programs under it do is left out of the records from here on"}),

@@ -165,10 +165,13 @@ The source sends one line, `{"monitor": {"pid": N}}`, with tangent's own
 pid. From then on the plugin drops the records of that process and
 everything under it (the sensor, tcpdump, the snapshot's `ps`, and what an
 `exec` sink runs), though the tree still knows them. A name or a command line could not exempt them, since a
-look-alike is worth a flag. The declaration is itself a record, in the
-session of the process it names: whatever can write to one of the plugin's
-sources can write the line (a socket source would let anything running as
-the person), and a program that is called the monitor is seen being so. A line
+look-alike is worth a flag. The source builds every line it sends, so no
+program on the Mac can write this one. The declaration is kept in the lake,
+with the process and its parents, but in no session, so the judge never
+reads it: in a session it read as a program hiding its own activity, and
+each start of tangent was flagged. Whatever can write to one of the plugin's
+sources can write the line, so feed the plugin from a `macos` source alone: a
+socket source would let anything running as the person exempt itself. A line
 that names a pid the tree does not know is not taken, since it would exempt
 whatever took that pid next with no record of it.
 

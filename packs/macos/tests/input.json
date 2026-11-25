@@ -6024,5 +6024,19 @@
   },
   "time": "2026-11-03T20:00:40.000040000Z",
   "version": 10
+ },
+ {
+  "time": "2026-11-03T20:00:41.000000000Z",
+  "ps": {
+   "pid": 800,
+   "ppid": 100,
+   "path": "/Users/dev/tangent/target/release/tangent"
+  }
+ },
+ {
+  "time": "2026-11-03T20:00:41.000000000Z",
+  "monitor": {
+   "pid": 800
+  }
  }
 ]
