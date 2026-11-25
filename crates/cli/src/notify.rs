@@ -31,6 +31,10 @@ use tokio::task::JoinHandle;
 
 /// How long the app is given to show the last of them as the watch ends.
 const LAST: Duration = Duration::from_secs(2);
+/// How long [`Notifier::start`] waits for the app to fail at startup (for
+/// instance when notifications are denied and it opens System Settings and
+/// exits), so its message prints before `sudo` prompts for a password.
+const SETTLE: Duration = Duration::from_secs(1);
 
 /// One notification: the three lines of its banner, the text shown when it
 /// is clicked, and whether it makes a sound.
@@ -90,15 +94,43 @@ pub struct Notifier {
 }
 
 impl Notifier {
-    /// Starts `app` to show what [`Notifier::show`] is given. Nothing here
-    /// waits for it: an app that does not start, or that the Mac's owner
-    /// has not allowed, says so once and the notes go nowhere.
-    pub fn start(app: PathBuf) -> Self {
-        let (notes, shown) = mpsc::unbounded_channel();
-        Self {
-            notes,
-            shown: tokio::spawn(run(app, shown)),
+    /// Starts `app` to show what [`Notifier::show`] is given, waiting briefly
+    /// ([`SETTLE`]) so an immediate startup failure (such as denied
+    /// notifications) prints before the pipeline prompts for `sudo`. Returns
+    /// `None` when the app failed to start or exited during startup.
+    pub async fn start(app: PathBuf) -> Option<Self> {
+        Self::start_within(app, SETTLE).await
+    }
+
+    async fn start_within(app: PathBuf, settle: Duration) -> Option<Self> {
+        let mut command = Command::new(&app);
+        command
+            .arg("notify")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        // A group of its own: Ctrl-C at the terminal stops the watch, and the
+        // app ends when the watch has written it the last review.
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                println!("Notifications are off: starting {}: {e}", app.display());
+                return None;
+            }
+        };
+        let to = child.stdin.take().expect("the app's stdin is piped");
+        if tokio::time::timeout(settle, child.wait()).await.is_ok() {
+            drop(to);
+            off(child).await;
+            return None;
         }
+        let (notes, shown) = mpsc::unbounded_channel();
+        Some(Self {
+            notes,
+            shown: tokio::spawn(run(child, to, shown)),
+        })
     }
 
     pub fn show(&self, note: Note) {
@@ -112,25 +144,7 @@ impl Notifier {
     }
 }
 
-async fn run(app: PathBuf, mut notes: mpsc::UnboundedReceiver<Note>) {
-    let mut command = Command::new(&app);
-    command
-        .arg("notify")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    // A group of its own: Ctrl-C at the terminal stops the watch, and the
-    // app ends when the watch has written it the last review.
-    #[cfg(unix)]
-    command.process_group(0);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            println!("Notifications are off: starting {}: {e}", app.display());
-            return;
-        }
-    };
-    let mut to = child.stdin.take().expect("the app's stdin is piped");
+async fn run(mut child: Child, mut to: ChildStdin, mut notes: mpsc::UnboundedReceiver<Note>) {
     loop {
         tokio::select! {
             note = notes.recv() => match note {
@@ -214,7 +228,9 @@ mod tests {
             dir.path(),
             &format!("echo \"$1\" > {0}; cat >> {0}", out.display()),
         );
-        let notifier = Notifier::start(app);
+        let notifier = Notifier::start_within(app, Duration::from_millis(50))
+            .await
+            .expect("the stub stays alive until stdin closes");
         notifier.show(note("ana", None));
         let answer = json!({"source": "macos_feedback", "session": {"id": "501"}});
         notifier.show(note(
@@ -241,20 +257,30 @@ mod tests {
         );
     }
 
-    /// An app that ends, as the sensor's does when the Mac's owner has not
-    /// allowed it, takes nothing with it: what is shown after goes nowhere.
+    /// An app that ends at startup, as the sensor's does when the Mac's owner
+    /// has not allowed notifications, returns `None` before the pipeline starts;
+    /// one that ends later takes nothing with it.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_app_that_ends_stops_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let app = stub(dir.path(), "echo 'not allowed' >&2; exit 1");
-        let notifier = Notifier::start(app);
+        assert!(Notifier::start_within(app, Duration::from_millis(500))
+            .await
+            .is_none());
+
+        let later = stub(dir.path(), "sleep 0.2; echo 'stopped later' >&2; exit 1");
+        let notifier = Notifier::start_within(later, Duration::from_millis(20))
+            .await
+            .expect("still running past settle");
         tokio::time::sleep(Duration::from_millis(300)).await;
         notifier.show(note("ana", None));
         notifier.end().await;
 
-        let none = Notifier::start(dir.path().join("no-such-app"));
-        none.show(note("ana", None));
-        none.end().await;
+        assert!(
+            Notifier::start_within(dir.path().join("no-such-app"), Duration::from_millis(50))
+                .await
+                .is_none()
+        );
     }
 }

@@ -93,18 +93,17 @@ tangent watch cloud --sources okta,github
 
 It takes init's flags, and runs the pipeline init would write for them, leaving no file where you are. The config goes to tangent's own directory, `~/.local/share/tangent/cloud` (under `$XDG_DATA_HOME` when that is set), written again at each start, and tangent runs there: the alerts, their reviews, the lake and each actor's history are kept there too, and the next start goes on from them. It prints where they are.
 
-While it runs, the terminal shows what it finds: each minute what the judge checked (how many, the names judged most, and how many it flagged), each alert as the judge flags it (when, from which log, who, and why), and each review as it is written (the verdict, the finding, what to check first). The runtime's own lines are among them; `RUST_LOG=warn` keeps them to its warnings. A model wrote that text after reading whatever an attacker put in a record, so control characters are taken out of it before it is printed.
+While it runs, the terminal shows what it finds: each alert as the judge marks it (`#1`, `#2`, ... with a short summary while the reviewer works on it), each settled review (`cleared`, `MALICIOUS`, `NEEDS LOOK`, or `REVIEW FAILED` tied back to `#1`, `#2`, ...), and each minute a quiet `checked` count with how many alerts are still in review. Runtime logs go to `watch.log` in the pipeline's directory (only errors reach stderr; set `RUST_LOG=info` for verbose terminal logs). A model wrote the alert text after reading whatever an attacker put in a record, so control characters are taken out of it before it is printed.
 
 On a Mac, a review that upholds its alert is a notification too: `malicious` with a sound, `unresolved` without one, and a click on it shows the finding and what to check. A Mac's review also asks whether the session was your doing, with three buttons, and keeps the answer in `feedback.ndjson` beside the reviews. A review that clears its alert is not a notification, and neither is the judge's flag before its review. macOS asks once whether Tangent may show notifications, and they come from tangent's signed app, which `watch` fetches once per version. `--no-notify` shows none, and over ssh there are none.
 
 ```
-checked   41 (deploy-bot x30, ana@acme.example x9, 2 more): 1 flagged
-flagged   2026-11-24 03:09Z  okta  ana@acme.example
-          a sign-in from a Tor exit, with no second factor
-          sent to review
-reviewed  ana@acme.example, 3 alerts: malicious
-          ...
-          check: ...
+#1  03:09Z  flagged  okta  ana@acme.example  a sign-in from a Tor exit  (reviewing)
+
+#1  MALICIOUS  ana@acme.example (3 alerts)
+    ...
+    check: ...
+checked 41 activities · 1 flagged
 ```
 
 It starts only with what it needs. A variable from the table above that is not set stops it, with the list, where `tangent watch --config` would leave the source idle. With `--local` it downloads the model first, after asking. One `watch cloud` runs at a time.
