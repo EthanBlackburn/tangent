@@ -43,7 +43,7 @@ pub struct Note {
     pub sound: bool,
     /// With it the notification asks, "Not me", "Not sure" or "That was
     /// me": the file the answer is added to, and the line it is added as,
-    /// to which the app adds `answer`, `note` and `ts`.
+    /// to which the app adds `answer` and `ts`.
     pub feedback: Option<(PathBuf, Value)>,
 }
 

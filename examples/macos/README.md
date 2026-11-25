@@ -54,10 +54,11 @@ judge does.
 Each review that stands (called `malicious` or `unresolved`) then comes up
 as a notification on this Mac, with three buttons, "Not me", "Not sure" and
 "That was me". A click on the banner itself opens what the reviewer found
-and what it says to check, with the same buttons and room for a note. Your
+and what it says to check, with the same buttons. Your
 answer goes to `feedback.ndjson`. Nothing waits for it: a banner you leave
 stays in Notification Center. macOS asks once whether Tangent may show
-notifications; with `--no-notify` nothing asks, and
+notifications, and after a no each watch opens System Settings at them;
+with `--no-notify` nothing asks, and
 `jq 'select(.review.verdict != "benign")' reviews.ndjson` is then what is
 left to read.
 

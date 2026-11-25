@@ -428,10 +428,10 @@ default.
 notification: one called `malicious`, with a sound, or `unresolved`,
 without. It has three buttons, "Not me", "Not sure" and "That was me", and
 a click on the banner itself opens the whole finding and what to check,
-with the same buttons and a field for a note. The answer is a line of
+with the same buttons. The answer is a line of
 `feedback.ndjson`, beside `reviews.ndjson`: the session, both verdicts, the
 review's time (`reviewed`, which with the session says which review it
-answers), `answer` (`not_mine`, `unsure` or `mine`) and `note`. Nothing
+answers) and `answer` (`not_mine`, `unsure` or `mine`). Nothing
 waits for it: a banner left alone stays in Notification Center, and is
 answered there when you get to it, after tangent has stopped too. A review
 called `benign` and one that failed are in the terminal and
