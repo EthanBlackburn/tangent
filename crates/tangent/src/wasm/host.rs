@@ -15,6 +15,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use crate::enrichment::Tables;
 use crate::inference::Nodes;
+use crate::sinks::manager::Sink;
 use crate::state::{StateStore, StateValue, Txn};
 use crate::stop::Stop;
 use crate::wasm::host::tangent::logs::log;
@@ -42,6 +43,16 @@ bindgen!({
     }
 });
 
+/// What a plugin may query (`plugins.<name>.tables`): each table as
+/// `NAME=PATH`, where its sink puts its Parquet files, and by the table's
+/// name the sink itself, which holds the records it has put in none yet.
+/// The sink and not the sink manager: shutdown must hold that alone.
+#[derive(Default)]
+pub struct Lake {
+    pub tables: Vec<String>,
+    pub sinks: Vec<(String, Arc<dyn Sink>)>,
+}
+
 pub struct HostEngine {
     pub ctx: WasiCtx,
     pub table: ResourceTable,
@@ -58,10 +69,8 @@ pub struct HostEngine {
     plugin_cfg: Arc<HashMap<String, JSONValue>>,
     /// The process's enrichment tables, shared with every other instance.
     tables: Arc<Tables>,
-    /// What this plugin may query, as `NAME=PATH`: each of its `tables`, and
-    /// where the sink it names keeps its records. None when its config
-    /// names none.
-    lake: Option<Arc<[String]>>,
+    /// The tables this plugin may query; None when its config names none.
+    lake: Option<Arc<Lake>>,
     /// The inference nodes this plugin may hold a conversation with
     /// (`plugins.<name>.inference`).
     models: Nodes,
@@ -85,7 +94,7 @@ impl HostEngine {
         max_ttl_ms: u64,
         config: Arc<HashMap<String, JSONValue>>,
         tables: Arc<Tables>,
-        lake: Option<Arc<[String]>>,
+        lake: Option<Arc<Lake>>,
         models: Nodes,
         stop: Stop,
         disable_remote_calls: bool,
@@ -328,19 +337,21 @@ impl tangent::logs::model::Host for HostEngine {
 /// How long a plugin's query runs when it names no time.
 const QUERY_TIMEOUT_MS: u32 = 30_000;
 
-/// SQL over the sinks' records the plugin's `tables` name. The statement may be a
-/// model's, so it runs as `tangent query`'s does: it reads the tables and
-/// the plugin's views, and nothing else.
+/// SQL over the sinks' records the plugin's `tables` name: every record a
+/// sink has acknowledged, in a Parquet file or not yet. The statement may
+/// be a model's, so it runs as `tangent query`'s does: it reads the tables
+/// and the plugin's views, and nothing else. It is not given a plan
+/// (`EXPLAIN`), which would say which rows are in a file.
 impl tangent::logs::lake::Host for HostEngine {
     async fn query(&mut self, s: tangent::logs::lake::Statement) -> Result<String, String> {
         if self.txn.is_some() {
             return Err("commit or roll back the state transaction first: it would hold every worker's state for the query".into());
         }
-        let Some(tables) = &self.lake else {
+        let Some(lake) = &self.lake else {
             return Err("this plugin has no `tables` in the config to query".into());
         };
         let q = crate::query::Query {
-            tables: tables.to_vec(),
+            tables: lake.tables.clone(),
             views: s
                 .views
                 .into_iter()
@@ -354,7 +365,7 @@ impl tangent::logs::lake::Host for HostEngine {
         let wait = s.timeout_ms.unwrap_or(QUERY_TIMEOUT_MS);
         match tokio::time::timeout(
             std::time::Duration::from_millis(u64::from(wait)),
-            crate::query::run(&q),
+            crate::query::run_with(&q, &lake.sinks),
         )
         .await
         {
@@ -654,10 +665,10 @@ mod tests {
             timeout_ms: None,
         };
         let mut g = guest(&store);
-        g.lake = Some(Arc::from([format!(
-            "lake={}",
-            lake.path().join("logs").display()
-        )]));
+        g.lake = Some(Arc::new(Lake {
+            tables: vec![format!("lake={}", lake.path().join("logs").display())],
+            sinks: Vec::new(),
+        }));
         let rows = g
             .query(statement("SELECT count(*) AS n FROM records"))
             .await
@@ -679,6 +690,543 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.contains("no `tables`"), "{e}");
+    }
+
+    /// `lake.query` over a table its sink keeps: every record the sink has
+    /// acknowledged, each once, wherever its WAL file is on the way to the
+    /// lake.
+    mod unsealed {
+        use super::*;
+        use crate::sinks::manager::SinkWrite;
+        use crate::sinks::rolling_file::RollingFileSink;
+        use crate::sinks::s3::S3SinkItem;
+        use crate::sinks::wal::{DurableFileSink, WALSink};
+        use std::path::Path;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        use tangent::logs::lake::{Host as _, Statement};
+        use tangent_shared::sinks::common::{Compression, Encoding};
+        use tokio::sync::Semaphore;
+
+        /// The directory below the lake's root every record here goes to.
+        const HOUR: &str = "2026/11/12/10";
+
+        /// 49 bytes with its line break, 50 from the tenth.
+        fn line(n: usize) -> String {
+            format!(
+                r#"{{"n":{n},"host":"web-{}.example.com","org":"acme"}}"#,
+                n % 3
+            )
+        }
+
+        /// A rolling_file sink of Parquet: its files under `root/out`, its
+        /// WAL in `root/wal`, sealed only by `max_bytes` or a flush.
+        async fn sink(
+            root: &Path,
+            far: Arc<dyn WALSink>,
+            max_bytes: usize,
+            in_flight: usize,
+        ) -> Arc<DurableFileSink> {
+            DurableFileSink::new(
+                far,
+                root.join("wal"),
+                in_flight,
+                max_bytes,
+                Duration::from_secs(3600),
+                Compression::Zstd { level: 3 },
+                Encoding::Parquet {
+                    schema: serde_yaml::from_str("{ n: int, host: string }").unwrap(),
+                    record_column: Some("record".into()),
+                },
+            )
+            .await
+            .unwrap()
+        }
+
+        fn files_to(root: &Path) -> Arc<dyn WALSink> {
+            Arc::new(RollingFileSink::new(root.join("out")))
+        }
+
+        /// Record `n`, acknowledged when this returns.
+        async fn write(sink: &DurableFileSink, n: usize) {
+            let write = SinkWrite {
+                sink_name: Arc::from("lake"),
+                payload: BytesMut::from(format!("{}\n", line(n)).as_str()),
+                s3: Some(S3SinkItem {
+                    bucket_name: Arc::from(""),
+                    key_prefix: Some(Arc::from(HOUR)),
+                }),
+            };
+            sink.write(write).await.unwrap();
+        }
+
+        /// A plugin whose table `lake` is the sink's, as `dag::load` gives
+        /// it one.
+        fn plugin(root: &Path, sink: &Arc<DurableFileSink>) -> HostEngine {
+            let store: Arc<dyn StateStore> = Arc::new(
+                crate::state::lru::LruStore::new(tangent_shared::runtime::StateConfig::default())
+                    .unwrap(),
+            );
+            let mut g = guest(&store);
+            g.lake = Some(Arc::new(Lake {
+                tables: vec![format!("lake={}", root.join("out").display())],
+                sinks: vec![("lake".into(), Arc::clone(sink) as Arc<dyn Sink>)],
+            }));
+            g
+        }
+
+        async fn rows(g: &mut HostEngine, sql: &str) -> Result<Vec<JSONValue>, String> {
+            let statement = Statement {
+                views: vec![("records".into(), "SELECT n, host, record FROM lake".into())],
+                sql: sql.into(),
+                max_rows: 1_000_000,
+                json: true,
+                max_cell: 100,
+                timeout_ms: None,
+            };
+            let out = g.query(statement).await?;
+            Ok(out
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect())
+        }
+
+        /// Every `n` in the table, in order.
+        async fn ns(g: &mut HostEngine) -> Vec<u64> {
+            let rows = rows(g, "SELECT n FROM records ORDER BY n").await.unwrap();
+            rows.iter().map(|r| r["n"].as_u64().unwrap()).collect()
+        }
+
+        fn upto(n: u64) -> Vec<u64> {
+            (0..n).collect()
+        }
+
+        /// The names in `dir` and below it, sorted; none if it is not there.
+        fn names(dir: &Path) -> Vec<String> {
+            let mut dirs = vec![dir.to_path_buf()];
+            let mut names = Vec::new();
+            while let Some(dir) = dirs.pop() {
+                for e in std::fs::read_dir(&dir).into_iter().flatten() {
+                    let e = e.unwrap();
+                    match e.path().is_dir() {
+                        true => dirs.push(e.path()),
+                        false => names.push(e.file_name().into_string().unwrap()),
+                    }
+                }
+            }
+            names.sort();
+            names
+        }
+
+        fn ending(names: &[String], end: &str) -> usize {
+            names.iter().filter(|n| n.ends_with(end)).count()
+        }
+
+        async fn until(what: &str, mut holds: impl FnMut() -> bool) {
+            let mut waited = Duration::ZERO;
+            while !holds() {
+                assert!(waited < Duration::from_secs(10), "waited 10 s for {what}");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                waited += Duration::from_millis(5);
+            }
+        }
+
+        /// A rolling_file sink's far side, held at its two ends: a permit of
+        /// `place` puts one Parquet file in the lake, and a permit of `back`
+        /// then returns to the WAL, which removes its own file.
+        struct Held {
+            far: RollingFileSink,
+            place: Semaphore,
+            back: Semaphore,
+            /// files that have come to be placed, and files placed
+            came: AtomicUsize,
+            placed: AtomicUsize,
+        }
+
+        impl Held {
+            fn at(root: &Path) -> Arc<Self> {
+                Arc::new(Self {
+                    far: RollingFileSink::new(root.join("out")),
+                    place: Semaphore::new(0),
+                    back: Semaphore::new(0),
+                    came: AtomicUsize::new(0),
+                    placed: AtomicUsize::new(0),
+                })
+            }
+
+            fn let_go(&self) {
+                self.place.add_permits(1000);
+                self.back.add_permits(1000);
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl WALSink for Held {
+            async fn write_path_with(
+                &self,
+                path: &Path,
+                name: &str,
+                encoding: &Encoding,
+                compression: &Compression,
+                meta: &S3SinkItem,
+            ) -> Result<()> {
+                self.came.fetch_add(1, Ordering::SeqCst);
+                self.place.acquire().await?.forget();
+                self.far
+                    .write_path_with(path, name, encoding, compression, meta)
+                    .await?;
+                self.placed.fetch_add(1, Ordering::SeqCst);
+                self.back.acquire().await?.forget();
+                Ok(())
+            }
+        }
+
+        /// A record in the sink's open file, in no Parquet file, is the
+        /// table's, and so is a table with no file and no record at all;
+        /// and the read leaves the lake and the WAL as they were.
+        #[tokio::test]
+        async fn a_record_not_yet_sealed_is_in_the_table() {
+            let tmp = tempfile::tempdir().unwrap();
+            let sink = sink(tmp.path(), files_to(tmp.path()), 1 << 20, 4).await;
+            let mut g = plugin(tmp.path(), &sink);
+
+            // no file and no record: a table of the sink's columns, empty
+            assert!(!tmp.path().join("out").exists());
+            let none = rows(&mut g, "SELECT n, host, record FROM lake WHERE n > 0").await;
+            assert_eq!(none.unwrap(), Vec::<JSONValue>::new());
+            let count = rows(&mut g, "SELECT count(*) AS n FROM records").await;
+            assert_eq!(count.unwrap(), [serde_json::json!({"n": 0})]);
+
+            write(&sink, 0).await;
+            write(&sink, 1).await;
+            let wal_before = names(&tmp.path().join("wal"));
+            let got = rows(&mut g, "SELECT n, host, record FROM lake ORDER BY n").await;
+            assert_eq!(
+                got.unwrap(),
+                [
+                    serde_json::json!({"n": 0, "host": "web-0.example.com", "record": line(0)}),
+                    serde_json::json!({"n": 1, "host": "web-1.example.com", "record": line(1)}),
+                ]
+            );
+            // nothing sealed, nothing written
+            assert_eq!(names(&tmp.path().join("wal")), wal_before);
+            assert_eq!(ending(&wal_before, ".bin"), 1, "{wal_before:?}");
+            assert!(!tmp.path().join("out").exists());
+
+            sink.flush().await.unwrap();
+            assert_eq!(ns(&mut g).await, upto(2));
+            assert_eq!(names(&tmp.path().join("wal")), Vec::<String>::new());
+        }
+
+        /// The same records once, as their files go from open to sealed and
+        /// waiting, to encoded, to in place with the WAL's file still
+        /// there, to gone from the WAL.
+        #[tokio::test]
+        async fn each_record_once_wherever_its_file_is_on_the_way() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (out, wal) = (tmp.path().join("out"), tmp.path().join("wal"));
+            let held = Held::at(tmp.path());
+            // a file holds three records, and one file is sent at a time
+            let sink = sink(tmp.path(), held.clone(), 160, 1).await;
+            let mut g = plugin(tmp.path(), &sink);
+
+            // open
+            for n in 0..3 {
+                write(&sink, n).await;
+            }
+            assert_eq!(ending(&names(&wal), ".bin"), 1);
+            assert_eq!(ns(&mut g).await, upto(3));
+
+            // The fourth seals the first file and opens a second. The first
+            // is encoded, and held before it is put in place.
+            write(&sink, 3).await;
+            until("the first file to be encoded", || {
+                held.came.load(Ordering::SeqCst) == 1
+            })
+            .await;
+            let in_wal = names(&wal);
+            assert_eq!(ending(&in_wal, ".bin.sealed"), 1, "{in_wal:?}");
+            assert_eq!(ending(&in_wal, ".parquet"), 1, "encoded: {in_wal:?}");
+            assert_eq!(ending(&in_wal, ".bin"), 1, "the second: {in_wal:?}");
+            assert_eq!(names(&out), Vec::<String>::new());
+            assert_eq!(ns(&mut g).await, upto(4));
+
+            // The fifth and sixth fill the second file, and the seventh
+            // seals it: sealed, it waits for the one send there may be, and
+            // so does the write that sealed it, which is not acknowledged.
+            write(&sink, 4).await;
+            write(&sink, 5).await;
+            let seventh = {
+                let sink = sink.clone();
+                tokio::spawn(async move { write(&sink, 6).await })
+            };
+            until("the second file to be sealed", || {
+                ending(&names(&wal), ".bin.sealed") == 2
+            })
+            .await;
+            let in_wal = names(&wal);
+            assert_eq!(ending(&in_wal, ".bin"), 0, "{in_wal:?}");
+            assert_eq!(ending(&in_wal, ".parquet"), 1, "{in_wal:?}");
+            assert_eq!(ns(&mut g).await, upto(6));
+            // a file half encoded, as the second will be: it is no table's
+            let second = in_wal.iter().rfind(|n| n.ends_with(".bin.sealed")).unwrap();
+            let half = wal.join(second.replace(".bin.sealed", ".parquet.tmp"));
+            std::fs::write(&half, b"PAR1 and no more").unwrap();
+            assert_eq!(ns(&mut g).await, upto(6));
+            std::fs::remove_file(&half).unwrap();
+
+            // The first file is put in place, and its WAL file is still
+            // there: the three records are in both.
+            held.place.add_permits(1);
+            until("the first file to be in place", || {
+                held.placed.load(Ordering::SeqCst) == 1
+            })
+            .await;
+            assert_eq!(ending(&names(&out), ".parquet"), 1);
+            assert_eq!(ending(&names(&wal), ".bin.sealed"), 2);
+            assert_eq!(ns(&mut g).await, upto(6));
+            // as a copy from another filesystem is, before its rename
+            let copying = out.join(HOUR).join(".01KOTHERFILESYSTEM.parquet.tmp");
+            std::fs::write(&copying, b"PAR1 and no more").unwrap();
+            assert_eq!(ns(&mut g).await, upto(6));
+            std::fs::remove_file(&copying).unwrap();
+
+            // The WAL removes the first file. The second is encoded and
+            // held, and the seventh record is acknowledged, in a third.
+            held.back.add_permits(1);
+            seventh.await.unwrap();
+            until("the second file to be encoded", || {
+                held.came.load(Ordering::SeqCst) == 2
+            })
+            .await;
+            let in_wal = names(&wal);
+            assert_eq!(ending(&in_wal, ".bin.sealed"), 1, "{in_wal:?}");
+            assert_eq!(ending(&in_wal, ".bin"), 1, "{in_wal:?}");
+            assert_eq!(ns(&mut g).await, upto(7));
+
+            // all in place, and nothing left in the WAL
+            held.let_go();
+            sink.flush().await.unwrap();
+            assert_eq!(names(&wal), Vec::<String>::new());
+            assert_eq!(ending(&names(&out), ".parquet"), 3);
+            assert_eq!(ns(&mut g).await, upto(7));
+        }
+
+        /// What a process killed before its flush left open is sealed at
+        /// the next start, cut back to its last whole line: its records are
+        /// the table's once while they are sent. And a file a process put
+        /// in place and was killed before removing from the WAL is sent
+        /// again: its records are in both until it is, and read once.
+        #[tokio::test]
+        async fn each_record_once_across_a_restart() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (out, wal) = (tmp.path().join("out"), tmp.path().join("wal"));
+            let first = sink(tmp.path(), files_to(tmp.path()), 1 << 20, 4).await;
+            for n in 0..3 {
+                write(&first, n).await;
+            }
+            // killed, in the middle of a write it never acknowledged
+            first.stop_without_flush().await;
+            drop(first);
+            let open = names(&wal).into_iter().find(|n| n.ends_with(".bin"));
+            let open = wal.join(open.unwrap());
+            let mut torn = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&open)
+                .unwrap();
+            std::io::Write::write_all(&mut torn, br#"{"n":99,"host":"web-"#).unwrap();
+            drop(torn);
+
+            let held = Held::at(tmp.path());
+            let second = sink(tmp.path(), held.clone(), 1 << 20, 4).await;
+            let mut g = plugin(tmp.path(), &second);
+            until("the file left open to be sent", || {
+                held.came.load(Ordering::SeqCst) == 1
+            })
+            .await;
+            assert_eq!(ending(&names(&wal), ".bin.sealed"), 1);
+            assert_eq!(names(&out), Vec::<String>::new());
+            assert_eq!(ns(&mut g).await, upto(3));
+            write(&second, 3).await;
+            assert_eq!(ns(&mut g).await, upto(4));
+
+            // in place, and kept from the WAL's removing: the files a kill
+            // here would leave, put by for the next start
+            held.place.add_permits(1);
+            until("the file to be in place", || {
+                held.placed.load(Ordering::SeqCst) == 1
+            })
+            .await;
+            assert_eq!(ns(&mut g).await, upto(4));
+            let in_wal = names(&wal);
+            let sealed = in_wal.iter().find(|n| n.ends_with(".bin.sealed")).unwrap();
+            let left = [sealed.clone(), sealed.replace(".bin.sealed", ".meta")];
+            for name in &left {
+                std::fs::copy(wal.join(name), tmp.path().join(name)).unwrap();
+            }
+            held.let_go();
+            second.flush().await.unwrap();
+            drop(second);
+            assert_eq!(names(&wal), Vec::<String>::new());
+            for name in &left {
+                std::fs::rename(tmp.path().join(name), wal.join(name)).unwrap();
+            }
+
+            let held = Held::at(tmp.path());
+            let third = sink(tmp.path(), held.clone(), 1 << 20, 4).await;
+            let mut g = plugin(tmp.path(), &third);
+            until("the file left sealed to be sent again", || {
+                held.came.load(Ordering::SeqCst) == 1
+            })
+            .await;
+            assert_eq!(ending(&names(&out), ".parquet"), 2);
+            assert_eq!(ns(&mut g).await, upto(4), "in the lake and in the WAL");
+            held.let_go();
+            third.flush().await.unwrap();
+            assert_eq!(ending(&names(&out), ".parquet"), 2, "the same file again");
+            assert_eq!(ns(&mut g).await, upto(4));
+        }
+
+        /// A write in progress is not seen, in part or whole: what is in
+        /// the open file past the length acknowledged is no record yet.
+        #[tokio::test]
+        async fn a_write_in_progress_is_not_seen() {
+            let tmp = tempfile::tempdir().unwrap();
+            let sink = sink(tmp.path(), files_to(tmp.path()), 1 << 20, 4).await;
+            let mut g = plugin(tmp.path(), &sink);
+            write(&sink, 0).await;
+            write(&sink, 1).await;
+            assert_eq!(ns(&mut g).await, upto(2));
+            let wal = tmp.path().join("wal");
+            let open = names(&wal).into_iter().find(|n| n.ends_with(".bin"));
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(wal.join(open.unwrap()))
+                .unwrap();
+            let acknowledged = file.metadata().unwrap().len();
+            // a write of two records, as far as its first, then into its second
+            for part in [
+                format!("{}\n", line(7)),
+                r#"{"n":8,"host":"web-2.exa"#.into(),
+            ] {
+                std::io::Write::write_all(&mut file, part.as_bytes()).unwrap();
+                assert_eq!(ns(&mut g).await, upto(2), "after {part:?}");
+                let records = rows(&mut g, "SELECT record FROM lake").await.unwrap();
+                assert_eq!(records.len(), 2, "{records:?}");
+            }
+            // it fails, and the sink cuts the file back: the next write is
+            // seen once it is acknowledged, and nothing of the failed one
+            file.set_len(acknowledged).unwrap();
+            write(&sink, 2).await;
+            assert_eq!(ns(&mut g).await, upto(3));
+        }
+
+        /// Two writers, to two directories, files sealed and sent all the
+        /// while, and queries throughout: each sees every record
+        /// acknowledged before it began, none twice, and none that was not
+        /// yet written.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn queries_beside_writers_see_what_was_acknowledged_once() {
+            const EACH: usize = 600;
+            let tmp = tempfile::tempdir().unwrap();
+            // some eight records a file
+            let sink = sink(tmp.path(), files_to(tmp.path()), 400, 4).await;
+            let mut g = plugin(tmp.path(), &sink);
+            let (begun, acked) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+            let writers: Vec<_> = ["2026/11/12/10", "2026/11/12/11"]
+                .into_iter()
+                .enumerate()
+                .map(|(w, hour)| {
+                    let (sink, begun, acked) = (sink.clone(), begun.clone(), acked.clone());
+                    tokio::spawn(async move {
+                        for i in 0..EACH {
+                            let write = SinkWrite {
+                                sink_name: Arc::from("lake"),
+                                payload: BytesMut::from(
+                                    format!("{}\n", line(w * EACH + i)).as_str(),
+                                ),
+                                s3: Some(S3SinkItem {
+                                    bucket_name: Arc::from(""),
+                                    key_prefix: Some(Arc::from(hour)),
+                                }),
+                            };
+                            begun.fetch_add(1, Ordering::SeqCst);
+                            sink.write(write).await.unwrap();
+                            acked.fetch_add(1, Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_micros(500)).await;
+                        }
+                    })
+                })
+                .collect();
+
+            let sql = "SELECT count(*) AS n, count(DISTINCT n) AS different FROM lake";
+            let mut queries = 0;
+            let mut last = 0;
+            while writers.iter().any(|w| !w.is_finished()) {
+                let before = acked.load(Ordering::SeqCst);
+                let got = rows(&mut g, sql).await.unwrap();
+                let after = begun.load(Ordering::SeqCst);
+                let n = got[0]["n"].as_u64().unwrap() as usize;
+                assert!(before <= n, "{n} of the {before} acknowledged before it");
+                assert!(n <= after, "{n} of the {after} begun by its end");
+                assert_eq!(got[0]["different"], n, "a record twice");
+                assert!(last <= n, "{n} after {last}");
+                last = n;
+                queries += 1;
+            }
+            for w in writers {
+                w.await.unwrap();
+            }
+            assert!(queries > 3, "{queries} queries beside the writers");
+            // files in the lake, files on their way and a file open
+            assert_eq!(ns(&mut g).await, upto(2 * EACH as u64));
+            sink.flush().await.unwrap();
+            assert!(ending(&names(&tmp.path().join("out")), ".parquet") > 100);
+            assert_eq!(ns(&mut g).await, upto(2 * EACH as u64));
+        }
+
+        /// What holds the unsealed records for a statement is no more a
+        /// statement's to name than a file is.
+        #[tokio::test]
+        async fn a_statement_reaches_nothing_new() {
+            let tmp = tempfile::tempdir().unwrap();
+            let sink = sink(tmp.path(), files_to(tmp.path()), 160, 4).await;
+            let mut g = plugin(tmp.path(), &sink);
+            for n in 0..4 {
+                write(&sink, n).await;
+            }
+            sink.flush().await.unwrap();
+            write(&sink, 4).await;
+            assert_eq!(ns(&mut g).await, upto(5));
+            let wal = tmp.path().join("wal");
+            let open = names(&wal).into_iter().find(|n| n.ends_with(".bin"));
+            let open = wal.join(open.unwrap());
+            let object = open.file_name().unwrap().to_str().unwrap();
+            let object = object.replace(".bin", ".parquet");
+            for sql in [
+                "SELECT * FROM 'unsealed://0/'".to_string(),
+                "SELECT * FROM 'unsealed://0/0/'".to_string(),
+                format!("SELECT * FROM \"unsealed://0/0/0/{object}\""),
+                format!("SELECT * FROM '0/0/{object}'"),
+                format!("SELECT * FROM '{}'", open.display()),
+                format!("SELECT * FROM '{}'", wal.display()),
+                "CREATE EXTERNAL TABLE t STORED AS PARQUET LOCATION 'unsealed://0/'".to_string(),
+                "COPY lake TO 'unsealed://0/x.parquet'".to_string(),
+                format!("COPY lake TO '{}/x.parquet'", tmp.path().display()),
+                "SELECT * FROM unsealed".to_string(),
+                "SELECT * FROM lake.unsealed".to_string(),
+                "SELECT * FROM information_schema.tables".to_string(),
+                // nor is it shown where a row is read from
+                "EXPLAIN SELECT n FROM lake".to_string(),
+                "EXPLAIN ANALYZE SELECT n FROM lake WHERE n = 4".to_string(),
+            ] {
+                let got = rows(&mut g, &sql).await;
+                assert!(got.is_err(), "{sql} ran: {got:?}");
+            }
+            // the tables and views a statement finds are the plugin's two
+            assert_eq!(ns(&mut g).await, upto(5));
+            assert!(!tmp.path().join("x.parquet").exists());
+        }
     }
 
     /// `model.chat` reaches the nodes the plugin's `inference` names, and no other.

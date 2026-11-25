@@ -30,6 +30,7 @@ use crate::{
     sources, state,
     state::StateStore,
     wasm::engine::WasmEngine,
+    wasm::host::Lake,
     worker::WorkerPool,
 };
 
@@ -130,7 +131,15 @@ impl DagRuntime {
         let pending = (consumers.is_some() && !cfg.runtime.state.read_only)
             .then(|| Pending::new(Arc::clone(&store)));
         let (engines, components) = load(
-            &cfg, &plugins, config_dir, &store, &tables, &models, &stop, workers,
+            &cfg,
+            &plugins,
+            config_dir,
+            &store,
+            &tables,
+            &models,
+            &stop,
+            &sink_manager,
+            workers,
         )?;
         let mut outs: HashMap<NodeRef, Vec<NodeRef>> = HashMap::default();
         // `validate` has checked every name, so each resolves
@@ -173,7 +182,15 @@ impl DagRuntime {
         let mut groupers = std::collections::HashMap::new();
         for (name, p) in cfg.plugins.iter().filter(|(_, p)| !p.group_by.is_empty()) {
             let (engines, components) = load(
-                &cfg, &plugins, config_dir, &store, &tables, &models, &stop, workers,
+                &cfg,
+                &plugins,
+                config_dir,
+                &store,
+                &tables,
+                &models,
+                &stop,
+                &sink_manager,
+                workers,
             )?;
             let pool = Arc::new(
                 WorkerPool::new(
@@ -561,6 +578,7 @@ fn compiled_plugins(
     Ok(paths)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load(
     cfg: &Config,
     plugins: &[PathBuf],
@@ -569,6 +587,7 @@ fn load(
     tables: &Arc<Tables>,
     models: &Nodes,
     stop: &Stop,
+    sinks: &SinkManager,
     workers: usize,
 ) -> Result<Loaded> {
     let mut engines: Vec<WasmEngine> = (0..workers)
@@ -603,6 +622,17 @@ fn load(
                 })?),
                 None => None,
             };
+            // Each table with the sink that keeps it, which holds what it
+            // has put in no file yet. `tables_of` has found each sink.
+            let named = |(table, path): (&String, &PathBuf)| format!("{table}={}", path.display());
+            let kept = plugin_cfg.tables.iter().map(|(table, sink)| {
+                let kept = sinks.sink(sink).expect("a table's sink is running");
+                (table.clone(), kept)
+            });
+            let lake = Lake {
+                tables: tables.iter().map(named).collect(),
+                sinks: kept.collect(),
+            };
 
             components[i].push((
                 Arc::clone(name),
@@ -613,7 +643,7 @@ fn load(
                         plugin_cfg.config.clone(),
                         plugin_cfg.state_namespace.as_deref(),
                         data_dir.as_deref(),
-                        tables,
+                        lake,
                         &plugin_cfg.inference,
                         plugin_cfg.drop_on_error,
                     )
@@ -1191,6 +1221,7 @@ sinks:
             &tables,
             &Default::default(),
             &Default::default(),
+            &SinkManager::for_test(Vec::new(), 1),
             2,
         )
         .unwrap();
@@ -1205,6 +1236,133 @@ sinks:
             format!("{err:#}"),
             "plugin p: not compiled: none fetched from acme/packs packs-4; `tangent plugin fetch` gets it"
         );
+    }
+
+    /// A plugin's query at shutdown, in a `--once` run or after a signal:
+    /// a group closed then is walked before the sinks are joined, so its
+    /// records are in no Parquet file yet, and a plugin may still be asking
+    /// while they are sealed and sent. Each query sees every record once
+    /// and returns, and the plugin's hold on its table's sink does not keep
+    /// shutdown from joining the sinks.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_plugin_queries_through_shutdown_and_shutdown_joins_the_sinks() {
+        use crate::wasm::host::tangent::logs::lake::{Host as _, Statement};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let yaml = format!(
+            "runtime: {{ state: {{ backend: lru }} }}\n\
+             plugins:\n  p: {{ module_type: rust, path: ., tables: {{ Records_1: lake }} }}\n\
+             sinks:\n  lake:\n    type: rolling_file\n    path: {0}/out/%Y/%m/%d/%H\n    wal_path: {0}/wal\n    max_file_age_seconds: 3600\n    \
+             encoding: {{ type: parquet, record_column: record, schema: {{ ts: timestamp, n: int }} }}\n",
+            root.display()
+        );
+        let cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        let plugins_dir = root.join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        let cwasm = tangent_shared::wasm_engine::build()
+            .unwrap()
+            .precompile_component(
+                include_str!("../testdata/enrichment/plain.component.wat").as_bytes(),
+            )
+            .unwrap();
+        std::fs::write(plugins_dir.join("p.cwasm"), cwasm).unwrap();
+        let plugins = compiled_plugins(&cfg, &plugins_dir, None).unwrap();
+        let store = state::open(&cfg.runtime.state, root).unwrap();
+
+        // the plugin's host as `build` makes it: its table's sink from the
+        // sink manager
+        let sink_manager = Arc::new(SinkManager::new(&cfg.sinks).await.unwrap());
+        let (engines, _components) = load(
+            &cfg,
+            &plugins,
+            root,
+            &store,
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+            &sink_manager,
+            1,
+        )
+        .unwrap();
+        let mut guest = engines[0].make_store(&Arc::from("p")).unwrap();
+        let sql = "SELECT count(*) AS n, count(DISTINCT n) AS different FROM Records_1";
+        let statement = || Statement {
+            views: Vec::new(),
+            sql: sql.into(),
+            max_rows: 10,
+            json: true,
+            max_cell: 100,
+            timeout_ms: Some(10_000),
+        };
+
+        // four hours of records, acknowledged, their files open
+        let ack = Arc::new(CountingAck::default());
+        let frame: String = (0..40)
+            .map(|n| format!("{{\"ts\":\"2026-11-12T1{}:00:00Z\",\"n\":{n}}}\n", n % 4))
+            .collect();
+        sink_manager
+            .enqueue(
+                Arc::from("lake"),
+                BytesMut::from(frame.as_str()),
+                vec![ack.clone() as Arc<dyn Ack>],
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while ack.count() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("acknowledged");
+        let all = r#"{"n":40,"different":40}"#;
+        let before = guest.data_mut().query(statement()).await.unwrap();
+        assert_eq!(before.trim(), all);
+        assert!(!root.join("out").exists(), "no file sealed yet");
+
+        let runtime = DagRuntime {
+            router: Arc::new(Router::new(HashMap::default(), Arc::clone(&sink_manager))),
+            pool: Arc::new(WorkerPool::new_for_test(vec![tokio::spawn(async {})])),
+            sink_manager,
+            consumer_handles: vec![],
+            purge: None,
+            groups: vec![],
+            served: vec![],
+            stop: Stop::default(),
+            pending: None,
+            resume: None,
+            tables: Default::default(),
+        };
+        let down = AtomicBool::new(false);
+        let shutdown = async {
+            let joined = runtime
+                .shutdown(Duration::from_secs(5), Duration::from_secs(10))
+                .await;
+            down.store(true, Ordering::SeqCst);
+            joined
+        };
+        let asking = async {
+            let mut asked = 0;
+            while !down.load(Ordering::SeqCst) {
+                let rows = guest.data_mut().query(statement()).await.unwrap();
+                assert_eq!(rows.trim(), all, "while the sinks are joined");
+                asked += 1;
+            }
+            asked
+        };
+        let (joined, asked) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(shutdown, asking)
+        })
+        .await
+        .expect("neither hangs");
+        joined.expect("the sink manager is shutdown's alone, though the plugin holds its sink");
+        assert!(asked > 0);
+
+        // sealed and sent, and still the plugin's to read
+        let wal: Vec<_> = std::fs::read_dir(root.join("wal")).unwrap().collect();
+        assert!(wal.is_empty(), "{wal:?}");
+        let after = guest.data_mut().query(statement()).await.unwrap();
+        assert_eq!(after.trim(), all);
     }
 
     /// A read-only pipeline whose runtime writes state is refused: a

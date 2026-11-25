@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,7 +14,7 @@ use crate::inference::Nodes;
 use crate::state::{StateStore, PLUGIN_NS};
 use crate::stop::Stop;
 use crate::wasm::host::tangent::logs::{config, enrichment, lake, log, model, remote, state};
-use crate::wasm::host::{HostEngine, Processor};
+use crate::wasm::host::{HostEngine, Lake, Processor};
 pub struct WasmEngine {
     engine: Engine,
     linker: Linker<HostEngine>,
@@ -28,9 +27,9 @@ pub struct WasmEngine {
     /// Each plugin's data directory (`plugins.<name>.data`), seen by the
     /// guest read-only at `/data`.
     data: HashMap<Arc<str>, PathBuf>,
-    /// Each plugin's tables for its `lake.query` (`plugins.<name>.tables`),
-    /// as `NAME=PATH`: where the sink each names keeps its records.
-    lake: HashMap<Arc<str>, Arc<[String]>>,
+    /// Each plugin's tables for its `lake.query` (`plugins.<name>.tables`):
+    /// where the sink each names keeps its records, and the sink.
+    lake: HashMap<Arc<str>, Arc<Lake>>,
     /// The inference nodes plugins hold conversations with, and each
     /// plugin's own of them (`plugins.<name>.inference`).
     models: Nodes,
@@ -99,7 +98,7 @@ impl WasmEngine {
         cfg: HashMap<String, Value>,
         state_ns: Option<&str>,
         data: Option<&Path>,
-        tables: &BTreeMap<String, PathBuf>,
+        lake: Lake,
         models: &[Arc<str>],
         drop_on_error: bool,
     ) -> Result<Component> {
@@ -110,12 +109,8 @@ impl WasmEngine {
         if let Some(dir) = data {
             self.data.insert(Arc::clone(&name), dir.to_path_buf());
         }
-        if !tables.is_empty() {
-            let named = tables
-                .iter()
-                .map(|(table, path)| format!("{table}={}", path.display()))
-                .collect();
-            self.lake.insert(Arc::clone(&name), named);
+        if !lake.tables.is_empty() {
+            self.lake.insert(Arc::clone(&name), Arc::new(lake));
         }
         if !models.is_empty() {
             let own = models

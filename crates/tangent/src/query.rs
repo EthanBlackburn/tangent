@@ -10,15 +10,32 @@
 //! JSON text beside its typed columns, so the functions and operators of
 //! `datafusion-functions-json` are registered: `record->>'source'`,
 //! `json_get_str(record, 'actor', 'id')`. They parse text and read no file.
+//!
+//! A sink puts a record in a Parquet file only when it seals the file it
+//! is writing, minutes after it acknowledged the record. A plugin runs in
+//! the sink's own process, so its statement reads those records too
+//! ([`run_with`]): the table is every record the sink has acknowledged, each
+//! once. `tangent query` has no sink to ask, and reads the files.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
+use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
+use bytes::Bytes;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
+use datafusion::datasource::listing::{ListingTable, ListingTableConfig, ListingTableUrl};
 use datafusion::execution::context::SQLOptions;
-use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
+use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::execution::options::ReadOptions;
+use datafusion::logical_expr::LogicalPlan;
+use datafusion::object_store::{memory::InMemory, path::Path as ObjectPath, ObjectStore};
+use datafusion::prelude::{DataFrame, ParquetReadOptions, SessionConfig, SessionContext};
+use futures::TryStreamExt;
+
+use crate::sinks::manager::{Sink, NO_RECORDS};
 
 pub struct Query {
     /// `NAME=PATH`: a Parquet file, or a directory and every `.parquet` file
@@ -36,18 +53,32 @@ pub struct Query {
 
 /// The statement's result as a table, cut to `max_rows` rows.
 pub async fn run(q: &Query) -> Result<String> {
-    let ctx = context(&q.tables, &q.views).await?;
+    run_with(q, &[]).await
+}
+
+/// [`run`] in the pipeline that keeps the tables. `sinks` gives a table's
+/// name the sink whose records it is, and that table is then every record
+/// the sink has acknowledged, each once: those in its Parquet files, and
+/// those in none yet ([`Sink::unsealed`]).
+pub async fn run_with(q: &Query, sinks: &[(String, Arc<dyn Sink>)]) -> Result<String> {
+    let ctx = context(&q.tables, &q.views, sinks).await?;
     // The caller's tables and views were made above, with every statement
     // allowed. The statement itself may only read.
     let read_only = SQLOptions::new()
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false);
-    let batches = ctx
-        .sql_with_options(&q.sql, read_only)
-        .await?
-        .collect()
-        .await?;
+    let rows = ctx.sql_with_options(&q.sql, read_only).await?;
+    // A plan names what each row is read from, which in the pipeline is
+    // which rows are in a file and which in none yet.
+    let plan = matches!(
+        rows.logical_plan(),
+        LogicalPlan::Explain(_) | LogicalPlan::Analyze(_)
+    );
+    if plan && !sinks.is_empty() {
+        bail!("EXPLAIN is not for a plugin's statement: it reads rows, not how they are read");
+    }
+    let batches = rows.collect().await?;
     if q.json {
         json_lines(&batches, q.max_rows)
     } else {
@@ -82,7 +113,11 @@ fn named<'a>(arg: &'a str, what: &str) -> Result<(&'a str, &'a str)> {
     Ok((name, rest))
 }
 
-async fn context(tables: &[String], views: &[String]) -> Result<SessionContext> {
+async fn context(
+    tables: &[String],
+    views: &[String],
+    sinks: &[(String, Arc<dyn Sink>)],
+) -> Result<SessionContext> {
     // A plain context: no table is found by a file's path, and no function
     // reads a file. A directory is read with the directories under it, as a
     // lake of `%Y/%m/%d/%H` is laid out.
@@ -108,18 +143,24 @@ async fn context(tables: &[String], views: &[String]) -> Result<SessionContext> 
     let mut ctx = SessionContext::new_with_config(config);
     datafusion_functions_json::register_all(&mut ctx)?;
     let mut paths: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let sink = |name: &str| sinks.iter().find(|(table, _)| table == name);
     for t in tables {
         let (name, path) = named(t, "PATH")?;
-        if !std::path::Path::new(path).exists() {
+        // a sink makes its directory with its first file
+        if sink(name).is_none() && !std::path::Path::new(path).exists() {
             bail!("table {name}: no such file or directory: {path}");
         }
         paths.entry(name).or_default().push(path.to_string());
     }
-    for (name, paths) in paths {
-        let table = ctx
-            .read_parquet(paths, ParquetReadOptions::default())
-            .await
-            .with_context(|| format!("table {name}"))?;
+    for (nth, (name, paths)) in paths.into_iter().enumerate() {
+        let table = match sink(name) {
+            Some((_, sink)) => kept(&ctx, nth, &paths, sink.as_ref()).await,
+            None => ctx
+                .read_parquet(paths, ParquetReadOptions::default())
+                .await
+                .map_err(Into::into),
+        }
+        .with_context(|| format!("table {name}"))?;
         if table.schema().fields().is_empty() {
             bail!("table {name}: no .parquet file under its path");
         }
@@ -132,6 +173,114 @@ async fn context(tables: &[String], views: &[String]) -> Result<SessionContext> 
             .with_context(|| format!("view {name}"))?;
     }
     Ok(ctx)
+}
+
+/// A table in its sink's own pipeline: the Parquet files under `paths`, and
+/// the records the sink has acknowledged that are in none yet, as the
+/// Parquet files they will be, held in memory for the statement. Both are
+/// read by the one reader with the one schema, so a row is the same from
+/// either. `nth` is the table's place among the statement's, which is where
+/// its part in memory is kept apart from another table's.
+async fn kept(
+    ctx: &SessionContext,
+    nth: usize,
+    paths: &[String],
+    sink: &dyn Sink,
+) -> Result<DataFrame> {
+    // In this order each record acknowledged by now is read once
+    // ([`Sink::unsealed`]): what is in no file yet, and then the files,
+    // listed here and not again when they are scanned. A file that arrives
+    // after this listing holds records taken from the sink above. The
+    // store is asked, not the context, which keeps a listing for the whole
+    // statement: another table may be this lake, listed a moment ago.
+    let unsealed = sink
+        .unsealed()
+        .await
+        .context("what its sink has not sealed")?;
+    let state = ctx.state();
+    let options = ParquetReadOptions::default()
+        .to_listing_options(&ctx.copied_config(), ctx.copied_table_options());
+    let ext = options.file_extension.as_str();
+    let lake = state
+        .runtime_env()
+        .object_store(ObjectStoreUrl::local_filesystem())?;
+    let root = ListingTableUrl::parse("file:///")?;
+    let (mut files, mut urls) = (Vec::new(), Vec::new());
+    for path in paths.iter().filter(|p| std::path::Path::new(p).exists()) {
+        // the directory as it is named: the sink's, and no pattern
+        let dir = ObjectPath::from_filesystem_path(path)?;
+        let mut listed = lake.list(Some(&dir));
+        while let Some(file) = listed.try_next().await? {
+            // an empty file is passed by, as it is in a directory
+            if file.size == 0 || !file.location.as_ref().ends_with(ext) {
+                continue;
+            }
+            // a URL's path is its file's, escaped
+            let mut url = root.get_url().clone();
+            url.set_path(&format!("/{}", file.location).replace('%', "%25"));
+            let url = ListingTableUrl::try_new(url, None)?;
+            // a scan reads a file it does not find as no rows
+            ensure!(url.prefix() == &file.location, "{url} is not its file's");
+            urls.push(url);
+            files.push(file);
+        }
+    }
+
+    // A file named in both is in place and not yet gone from the sink.
+    let in_place: HashSet<&str> = files.iter().filter_map(|f| f.location.filename()).collect();
+    let mut unsealed: Vec<(String, Bytes)> = unsealed
+        .into_iter()
+        .filter(|(file, _)| file.ends_with(ext) && !in_place.contains(file.as_str()))
+        .collect();
+    // The sink's encoding of no records is for a table with nothing else,
+    // which has the sink's columns. With a file or a record, the table has
+    // theirs, as it will once every record is in a file.
+    if !files.is_empty() || unsealed.len() > 1 {
+        unsealed.retain(|(file, _)| file.strip_suffix(ext) != Some(NO_RECORDS));
+    }
+    // In a store of this table's own in this statement's context, under a
+    // scheme no statement can name, and each object under a path no other
+    // table's has: the context keeps what it reads of a file by its path.
+    let at = format!("unsealed://{nth}/");
+    let memory: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let (mut held, mut held_urls) = (Vec::new(), Vec::new());
+    for (i, (file, bytes)) in unsealed.into_iter().enumerate() {
+        // a file to come may be several objects
+        let object = ObjectPath::from(format!("{nth}/{i}/{file}"));
+        memory.put(&object, bytes.into()).await?;
+        held.push(memory.head(&object).await?);
+        held_urls.push(ListingTableUrl::parse(format!("{at}{object}"))?);
+    }
+    ctx.register_object_store(ObjectStoreUrl::parse(&at)?.as_ref(), Arc::clone(&memory));
+
+    // Every file's columns and every object's, merged as a directory's
+    // files' are: the two parts are read to the one schema, so a nested
+    // column that is not the same in an old file and a new record is read
+    // as it will be once both are files.
+    let (mut parts, mut schemas) = (Vec::new(), Vec::new());
+    for (store, files, urls) in [(&lake, files, urls), (&memory, held, held_urls)] {
+        if !files.is_empty() {
+            let schema = options.format.infer_schema(&state, store, &files).await?;
+            schemas.push(schema.as_ref().clone());
+            parts.push(urls);
+        }
+    }
+    let schema = Arc::new(Schema::try_merge(schemas)?);
+    let mut table = None;
+    for urls in parts {
+        let config = ListingTableConfig::new_with_multi_paths(urls)
+            .with_listing_options(options.clone())
+            .with_schema(Arc::clone(&schema));
+        let part = ctx.read_table(Arc::new(ListingTable::try_new(config)?))?;
+        table = Some(match table {
+            Some(table) => DataFrame::union(table, part)?,
+            None => part,
+        });
+    }
+    Ok(match table {
+        Some(table) => table,
+        None => ctx.read_empty()?,
+    })
 }
 
 /// A Markdown table, a row a line: a cell longer than `max_cell` characters
@@ -501,6 +650,424 @@ pub(crate) mod tests {
     fn a_cell_stays_on_its_line() {
         assert_eq!(cell("a|b\nc", 10), "a\\|b\\nc");
         assert_eq!(cell("abcdef", 4), "abcd…(+2)");
+    }
+
+    use crate::sinks::manager::SinkWrite;
+    use crate::sinks::rolling_file::RollingFileSink;
+    use crate::sinks::s3::S3SinkItem;
+    use crate::sinks::wal::DurableFileSink;
+    use tangent_shared::sinks::common::{Compression, Encoding};
+
+    /// A rolling_file sink of Parquet with `schema`: its files under
+    /// `root/out`, its WAL in `root/wal`, sealed only by a flush.
+    async fn sink(root: &std::path::Path, schema: &str) -> Arc<DurableFileSink> {
+        DurableFileSink::new(
+            Arc::new(RollingFileSink::new(root.join("out"))),
+            root.join("wal"),
+            4,
+            1 << 20,
+            std::time::Duration::from_secs(3600),
+            Compression::Zstd { level: 3 },
+            Encoding::Parquet {
+                schema: serde_yaml::from_str(schema).unwrap(),
+                record_column: Some("record".into()),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn write(sink: &DurableFileSink, lines: &[&str]) {
+        let write = SinkWrite {
+            sink_name: Arc::from("lake"),
+            payload: bytes::BytesMut::from(lines.join("\n").as_str()),
+            s3: Some(S3SinkItem {
+                bucket_name: Arc::from(""),
+                key_prefix: Some(Arc::from("2026/11/12/10")),
+            }),
+        };
+        sink.write(write).await.unwrap();
+    }
+
+    /// Table `lake` as a statement in the sink's pipeline finds it: its
+    /// rows as one batch, in the order of their records.
+    async fn table(root: &std::path::Path, sink: &Arc<DurableFileSink>) -> RecordBatch {
+        let tables = [format!("lake={}", root.join("out").display())];
+        let sinks = [("lake".to_string(), Arc::clone(sink) as Arc<dyn Sink>)];
+        let ctx = context(&tables, &[], &sinks).await.unwrap();
+        let table = ctx.table("lake").await.unwrap();
+        let schema = Arc::new(table.schema().as_arrow().clone());
+        let by_record = datafusion::prelude::col("record").sort(true, true);
+        let rows = table
+            .sort(vec![by_record])
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        datafusion::arrow::compute::concat_batches(&schema, &rows).unwrap()
+    }
+
+    /// Every type a sink's Parquet schema can name, nested, with fields
+    /// missing and null, and a record the schema cannot read: a row has the
+    /// same columns, types and values before its file is sealed and after,
+    /// and beside rows of the other kind.
+    #[tokio::test]
+    async fn a_row_is_the_same_before_its_file_is_sealed_and_after() {
+        let tmp = tempfile::tempdir().unwrap();
+        // a path a URL would escape
+        let root = tmp.path().join("a lake, 100% acme's café, %25 lit");
+        let sink = sink(
+            &root,
+            "{ ts: timestamp, source: string, n: int, ratio: float, ok: bool, \
+             _norm: { org: string, actor: { id: string, admin: bool } }, \
+             args: [string], sizes: [int], hops: [{ host: string, ms: float }] }",
+        )
+        .await;
+        let first = [
+            r#"{"ts":"2026-11-12T10:00:00.123Z","source":"okta","n":1,"ratio":0.5,"ok":true,"_norm":{"org":"acme","actor":{"id":"u1@example.com","admin":false}},"args":["ssh","-v"],"sizes":[1,2,3],"hops":[{"host":"192.0.2.1","ms":1.5},{"host":"192.0.2.2","ms":2.0}],"left_out":{"a":1}}"#,
+            // another zone, a list and a struct with nulls in them, a float written as an int
+            r#"{"ts":"2026-11-12T02:00:01-08:00","source":"café ☕","n":-9007199254740993,"ratio":3,"ok":false,"_norm":{"org":null,"actor":{"id":"u2@example.com"}},"args":["a",null,""],"sizes":[],"hops":[{"host":"198.51.100.7"},null]}"#,
+        ];
+        let second = [
+            // every typed column missing or null
+            r#"{"source":null,"left_out":"only the record column has this"}"#,
+            // not the schema's: a time arrow cannot parse, kept whole with its columns null
+            r#"{"ts":"noon","source":"github","n":4}"#,
+            r#"{"ts":"2026-11-12T10:00:05Z","source":"github","n":5,"ratio":1e-3,"ok":true,"_norm":{"org":"acme","actor":{"id":"u1@example.com","admin":true}},"args":[],"sizes":[9223372036854775807],"hops":[]}"#,
+        ];
+
+        write(&sink, &first).await;
+        let unsealed = table(&root, &sink).await;
+        assert_eq!(unsealed.num_rows(), 2);
+        sink.flush().await.unwrap();
+        let sealed = table(&root, &sink).await;
+        assert_eq!(unsealed.schema(), sealed.schema());
+        assert_eq!(unsealed, sealed);
+
+        // the first two in a file, the rest not: one table, and the same
+        // again once all are in files
+        write(&sink, &second).await;
+        let both = table(&root, &sink).await;
+        assert_eq!(both.num_rows(), 5);
+        assert_eq!(both.schema(), sealed.schema());
+        sink.flush().await.unwrap();
+        let sealed = table(&root, &sink).await;
+        assert_eq!(both, sealed);
+
+        // and they are the values written
+        let tables = [format!("lake={}", root.join("out").display())];
+        let sinks = [("lake".to_string(), Arc::clone(&sink) as Arc<dyn Sink>)];
+        for expected in [&sealed, &both] {
+            let out = json_lines(std::slice::from_ref(expected), 10).unwrap();
+            let rows: Vec<serde_json::Value> = out
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            let by_n = |n: i64| rows.iter().find(|r| r["n"] == n).unwrap();
+            assert_eq!(by_n(1)["ts"], "2026-11-12T10:00:00.123Z");
+            assert_eq!(by_n(1)["hops"][1]["ms"], 2.0);
+            assert_eq!(by_n(1)["_norm"]["actor"]["admin"], false);
+            assert_eq!(by_n(-9007199254740993)["ts"], "2026-11-12T10:00:01Z");
+            assert_eq!(
+                by_n(-9007199254740993)["args"],
+                serde_json::json!(["a", null, ""])
+            );
+            assert_eq!(
+                by_n(5)["sizes"],
+                serde_json::json!([9223372036854775807i64])
+            );
+            let unfit = rows.iter().find(|r| r["record"] == second[1]).unwrap();
+            assert!(unfit.get("n").is_none() && unfit.get("source").is_none());
+        }
+        let q = Query {
+            tables: tables.to_vec(),
+            views: Vec::new(),
+            sql: "SELECT count(*) AS n, count(ts) AS timed, count(DISTINCT arrow_typeof(ts)) AS types FROM lake".into(),
+            max_rows: 10,
+            max_cell: 100,
+            json: true,
+        };
+        // what else is in the directory is no more the table's here than
+        // by hand
+        let hour = root.join("out/2026/11/12/10");
+        std::fs::write(hour.join("empty.parquet"), b"").unwrap();
+        std::fs::write(hour.join("notes.txt"), b"not parquet").unwrap();
+        let out = run_with(&q, &sinks).await.unwrap();
+        assert_eq!(out.trim(), r#"{"n":5,"timed":3,"types":1}"#);
+        // and by hand there is no sink to ask: these are all in files
+        assert_eq!(run(&q).await.unwrap(), out);
+    }
+
+    /// What a statement in the pipeline is given for `sql`, as JSON lines
+    /// or as the table with its header: each table by its lake's root, and
+    /// the sink that keeps it.
+    async fn asked(
+        tables: &[(&str, &std::path::Path, Arc<dyn Sink>)],
+        sql: &str,
+        json: bool,
+    ) -> Result<String> {
+        let q = Query {
+            tables: tables
+                .iter()
+                .map(|(name, root, _)| format!("{name}={}", root.join("out").display()))
+                .collect(),
+            views: Vec::new(),
+            sql: sql.into(),
+            max_rows: 100,
+            max_cell: 100,
+            json,
+        };
+        let sinks: Vec<(String, Arc<dyn Sink>)> = tables
+            .iter()
+            .map(|(name, _, sink)| (name.to_string(), Arc::clone(sink)))
+            .collect();
+        run_with(&q, &sinks).await
+    }
+
+    /// The statement by hand over table `lake`: its files, and no sink to
+    /// ask.
+    fn by_hand(root: &std::path::Path, sql: &str) -> Query {
+        Query {
+            tables: vec![format!("lake={}", root.join("out").display())],
+            views: Vec::new(),
+            sql: sql.into(),
+            max_rows: 100,
+            max_cell: 100,
+            json: true,
+        }
+    }
+
+    /// A lake whose files were written before the sink's schema gained a
+    /// column: the table is the files', as by hand, until a record with the
+    /// column is acknowledged, and then has it, null in the rows before.
+    #[tokio::test]
+    async fn a_column_the_files_lack_is_null_in_their_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let before = sink(tmp.path(), "{ n: int }").await;
+        write(&before, &[r#"{"n":1,"host":"web-1.example.com"}"#]).await;
+        before.flush().await.unwrap();
+        drop(before);
+        let after = sink(tmp.path(), "{ n: int, host: string }").await;
+        let files = table(tmp.path(), &after).await;
+        assert_eq!(files.num_rows(), 1);
+        assert!(files.schema().field_with_name("host").is_err());
+        write(&after, &[r#"{"n":2,"host":"web-2.example.com"}"#]).await;
+        let rows = table(tmp.path(), &after).await;
+        let out = json_lines(&[rows], 10).unwrap();
+        let record = |n: usize| format!(r#"{{\"n\":{n},\"host\":\"web-{n}.example.com\"}}"#);
+        assert_eq!(
+            out,
+            format!(
+                "{{\"n\":1,\"record\":\"{}\"}}\n{{\"n\":2,\"record\":\"{}\",\"host\":\"web-2.example.com\"}}\n",
+                record(1),
+                record(2)
+            )
+        );
+    }
+
+    /// A lake whose files were written before a nested column lost a field
+    /// and gained another: the files' rows keep their fields and the new
+    /// record has its own, under their own names, the same before the
+    /// record's file is sealed as after, and as by hand.
+    #[tokio::test]
+    async fn a_nested_column_that_changed_is_read_as_it_will_be_once_sealed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let before = sink(
+            tmp.path(),
+            "{ n: int, who: { org: string, actor: string } }",
+        )
+        .await;
+        write(
+            &before,
+            &[r#"{"n":1,"who":{"org":"acme","actor":"u1@example.com"}}"#],
+        )
+        .await;
+        before.flush().await.unwrap();
+        drop(before);
+        let after = sink(tmp.path(), "{ n: int, who: { org: string, user: string } }").await;
+        let lake = [("lake", tmp.path(), Arc::clone(&after) as Arc<dyn Sink>)];
+        let sql = "SELECT n, who FROM lake ORDER BY n";
+        let old = "{\"n\":1,\"who\":{\"org\":\"acme\",\"actor\":\"u1@example.com\"}}\n";
+        assert_eq!(asked(&lake, sql, true).await.unwrap(), old);
+
+        write(
+            &after,
+            &[r#"{"n":2,"who":{"org":"example","user":"u2@example.com"}}"#],
+        )
+        .await;
+        let new = "{\"n\":2,\"who\":{\"org\":\"example\",\"user\":\"u2@example.com\"}}\n";
+        let unsealed = asked(&lake, sql, true).await.unwrap();
+        assert_eq!(unsealed, format!("{old}{new}"));
+        let columns = asked(&lake, "DESCRIBE lake", true).await.unwrap();
+        after.flush().await.unwrap();
+        assert_eq!(asked(&lake, sql, true).await.unwrap(), unsealed);
+        assert_eq!(asked(&lake, "DESCRIBE lake", true).await.unwrap(), columns);
+        assert_eq!(run(&by_hand(tmp.path(), sql)).await.unwrap(), unsealed);
+    }
+
+    /// A plugin with two tables, each kept by a sink of its own: each is
+    /// its own sink's records and columns, with records not yet sealed in
+    /// both, and with none.
+    #[tokio::test]
+    async fn each_of_two_tables_is_its_own_sinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ra, rb) = (tmp.path().join("a"), tmp.path().join("b"));
+        let a = sink(&ra, "{ n: int, host: string }").await;
+        let b = sink(&rb, "{ m: int, who: string }").await;
+        let both = [
+            ("a", ra.as_path(), Arc::clone(&a) as Arc<dyn Sink>),
+            ("b", rb.as_path(), Arc::clone(&b) as Arc<dyn Sink>),
+        ];
+        let rows = [
+            ("SELECT count(*) AS c FROM a", "{\"c\":3}\n"),
+            ("SELECT count(*) AS c FROM b", "{\"c\":2}\n"),
+            (
+                "SELECT count(*) AS c, count(DISTINCT n) AS d, max(host) AS h FROM a",
+                "{\"c\":3,\"d\":3,\"h\":\"web-2.example.com\"}\n",
+            ),
+            (
+                "SELECT m, who FROM b ORDER BY m",
+                "{\"m\":100,\"who\":\"alice@example.com\"}\n{\"m\":101,\"who\":\"bob@example.com\"}\n",
+            ),
+            (
+                "SELECT count(*) AS c FROM a JOIN b ON b.m = a.n + 100",
+                "{\"c\":2}\n",
+            ),
+        ];
+        for state in ["no record yet", "none sealed", "all sealed"] {
+            match state {
+                "none sealed" => {
+                    let hosts: Vec<String> = (0..3)
+                        .map(|n| format!(r#"{{"n":{n},"host":"web-{n}.example.com"}}"#))
+                        .collect();
+                    write(&a, &hosts.iter().map(String::as_str).collect::<Vec<_>>()).await;
+                    let alice = r#"{"m":100,"who":"alice@example.com"}"#;
+                    write(&b, &[alice, r#"{"m":101,"who":"bob@example.com"}"#]).await;
+                }
+                "all sealed" => {
+                    a.flush().await.unwrap();
+                    b.flush().await.unwrap();
+                }
+                _ => {}
+            }
+            for (table, columns) in [("a", "n host record"), ("b", "m who record")] {
+                let got = asked(&both, &format!("DESCRIBE {table}"), true).await;
+                let got: Vec<serde_json::Value> = got
+                    .unwrap()
+                    .lines()
+                    .map(|l| serde_json::from_str(l).unwrap())
+                    .collect();
+                let got: Vec<&str> = got
+                    .iter()
+                    .map(|c| c["column_name"].as_str().unwrap())
+                    .collect();
+                assert_eq!(got.join(" "), columns, "{table}, {state}");
+            }
+            for (sql, rows) in rows {
+                let got = asked(&both, sql, true).await.unwrap();
+                if state != "no record yet" {
+                    assert_eq!(got, rows, "{sql}, {state}");
+                } else if sql.starts_with("SELECT count(*) AS c FROM") {
+                    assert_eq!(got, "{\"c\":0}\n", "{sql}, {state}");
+                }
+            }
+        }
+    }
+
+    /// Seals and sends what its sink holds, and then answers as it does: a
+    /// file that goes to the lake between two tables of one statement.
+    struct SealsFirst(Arc<DurableFileSink>);
+
+    #[async_trait::async_trait]
+    impl Sink for SealsFirst {
+        async fn write(&self, _: SinkWrite) -> Result<()> {
+            unreachable!("only asked")
+        }
+        async fn unsealed(&self) -> Result<Vec<(String, Bytes)>> {
+            self.0.flush().await?;
+            self.0.unsealed().await
+        }
+    }
+
+    /// Two tables that name one sink are each every record once, when a
+    /// file goes to the lake after the first was made and before the
+    /// second: the second lists the lake itself and is not given the
+    /// first's listing.
+    #[tokio::test]
+    async fn two_tables_of_one_sink_each_list_its_lake() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kept = sink(tmp.path(), "{ n: int }").await;
+        write(&kept, &[r#"{"n":0}"#, r#"{"n":1}"#]).await;
+        kept.flush().await.unwrap();
+        write(&kept, &[r#"{"n":2}"#, r#"{"n":3}"#, r#"{"n":4}"#]).await;
+        let files = || std::fs::read_dir(tmp.path().join("out/2026/11/12/10")).unwrap();
+        assert_eq!(files().count(), 1);
+        let tables = [
+            ("a", tmp.path(), Arc::clone(&kept) as Arc<dyn Sink>),
+            ("b", tmp.path(), Arc::new(SealsFirst(kept)) as Arc<dyn Sink>),
+        ];
+        let sql =
+            "SELECT (SELECT count(*) FROM a) AS a, (SELECT count(DISTINCT n) FROM a) AS a_n, \
+             (SELECT count(*) FROM b) AS b, (SELECT count(DISTINCT n) FROM b) AS b_n";
+        let got = asked(&tables, sql, true).await.unwrap();
+        assert_eq!(got, "{\"a\":5,\"a_n\":5,\"b\":5,\"b_n\":5}\n");
+        assert_eq!(files().count(), 2);
+    }
+
+    /// The least and the greatest of a column over many files, some with
+    /// the column null in every row, are right in the pipeline as by hand,
+    /// with records in no file yet.
+    #[tokio::test]
+    async fn the_least_and_the_greatest_with_records_in_no_file_yet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kept = sink(tmp.path(), "{ n: int, source: string }").await;
+        for n in 0..36 {
+            let line = match n % 3 {
+                0 => format!(r#"{{"n":{n}}}"#),
+                _ => format!(r#"{{"n":{n},"source":"s{:02}"}}"#, (n * 7) % 36),
+            };
+            write(&kept, &[&line]).await;
+            if n < 30 {
+                kept.flush().await.unwrap();
+            }
+        }
+        let lake = [("lake", tmp.path(), Arc::clone(&kept) as Arc<dyn Sink>)];
+        let sql = "SELECT min(source) AS lo, max(source) AS hi, min(n) AS first FROM lake";
+        let all = "{\"lo\":\"s01\",\"hi\":\"s35\",\"first\":0}\n";
+        for _ in 0..5 {
+            assert_eq!(asked(&lake, sql, true).await.unwrap(), all);
+        }
+        kept.flush().await.unwrap();
+        for _ in 0..5 {
+            assert_eq!(run(&by_hand(tmp.path(), sql)).await.unwrap(), all);
+            assert_eq!(asked(&lake, sql, true).await.unwrap(), all);
+        }
+    }
+
+    /// A plan says where each row is read from, which in the pipeline is
+    /// which rows are in no file yet: a plugin's statement is not given
+    /// one. By hand it is, as it was.
+    #[tokio::test]
+    async fn a_statement_in_the_pipeline_is_not_given_a_plan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kept = sink(tmp.path(), "{ n: int }").await;
+        write(&kept, &[r#"{"n":0}"#]).await;
+        kept.flush().await.unwrap();
+        write(&kept, &[r#"{"n":1}"#]).await;
+        let lake = [("lake", tmp.path(), Arc::clone(&kept) as Arc<dyn Sink>)];
+        for sql in [
+            "EXPLAIN SELECT n FROM lake",
+            "EXPLAIN ANALYZE SELECT n FROM lake WHERE n = 1",
+            "EXPLAIN VERBOSE SELECT n FROM lake",
+            "explain format tree select * from lake",
+        ] {
+            let e = asked(&lake, sql, true).await.unwrap_err().to_string();
+            assert!(e.starts_with("EXPLAIN is not for"), "{sql}: {e}");
+            let plan = run(&by_hand(tmp.path(), sql)).await.unwrap();
+            assert!(plan.contains("parquet"), "{sql}: {plan}");
+        }
+        let n = asked(&lake, "SELECT n FROM lake ORDER BY n", true).await;
+        assert_eq!(n.unwrap(), "{\"n\":0}\n{\"n\":1}\n");
     }
 
     #[tokio::test]
