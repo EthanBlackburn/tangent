@@ -1311,5 +1311,34 @@
    "id": "690",
    "window": "2026-11-03T20:00"
   }
+ },
+ {
+  "ts": "2026-11-03T20:00:41.000000000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "/Users/dev/tangent/target/release/tangent"
+  },
+  "_facts": {
+   "notes": []
+  },
+  "detail": {
+   "declared": "this process says it is the capture: what it and the programs under it do is left out of the records from here on"
+  },
+  "event": "monitor",
+  "lineage": [
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "parents": [
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "process": {
+   "path": "/Users/dev/tangent/target/release/tangent",
+   "pid": 800,
+   "ppid": 100
+  }
  }
 ]
