@@ -1,7 +1,7 @@
 //! What `tangent watch` says while its pipeline runs: each minute how many
 //! records the judge checked, each alert as the judge flags it (numbered `#1`,
 //! `#2`, ... while it waits for review), and each review as it settles the
-//! alert (`cleared`, `MALICIOUS`, `NEEDS LOOK`, or `REVIEW FAILED`). A review
+//! alert (`cleared`, `MALICIOUS`, `ALERT`, or `REVIEW FAILED`). A review
 //! that upholds its alert is a notification too, at a Mac ([`crate::notify`]).
 //! It reads them where the pipeline writes them (alerts.ndjson, reviews.ndjson
 //! and verdicts.ndjson, in the pipeline's directory), from where each file
@@ -346,7 +346,7 @@ fn review(record: &Value, ids: &[u64], style: Style) -> Vec<String> {
 
     let label = match verdict.as_str() {
         "malicious" => style.bold_red("MALICIOUS"),
-        "unresolved" => style.bold_yellow("NEEDS LOOK"),
+        "unresolved" => style.bold_red("ALERT"),
         other => style.bold(&other.to_uppercase()),
     };
     let mut lines = vec![
@@ -821,7 +821,7 @@ mod tests {
             follow.said(false),
             [
                 "",
-                "#1  NEEDS LOOK  Python",
+                "#1  ALERT  Python",
                 "    It read a key and connected out.",
                 "    check: Rotate the key."
             ]
