@@ -29,21 +29,6 @@ use crate::{fetch, local};
 /// The queue a CloudTrail source reads its trail from as it is written.
 const QUEUE: &str = "CLOUDTRAIL_QUEUE_URL";
 
-/// The files a pipeline reads when they are beside it, none of them
-/// shipped: one of each kind, and what it is.
-const OPTIONAL: &[(&str, &str)] = &[
-    ("profile.yaml", "your company's profile (profile.yaml)"),
-    ("data/networks.csv", "the address tables (data/)"),
-];
-
-/// Where the address tables alone are described.
-const ADDRESSES: &str =
-    "https://github.com/EthanBlackburn/tangent/blob/main/examples/enrich/README.md#data";
-
-/// Where the profile and the address tables are described.
-const PROFILE: &str =
-    "https://github.com/EthanBlackburn/tangent/blob/main/packs/README.md#the-profile";
-
 /// Where `tangent watch <what>` keeps its pipeline:
 /// `$XDG_DATA_HOME/tangent/<what>`, else `$HOME/.local/share/tangent/<what>`.
 /// A variable that is unset, empty or relative is not one.
@@ -115,10 +100,6 @@ struct Pipeline {
     server: Server,
     /// What is watched, who judges, and where the records go, as lines.
     said: Vec<String>,
-    /// The files it reads when they are beside it, and where they are
-    /// described.
-    optional: &'static [(&'static str, &'static str)],
-    described: &'static str,
     /// When an alert and a review come.
     pace: &'static str,
 }
@@ -162,8 +143,6 @@ pub async fn cloud(
         files: choices.files(),
         server,
         said,
-        optional: OPTIONAL,
-        described: PROFILE,
         pace: "an actor's\n\
                records are judged together, thirty at a time or an hour after the first, and an alert\n\
                is reviewed a little over an hour after it.",
@@ -188,8 +167,6 @@ pub async fn mac(hosted: bool) -> Result<()> {
             format!("Your records {}.", mac.records()),
             mac::BY_HAND.to_string(),
         ],
-        optional: &OPTIONAL[1..],
-        described: ADDRESSES,
         pace: "a session\n\
                is judged five minutes at a time, or an agent's turn at its end, and an alert is\n\
                reviewed about seven minutes after it.",
@@ -221,24 +198,6 @@ async fn start(pipeline: Pipeline) -> Result<()> {
     }
 
     println!("\n{}", pipeline.said.join("\n"));
-    let absent: Vec<&str> = pipeline
-        .optional
-        .iter()
-        .filter(|(file, _)| !dir.join(file).exists())
-        .map(|(_, what)| *what)
-        .collect();
-    if !absent.is_empty() {
-        println!(
-            "It judges without {}: {} says what {} and they go in the directory below.",
-            absent.join(" and "),
-            pipeline.described,
-            if absent.len() == 1 {
-                "they add,"
-            } else {
-                "each adds,"
-            }
-        );
-    }
     println!(
         "\nEach alert is said here as the judge marks it, and each review as it is written: {}",
         pipeline.pace

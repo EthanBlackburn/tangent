@@ -93,7 +93,7 @@ tangent watch cloud --sources okta,github
 
 It takes init's flags, and runs the pipeline init would write for them, leaving no file where you are. The config goes to tangent's own directory, `~/.local/share/tangent/cloud` (under `$XDG_DATA_HOME` when that is set), written again at each start, and tangent runs there: the alerts, their reviews, the lake and each actor's history are kept there too, and the next start goes on from them. It prints where they are.
 
-While it runs, the terminal shows what it finds and little else: each alert as the judge flags it (when, from which log, who, and why), each review as it is written (the verdict, the finding, what to check first), and every few minutes how many records were judged. The runtime's own lines are kept to its warnings; `RUST_LOG=info` brings the rest back. A model wrote that text after reading whatever an attacker put in a record, so control characters are taken out of it before it is printed.
+While it runs, the terminal shows what it finds: each alert as the judge flags it (when, from which log, who, and why), each review as it is written (the verdict, the finding, what to check first), and every few minutes how many records were judged. The runtime's own lines are among them, the ones `tangent run` prints; `RUST_LOG=warn` keeps them to its warnings. A model wrote that text after reading whatever an attacker put in a record, so control characters are taken out of it before it is printed.
 
 ```
 flagged   2026-11-24 03:09Z  okta  ana@acme.example
