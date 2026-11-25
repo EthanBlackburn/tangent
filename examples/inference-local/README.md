@@ -80,10 +80,10 @@ model.
 In this directory, with the model server up:
 
 ```bash
-tangent run --config tangent.yaml
+tangent watch --config tangent.yaml
 ```
 
-Nothing is compiled: `tangent run` fetches the `flagged` plugin from the tangent
+Nothing is compiled: `tangent watch` fetches the `flagged` plugin from the tangent
 release of its own version, once, and checks that this repository's release
 workflow built it ([Prebuilt plugins](/docs/reference.md#prebuilt-plugins)). To build it from [flagged/](flagged)
 instead, as after changing it: `tangent plugin compile --config tangent.yaml`,

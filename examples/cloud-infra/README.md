@@ -69,7 +69,7 @@ make run            # one process: the sources, the packs and the judge; listens
 ```
 
 Nothing is compiled: `make test` and `make run` take the packs' plugins
-prebuilt (`make test` with `tangent plugin fetch`; `tangent run` fetches the
+prebuilt (`make test` with `tangent plugin fetch`; `tangent watch` fetches the
 ones it has no copy of, once per tangent version). Each comes from the
 tangent release of this tangent's version, and tangent checks, before it is
 kept, that this repository's release workflow built it from that tag

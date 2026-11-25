@@ -1,7 +1,7 @@
 # Claude on Amazon Bedrock reads every record; a plugin keeps what it flagged.
 #
 #   aws sso login --profile <your-profile>      (or any AWS credential source)
-#   tangent run --config tangent.yaml
+#   tangent watch --config tangent.yaml
 #   nc -w 1 localhost 9000 < events.ndjson
 #   cat flagged.ndjson
 runtime:

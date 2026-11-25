@@ -1,18 +1,20 @@
-//! `tangent watch`: `tangent init` and `tangent run` in one command, for
-//! whoever has no wish to keep a config. What init would write for the same
-//! flags goes into a directory of tangent's own, written again at each
-//! start, and tangent runs in that directory, so what the pipeline keeps
-//! (its lake, each actor's history, the alerts and their reviews) is there
-//! too and the next start goes on from it.
+//! `tangent watch`: runs a pipeline and says what it finds.
 //!
-//! While it runs it says what the judge flags and what each review finds
-//! ([`crate::follow`]), and the runtime's own lines are kept to its
-//! warnings (main.rs sets that, before the first of them).
+//! `watch cloud` and `watch mac` are `tangent init` and the run in one
+//! command, for whoever has no wish to keep a config. What init would
+//! write for the same flags goes into a directory of tangent's own, written
+//! again at each start, and tangent runs in that directory, so what the
+//! pipeline keeps (its lake, each actor's history, the alerts and their
+//! reviews) is there too and the next start goes on from it. They start
+//! only what can run: a variable the config reads and the environment
+//! lacks stops them with the list, and a model that is to run here is
+//! downloaded first.
 //!
-//! It starts only what can run: a variable the config reads and the
-//! environment lacks stops it with the list, where `tangent run` would
-//! leave a source idle, and a model that is to run here is downloaded
-//! first.
+//! `watch --config` runs a config of the owner's where they are, as it is:
+//! a source whose variable is unset is left idle.
+//!
+//! While any of them runs it says what the judge checks and flags and what
+//! each review finds ([`crate::follow`]), among the runtime's own lines.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -215,8 +217,27 @@ async fn start(pipeline: Pipeline) -> Result<()> {
     }
     println!("Ctrl-C stops it.\n");
 
+    following(&dir, &config, RuntimeOptions::default()).await
+}
+
+/// `tangent watch --config`: the owner's config, run where they are.
+pub async fn config(config: PathBuf, once: bool) -> Result<()> {
+    let config = config.canonicalize().unwrap_or(config);
+    fetch::missing(&config).await?;
+    // A sink's path is read against the directory tangent runs in.
+    let dir = std::env::current_dir().context("reading the directory this runs in")?;
+    let opts = RuntimeOptions {
+        once,
+        ..Default::default()
+    };
+    following(&dir, &config, opts).await
+}
+
+/// Runs `config` until it ends or a signal, saying what it writes in
+/// `dir`, the directory it runs in.
+async fn following(dir: &Path, config: &PathBuf, opts: RuntimeOptions) -> Result<()> {
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let said = tokio::spawn(Follow::new(&dir).run(stopped));
+    let said = tokio::spawn(Follow::new(dir).run(stopped));
     tokio::spawn(async {
         if signalled().await {
             println!(
@@ -224,7 +245,7 @@ async fn start(pipeline: Pipeline) -> Result<()> {
             );
         }
     });
-    let ran = tangent_runtime::run(&config, RuntimeOptions::default()).await;
+    let ran = tangent_runtime::run(config, opts).await;
     let _ = stop.send(());
     let _ = said.await;
     ran

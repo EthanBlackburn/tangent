@@ -342,12 +342,12 @@ It runs `tests/input.json` through the plugin and compares the output with `test
 
 ## Run
 ```bash
-tangent run --config tangent.yaml
+tangent watch --config tangent.yaml
 ```
 The pipeline reads JSON lines on tcp `0.0.0.0:9000`, passes them through the plugin, and sends what it writes to a `blackhole` sink, which discards it. It runs until you stop it with Ctrl-C.
 
 ## Benchmark
-With `tangent run` going in one terminal, run this in a second; it reads the pipeline's metrics on `127.0.0.1:9184`:
+With `tangent watch` going in one terminal, run this in a second; it reads the pipeline's metrics on `127.0.0.1:9184`:
 ```bash
 tangent bench --config tangent.yaml --seconds 30 --payload tests/input.json
 ```
@@ -773,7 +773,7 @@ test: build\n\t\
 tangent plugin test --config tangent.yaml\n\
 \n\
 run: build\n\t\
-tangent run --config tangent.yaml\n\
+tangent watch --config tangent.yaml\n\
 \n\
 setup:\n\t\
 ./setup.sh\n\

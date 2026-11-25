@@ -123,7 +123,7 @@ enrichment_tables:
 | `sensitive` | buckets, repos, tables | `sensitive_target` |
 | `watch` | kinds a person wants seen every time | `watch` |
 
-`required: true` makes a mistyped path an error that stops `tangent run`;
+`required: true` makes a mistyped path an error that stops `tangent watch`;
 without it the table would answer nothing, with one warning, and every record
 would go on as nobody the org knows, in the provider's org rather than yours.
 

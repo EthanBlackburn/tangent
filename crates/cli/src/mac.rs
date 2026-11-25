@@ -171,7 +171,7 @@ impl Mac {
         let first = records.split(". ").next().unwrap_or(&records);
         header.push_str(&format!("#   records  {first}\n"));
         if !self.watched {
-            header.push_str("#\n#   tangent run --config tangent.yaml\n");
+            header.push_str("#\n#   tangent watch --config tangent.yaml\n");
         }
         header.push_str(
             "#\n# What the judge marked is in alerts.ndjson, each alert with its review in\n\
@@ -292,7 +292,7 @@ pub async fn run(dir: &Path, hosted: bool) -> Result<()> {
     if !local.is_empty() {
         println!("\n{}", local.join("\n"));
     }
-    println!("\nThen:\n  tangent run --config tangent.yaml\n\n{BY_HAND}");
+    println!("\nThen:\n  tangent watch --config tangent.yaml\n\n{BY_HAND}");
     fetched.context(
         "the config is written, and the model is not all here: `tangent model fetch` goes on where this stopped",
     )
@@ -319,7 +319,7 @@ mod tests {
     const BOTH: [bool; 2] = [false, true];
 
     /// With either model, kept or watched: the config loads, passes what
-    /// `tangent run` checks, warns of nothing in its wiring, leaves no place
+    /// `tangent watch` checks, warns of nothing in its wiring, leaves no place
     /// unfilled, and says where the records go.
     #[test]
     fn the_pipeline_loads_with_either_model() {
@@ -343,7 +343,7 @@ mod tests {
                     mac.watched,
                     "{mac:?}"
                 );
-                assert_eq!(config.contains("tangent run --config"), !mac.watched);
+                assert_eq!(config.contains("tangent watch --config"), !mac.watched);
             }
         }
     }

@@ -57,7 +57,7 @@ with TinyGo, and deletes the file again.
 
 ## Run
 ```bash
-make run          # compiles, then: tangent run --config tangent.yaml
+make run          # compiles, then: tangent watch --config tangent.yaml
 ```
 
 The pipeline reads NDJSON, one record per line, on TCP port 9000 and appends
@@ -107,7 +107,7 @@ Slack's reason in the warning: `failed to post to slack: HTTP 200: "invalid_auth
 
 ## Benchmark
 ```bash
-tangent run --config tangent.yaml          # one terminal
+tangent watch --config tangent.yaml          # one terminal
 tangent bench --config tangent.yaml --seconds 30 --payload tests/bench.json --synthesize
 ```
 

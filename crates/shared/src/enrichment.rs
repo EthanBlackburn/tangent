@@ -12,7 +12,7 @@ pub struct TableConfig {
     /// The file, relative to the file that names it.
     pub path: PathBuf,
 
-    /// Without its file, nothing starts: `tangent run`, `tangent plugin
+    /// Without its file, nothing starts: `tangent watch`, `tangent plugin
     /// test` and `tangent config` stop, naming the table and the file. A
     /// table that is not required and has no file answers nothing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

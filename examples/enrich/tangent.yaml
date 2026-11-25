@@ -3,7 +3,7 @@
 #   ./setup.sh                                   # toolchain, and the data files under data/
 #   tangent plugin compile --config tangent.yaml
 #   tangent plugin test --config tangent.yaml
-#   tangent run --config tangent.yaml             # listens on :9000, writes out.ndjson
+#   tangent watch --config tangent.yaml             # listens on :9000, writes out.ndjson
 #   jq -c '.[]' tests/input.json | nc -w 1 127.0.0.1 9000   # NDJSON: one record per line
 #
 # Refresh the data now and then (MaxMind publishes Tuesdays and Fridays):

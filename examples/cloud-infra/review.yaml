@@ -6,7 +6,7 @@
 # or unresolved. It costs money and sends records to a second model, so it is
 # its own config.
 #
-#   make run REVIEW=1        # or: tangent run --config review.yaml
+#   make run REVIEW=1        # or: tangent watch --config review.yaml
 include:
   - tangent.yaml
   - ../../packs/judge/review.yaml  # inference node reviewer, and plugin review, which holds a conversation with it

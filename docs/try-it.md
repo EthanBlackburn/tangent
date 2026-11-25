@@ -55,7 +55,7 @@ tangent init cloud --sources okta --local --model glm-4.7-flash   # a model serv
 
 | `--local` | the model | measured | it needs |
 |---|---|---|---|
-| alone | Inkling 2 Mini, open weights, judges and reviews, on MTPLX. `tangent run` starts the server, waits until it answers and stops it after | not on the corpus above | an Apple Silicon Mac with 32 GB of memory or more (on another machine `--local` stops and says so, before anything is downloaded). MTPLX and the model (17 GB) are downloaded into tangent's cache, each file checked: init offers to, and `tangent model fetch` does it later |
+| alone | Inkling 2 Mini, open weights, judges and reviews, on MTPLX. `tangent watch` starts the server, waits until it answers and stops it after | not on the corpus above | an Apple Silicon Mac with 32 GB of memory or more (on another machine `--local` stops and says so, before anything is downloaded). MTPLX and the model (17 GB) are downloaded into tangent's cache, each file checked: init offers to, and `tangent model fetch` does it later |
 | with `--model` | the model a server you run gives at `http://localhost:8080/v1` (llama-server, mlx_lm.server, Ollama, vLLM), by the name it gives it | not measured | the server running before tangent |
 
 The corpus is one made-up company, and 36 of its attacks are cases the judge's brief was written against: it says nothing of how much a model flags on your logs.
@@ -76,10 +76,10 @@ Nothing else is kept anywhere: what the files say is what runs, and they are you
 
 ```bash
 tangent replay --config tangent.yaml --from 1d   # the last day of CloudTrail
-tangent run --config tangent.yaml                # the other sources, from an hour back and as it happens
+tangent watch --config tangent.yaml                # the other sources, from an hour back and as it happens
 ```
 
-Replay reads a past range of CloudTrail from the account's Event history, up to 90 days back, and no other source. `tangent run` reads the others as they happen, and CloudTrail too once `queue_url` in tangent.yaml names the SQS queue your trail's bucket notifies.
+Replay reads a past range of CloudTrail from the account's Event history, up to 90 days back, and no other source. `tangent watch` reads the others as they happen, and CloudTrail too once `queue_url` in tangent.yaml names the SQS queue your trail's bucket notifies.
 
 The models' calls are billed to your model account: replay prints about how many records the range holds before it judges any, and Ctrl-C stops it. The reference manual's [Volume and cost](reference.md#volume-and-cost) prices a day.
 
@@ -93,7 +93,7 @@ tangent watch cloud --sources okta,github
 
 It takes init's flags, and runs the pipeline init would write for them, leaving no file where you are. The config goes to tangent's own directory, `~/.local/share/tangent/cloud` (under `$XDG_DATA_HOME` when that is set), written again at each start, and tangent runs there: the alerts, their reviews, the lake and each actor's history are kept there too, and the next start goes on from them. It prints where they are.
 
-While it runs, the terminal shows what it finds: each minute what the judge checked (how many, the names judged most, and how many it flagged), each alert as the judge flags it (when, from which log, who, and why), and each review as it is written (the verdict, the finding, what to check first). The runtime's own lines are among them, the ones `tangent run` prints; `RUST_LOG=warn` keeps them to its warnings. A model wrote that text after reading whatever an attacker put in a record, so control characters are taken out of it before it is printed.
+While it runs, the terminal shows what it finds: each minute what the judge checked (how many, the names judged most, and how many it flagged), each alert as the judge flags it (when, from which log, who, and why), and each review as it is written (the verdict, the finding, what to check first). The runtime's own lines are among them; `RUST_LOG=warn` keeps them to its warnings. A model wrote that text after reading whatever an attacker put in a record, so control characters are taken out of it before it is printed.
 
 ```
 checked   41 (deploy-bot x30, ana@acme.example x9, 2 more): 1 flagged
@@ -105,9 +105,9 @@ reviewed  ana@acme.example, 3 alerts: malicious
           check: ...
 ```
 
-It starts only with what it needs. A variable from the table above that is not set stops it, with the list, where `tangent run` would leave the source idle. With `--local` it downloads the model first, after asking. One `watch cloud` runs at a time.
+It starts only with what it needs. A variable from the table above that is not set stops it, with the list, where `tangent watch --config` would leave the source idle. With `--local` it downloads the model first, after asking. One `watch cloud` runs at a time.
 
-It reads what `tangent run` reads: each source as it happens, from an hour back. CloudTrail is among them only when `CLOUDTRAIL_QUEUE_URL` holds its trail's queue; its last day is step 3's replay, on a config of your own.
+It reads each source as it happens, from an hour back. CloudTrail is among them only when `CLOUDTRAIL_QUEUE_URL` holds its trail's queue; its last day is step 3's replay, on a config of your own.
 
 To change more than the flags do, `tangent init cloud` with the same flags writes the same pipeline for you to edit.
 
@@ -145,4 +145,4 @@ It runs one attack for real, a credential theft of the kind a poisoned package c
 
 `tangent watch mac` then says what it makes of it, in its own terminal: the session is flagged a minute or two later (up to five in a busy terminal) and reviewed about seven minutes after that. With the hosted pair the judge flagged it and the reviewer then called it benign, rightly: it worked out from the records that the files were made by the command that took them and went no further than this Mac. That is the two passes doing their work, and the alert is the thing to look for.
 
-`tangent init mac` writes the same pipeline where you are, to edit and to run with `tangent run --config tangent.yaml`: tangent.yaml, the two briefs, and profiles.yaml, which says what each known program is expected to read, start and connect to. [packs/macos](../packs/macos) describes each part.
+`tangent init mac` writes the same pipeline where you are, to edit and to run with `tangent watch --config tangent.yaml`: tangent.yaml, the two briefs, and profiles.yaml, which says what each known program is expected to read, start and connect to. [packs/macos](../packs/macos) describes each part.

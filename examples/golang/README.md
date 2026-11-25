@@ -58,7 +58,7 @@ output has no line for it.
 
 ## Run
 ```bash
-tangent run --config tangent.yaml    # or `make run`, which compiles first
+tangent watch --config tangent.yaml    # or `make run`, which compiles first
 ```
 From another terminal, send it one record it wants and one it doesn't, then
 read the counters on the metrics endpoint (`:9184`):
@@ -74,11 +74,11 @@ tangent_sink_objects_total 1
 tangent_unrouted_records_total{node="source:network_input"} 1
 ```
 The `myservice` record goes through the plugin to the sink. The other matches
-no selector: `tangent run` warns that it was dropped and
+no selector: `tangent watch` warns that it was dropped and
 `tangent_unrouted_records_total` counts it.
 
 ## Benchmark
-With `tangent run` going, from another terminal:
+With `tangent watch` going, from another terminal:
 ```bash
 tangent bench --config tangent.yaml --seconds 20 --connections 16 --payload tests/bench.json --synthesize
 ```
@@ -95,7 +95,7 @@ producer bytes (consumed): … MB → … MB/s
 guest: bytes_in=… MB, avg_latency=… ms (over … calls)
 ```
 The root README's numbers are this command on a dedicated 16-core machine,
-with `tangent run` and `tangent bench` pinned to separate cores; on a laptop
+with `tangent watch` and `tangent bench` pinned to separate cores; on a laptop
 doing other work expect far less.
 
 ## Writing your own

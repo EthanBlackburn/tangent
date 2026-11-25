@@ -60,7 +60,7 @@ writes its lines, then a `+` line on a commit that ran no publish step;
 
 ## Simulate a webhook delivery
 ```bash
-make run          # compiles, then: tangent run --config tangent.yaml
+make run          # compiles, then: tangent watch --config tangent.yaml
 ```
 
 From a second terminal, deliver the test's log lines. A delivery that is not a

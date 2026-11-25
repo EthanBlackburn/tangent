@@ -261,7 +261,7 @@ pub fn key_prefix(template: &str) -> Result<Template> {
 
 /// Each s3 sink's `key_prefix` is one [`key_prefix`] takes, and each s3 and
 /// rolling_file sink's `timestamp_field` one [`FieldPath::parse`] takes, or
-/// the error names the sink: checked when `tangent run` and `tangent config`
+/// the error names the sink: checked when `tangent watch` and `tangent config`
 /// load a config.
 pub fn check_sinks(sinks: &BTreeMap<Arc<str>, SinkConfig>) -> Result<()> {
     for (name, cfg) in sinks {

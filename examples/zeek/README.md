@@ -66,7 +66,7 @@ tangent_unrouted_records_total{node="source:network_input"} 1
 ```
 
 Three records in; the two `conn` records went through `zeek` to the sink,
-and the `dns` one was dropped (`tangent run` logs that once). Stop it with
+and the `dns` one was dropped (`tangent watch` logs that once). Stop it with
 Ctrl-C.
 
 ## Benchmark

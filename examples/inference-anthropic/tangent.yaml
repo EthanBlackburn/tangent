@@ -1,7 +1,7 @@
 # Claude through Anthropic's API reads every record; a plugin keeps what it flagged.
 #
 #   export ANTHROPIC_API_KEY=...                (a key from console.anthropic.com)
-#   tangent run --config tangent.yaml
+#   tangent watch --config tangent.yaml
 #   nc -w 1 localhost 9000 < events.ndjson
 #   cat flagged.ndjson
 runtime:

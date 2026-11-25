@@ -80,7 +80,7 @@ The pointer tells a missing field from a zero value.
 ## Make targets
 - `make build`: `./setup.sh`, then `tangent plugin compile`, which leaves the plugin in `plugins/<name>.cwasm`.
 - `make test`: build, then the fixture test.
-- `make run`: build, then `tangent run`, the pipeline in `tangent.yaml`: it listens on tcp 0.0.0.0:9000 and does not read the fixtures.
+- `make run`: build, then `tangent watch`, the pipeline in `tangent.yaml`: it listens on tcp 0.0.0.0:9000 and does not read the fixtures.
 
 ## Definition of done
 - [ ] `make test` passes (compile, then test).

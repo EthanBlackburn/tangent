@@ -33,7 +33,7 @@ pub struct BenchOptions {
     pub bucket: Option<String>,
     pub object_prefix: Option<String>,
 
-    // disable metrics. Only use if benchmarking outside of tangent run.
+    // disable metrics. Only use if benchmarking outside of tangent watch.
     pub disable_metrics: bool,
     // Whether to use the payload as-is or synthesize new logs from the payload.
     pub synthesize: bool,

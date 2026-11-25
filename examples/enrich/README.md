@@ -82,7 +82,7 @@ with `tor: true`:
 ./setup.sh                                     # the Rust WASM toolchain, and data/
 tangent plugin compile --config tangent.yaml
 tangent plugin test --config tangent.yaml      # tests/input.json → tests/expected.json
-tangent run --config tangent.yaml              # listens on :9000, writes out.ndjson
+tangent watch --config tangent.yaml              # listens on :9000, writes out.ndjson
 ```
 
 In a second terminal, send records, one JSON object per line (the `tcp`

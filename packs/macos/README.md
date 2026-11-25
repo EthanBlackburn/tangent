@@ -14,7 +14,7 @@ one config:
 ```bash
 cd examples/macos
 tangent plugin compile --config tangent.yaml
-tangent run --config haiku.yaml                 # or tangent.yaml: a local model
+tangent watch --config haiku.yaml                 # or tangent.yaml: a local model
 tail -f alerts.ndjson                           # in another terminal
 ```
 

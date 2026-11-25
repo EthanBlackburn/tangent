@@ -2,7 +2,7 @@
 #
 #   tangent plugin compile --config tangent.yaml
 #   tangent plugin test --config tangent.yaml --enable-http   # the test calls ipinfo.io
-#   tangent run --config tangent.yaml                         # listens on :9000, writes out.ndjson
+#   tangent watch --config tangent.yaml                         # listens on :9000, writes out.ndjson
 #   jq -c '.[]' tests/input.json | nc -w 1 127.0.0.1 9000     # NDJSON: one record per line
 runtime:
   plugins_path: "plugins/"

@@ -280,10 +280,13 @@ impl Follow {
         for line in self.said(true) {
             println!("{line}");
         }
-        println!(
-            "judged    {} since this watch began, {} flagged",
-            self.judged, self.flagged
-        );
+        // A pipeline with no judge has nothing to count.
+        if self.judged > 0 {
+            println!(
+                "judged    {} since this watch began, {} flagged",
+                self.judged, self.flagged
+            );
+        }
     }
 }
 

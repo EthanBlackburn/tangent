@@ -30,6 +30,6 @@ test: $(PLUGINS)
 	$(TANGENT) plugin test --config tangent.yaml
 
 run: $(if $(filter compile,$(PLUGINS)),compile,setup)
-	$(TANGENT) run --config tangent.yaml
+	$(TANGENT) watch --config tangent.yaml
 
 .PHONY: setup fetch compile test run

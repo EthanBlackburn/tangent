@@ -1,7 +1,7 @@
 //! `tangent plugin fetch`: each plugin's compiled component from the release
 //! its `prebuilt` names, checked against GitHub's attestation of the build,
 //! and precompiled into tangent's cache, per tangent version and engine
-//! (`~/.cache/tangent/<version>/plugins/<engine>`), where `tangent run` reads
+//! (`~/.cache/tangent/<version>/plugins/<engine>`), where `tangent watch` reads
 //! it when `runtime.plugins_path` has no build of its own. Only a pack's
 //! author needs the WASM toolchain: a component built once runs on every
 //! machine.
@@ -105,7 +105,7 @@ fn remove_local_build(
     }
 }
 
-/// Before `tangent run` starts: each prebuilt plugin it has neither a local
+/// Before `tangent watch` starts: each prebuilt plugin it has neither a local
 /// build of nor a copy fetched for its `prebuilt`, fetched and checked as
 /// `tangent plugin fetch` does, once per tangent version; and the Mac's
 /// sensor, for a `macos` source that names none ([`sensor`]). With none
@@ -198,7 +198,7 @@ async fn sensor(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The plugins `tangent run` must fetch first: those with `prebuilt` and
+/// The plugins `tangent watch` must fetch first: those with `prebuilt` and
 /// neither a local build nor a copy under `cache` fetched for that
 /// `prebuilt` ([`plugins::compiled`]). A plugin without `prebuilt` is left
 /// to `tangent plugin compile`.
@@ -214,7 +214,7 @@ fn wanted<'a>(
         .collect()
 }
 
-/// A fetch for `tangent run` that could not reach the release: `name` and
+/// A fetch for `tangent watch` that could not reach the release: `name` and
 /// the request's error, which names the URL, then why tangent needs the
 /// network, for `what` it fetches. Any other failure is left as it is.
 fn unreached(name: &str, what: &str, e: anyhow::Error) -> anyhow::Error {
