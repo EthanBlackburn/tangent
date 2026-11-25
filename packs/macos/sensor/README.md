@@ -28,8 +28,38 @@ the gaps in the numbers the kernel gives them. Of the ten, only `tcc_modify`
 may be missing (it came with macOS 15.4) and the sensor goes on without it;
 any other event refused, it stops.
 
-One Swift file, no dependencies. It needs root and, for the terminal that
-starts it, Full Disk Access.
+Two Swift files, no dependencies. As the sensor it needs root and, for the
+terminal that starts it, Full Disk Access.
+
+## Notifications
+
+The bundle is also the app `tangent watch` shows its notifications through
+(`notify.swift`). macOS shows a notification under an app's name and icon,
+and asks the Mac's owner once whether that app may show any, so it takes a
+signed app to show one, and this is the one tangent has.
+
+```bash
+build/TangentSensor.app/Contents/MacOS/tangent-sensor notify < notifications.ndjson
+```
+
+It runs as you, never as root. Each line of stdin is one notification, a
+JSON object: `title`, `subtitle` and `body` are the banner, `detail` is the
+text shown in a dialog when the banner is clicked, and `sound` (true or
+false) says whether it makes one. With `feedback` it has three buttons,
+"Not me", "Not sure" and "That was me", on the banner and in the dialog,
+where there is a field for a note too: the answer is added to the file
+`feedback.file` names, as the object `feedback.line` with `answer`
+(`not_mine`, `unsure` or `mine`), `note` and `ts` put in. It ends when stdin
+does, once any dialog that is open has been closed. `tangent watch`
+starts it once and keeps it for as long as it runs: macOS takes its question
+back when the process that asked ends, and counts that as a no. When the
+answer is no, it says so and ends; System Settings, Notifications, Tangent
+turns them on.
+
+A click on a notification whose process has ended has macOS start the app,
+which deals with that one click, a button's answer or the dialog, and ends. Started as the sensor it
+does neither: it tells the two apart by its first argument and by how macOS
+names an app it starts.
 
 ## What it needs from Apple
 

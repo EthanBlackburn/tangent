@@ -298,6 +298,11 @@ func version(_ dotted: String) -> OperatingSystemVersion {
     return OperatingSystemVersion(majorVersion: n[0], minorVersion: n[1], patchVersion: n[2])
 }
 
+// Not the sensor (notify.swift): `notify` shows notifications, and macOS
+// starts this as an app when one of them is clicked.
+if CommandLine.arguments.dropFirst().first == "notify" { notify() }
+if openedByMacOS() { opened() }
+
 signal(SIGPIPE, SIG_IGN)  // a closed pipe is an error from write, handled there
 
 var client: OpaquePointer?
