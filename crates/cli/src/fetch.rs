@@ -429,7 +429,7 @@ mod tests {
         };
         assert!(names_no_sensor(&cfg("  mac: { type: macos }\n")));
         assert!(!names_no_sensor(&cfg(
-            "  mac: { type: macos, sensor: build/TangentSensor.app/Contents/MacOS/tangent-sensor }\n"
+            "  mac: { type: macos, sensor: build/Tangent.app/Contents/MacOS/tangent-sensor }\n"
         )));
         assert!(!names_no_sensor(&cfg(
             "  logs: { type: socket, socket_path: /tmp/x.sock }\n"

@@ -14,7 +14,7 @@ pub struct MacosConfig {
     /// The sensor's binary. Left out, it is this release's, which tangent
     /// fetches once per version and checks before each start
     /// ([`crate::sensor`]). Named, it is one you built and signed:
-    /// `tangent-sensor` inside TangentSensor.app (packs/macos/sensor),
+    /// `tangent-sensor` inside Tangent.app (packs/macos/sensor),
     /// relative to the working directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensor: Option<PathBuf>,

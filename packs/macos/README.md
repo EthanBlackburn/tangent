@@ -43,7 +43,7 @@ signed by tangent's team and notarized by Apple. Tangent fetches it once per
 version into its cache, and since it runs as root checks it with macOS's
 `codesign` before each start: the sensor by its identifier, that team's
 signature, Apple's notarization, and no file changed. `sensor:` names one
-you built instead, `tangent-sensor` inside your TangentSensor.app, relative
+you built instead, `tangent-sensor` inside your Tangent.app, relative
 to the working directory: it is built and signed from [`sensor/`](sensor),
 which needs an entitlement Apple grants to a developer team (its README has
 the steps), and tangent starts yours as it is. Its

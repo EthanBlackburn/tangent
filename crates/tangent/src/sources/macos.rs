@@ -139,7 +139,7 @@ fn sensor(name: &str, cfg: &MacosConfig) -> Result<(PathBuf, Option<PathBuf>)> {
         if !sensor.is_file() {
             bail!(
                 "source {name}: no sensor at {}: `sensor` names tangent-sensor inside a \
-                 TangentSensor.app you built from packs/macos/sensor. Left out, tangent fetches \
+                 Tangent.app you built from packs/macos/sensor. Left out, tangent fetches \
                  its release's",
                 sensor.display()
             );

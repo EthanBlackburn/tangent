@@ -1,5 +1,5 @@
 #!/bin/bash
-# notarize.sh: build/TangentSensor.app, as build.sh signed it with a Developer
+# notarize.sh: build/Tangent.app, as build.sh signed it with a Developer
 # ID, sent to Apple's notary, its ticket stapled on, and zipped to hand out:
 # build/tangent-sensor-macos.zip. A Mac that downloads it runs it without
 # being asked, and with no profile or grant of its own.
@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-app=build/TangentSensor.app
+app=build/Tangent.app
 [ -d "$app" ] || { echo "no $app: ./build.sh PROFILE \"Developer ID Application\" first" >&2; exit 1; }
 [ $# -gt 0 ] || { echo "say how to sign in to the notary: --keychain-profile NAME, or --key FILE --key-id ID --issuer UUID" >&2; exit 1; }
 
