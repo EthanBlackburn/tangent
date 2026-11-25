@@ -26,7 +26,7 @@
 <p align="center">
   <img src="docs/img/demo.gif" alt="Two runs of tangent watch mac. In the first, a developer adds their own SSH key, installs redis and an editor extension; Tangent's judge marks the session and its reviewer clears it as benign, with no notification. In the second, an editor extension update hides a backdoor; the judge flags the editor, the terminal and the login item the backdoor adds, all three are reviewed malicious, and each becomes a macOS notification.">
   <br>
-  <sub>What <code>tangent watch mac</code> shows for <a href="https://github.com/EthanBlackburn/tangent-eval/tree/main/macos/cases/cursor-extension">two recorded runs</a>, re-created from their records and sped up: a review comes about seven minutes after its alert.</sub>
+  <sub>What <code>tangent watch mac</code> shows for <a href="https://github.com/EthanBlackburn/tangent-eval/tree/main/macos/cases/cursor-extension">two recorded runs</a>, re-created from their records and sped up.</sub>
 </p>
 
 ---

@@ -38,8 +38,13 @@ one take each, since each was its own VM:
   says it a minute at a time; here each run's is one line before its alerts.
 - **The commands** are the case's `twin.sh` and `attack.sh`. Their output is
   not from the runs.
-- **The time is compressed.** A review comes about seven minutes after its
-  alert; the clock in the menu bar shows it passing.
+- **The time is compressed.** A review comes a minute or so after its alert;
+  the clock in the menu bar shows it passing.
+- **The runs were judged on 2026-11-13**, when a review waited 400 seconds for
+  the lake and its table reached that far past the alert. Today's waits 10
+  (#263, #264), so a review of the same recording sees less of what came
+  after, and its words would not be these. Judging the two recordings again
+  and putting their records in `demo.html` brings the demo up to date.
 - **The dimming** of a window and of older lines is the demo's, to show where
   to look. Tangent's output has no colour.
 

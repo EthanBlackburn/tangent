@@ -22,8 +22,10 @@
   - The commands typed on the right are the case's twin.sh and attack.sh.
     Their output is not from the runs.
   - The two runs were separate VMs, so they are two takes here.
-  - The time is compressed: a review comes about seven minutes after its
-    alert, which the clock in the menu bar shows passing.
+  - The time is compressed: a review comes a minute or so after its alert,
+    which the clock in the menu bar shows passing.
+  - The runs were judged when a review waited 400 s for the lake and read
+    that far past its alert; today's waits 10 s. Its words would differ.
   - The dimming of a window and of older lines is the demo's, to show where
     to look; a terminal does neither.
 -->
@@ -146,7 +148,7 @@
   </div>
   <div class="win" id="left"><div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="title"></span></div><div class="term"></div><div class="shade"></div></div>
   <div class="win" id="right"><div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="title"></span></div><div class="term"></div><div class="shade"></div></div>
-  <div id="skip"><svg width="30" height="21" viewBox="0 0 22 16"><path d="M1 1l9 7-9 7zM11 1l9 7-9 7z" fill="#ffd27a"/></svg>7 minutes later</div>
+  <div id="skip"><svg width="30" height="21" viewBox="0 0 22 16"><path d="M1 1l9 7-9 7zM11 1l9 7-9 7z" fill="#ffd27a"/></svg>About a minute later</div>
   <div id="notes"></div>
   <div id="band"></div>
   <div id="caps"></div>
@@ -258,7 +260,7 @@ const STARTUP = [
   '',
   'Each alert is said here as the judge marks it, and each review as it is written: a session',
   "is judged five minutes at a time, or an agent's turn at its end, and an alert is",
-  'reviewed about seven minutes after it.',
+  'reviewed as soon as it is raised.',
   'They are kept, with the pipeline and its lake, in /Users/admin/.local/share/tangent/mac',
   "A review that upholds an alert is a notification on this Mac too, once you allow Tangent's (--no-notify shows none).",
   'To see it catch an attack, run `tangent simulate` in another terminal.',
@@ -308,7 +310,7 @@ const TAKE1 = {
     ['code ~/code/acme-web'],
   ]),
   notes: [],
-  clock: [[0, 34.2], [T1.alerts, 36.3], [T1.skip[0], 36.5], [T1.skip[1], 43], [T1.end, 43.3]],
+  clock: [[0, 34.2], [T1.alerts, 36.3], [T1.skip[0], 36.4], [T1.skip[1], 37.3], [T1.end, 37.6]],
 };
 
 // The attack: attack.sh, in its own run.
@@ -329,7 +331,7 @@ const TAKE2 = {
   ], PROMPT),
   notes: ATTACK.reviews.filter(r => r.verdict !== 'benign').map((r, i) => ({ ...noteOf(r), at: T2.reviews[i] + 0.15 })),
   noteOut: 26.3,
-  clock: [[T2.start, 30.2], [T2.alerts, 32.2], [T2.skip[0], 32.4], [T2.skip[1], 39], [T2.reviews[2], 40], [DURATION, 40.3]],
+  clock: [[T2.start, 30.2], [T2.alerts, 32.2], [T2.skip[0], 32.3], [T2.skip[1], 33.1], [T2.reviews[2], 34.4], [DURATION, 34.7]],
 };
 const TAKES = [TAKE1, TAKE2];
 
