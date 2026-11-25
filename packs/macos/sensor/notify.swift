@@ -15,10 +15,11 @@
 // and `sound` says whether it makes one. With `feedback` it asks whether what
 // it reports was its reader's doing, with three buttons: `feedback.file` is
 // the file the answer is added to, and `feedback.line` the JSON object it is
-// added as, with `answer`, `note` and `ts` put in. The text is a model's,
+// added as, with `answer` and `ts` put in. The text is a model's,
 // written about records an attacker can write into: it is only ever shown,
 // as text.
 
+import AppKit
 import Foundation
 import UserNotifications
 
@@ -26,7 +27,7 @@ import UserNotifications
 /// that is not in one has none.
 func notifications() -> UNUserNotificationCenter {
     guard Bundle.main.bundleIdentifier != nil else {
-        fail("notifications come from an app, and this binary is not inside one: run TangentSensor.app/Contents/MacOS/tangent-sensor")
+        fail("notifications come from an app, and this binary is not inside one: run Tangent.app/Contents/MacOS/tangent-sensor")
     }
     return UNUserNotificationCenter.current()
 }
@@ -50,14 +51,13 @@ func registerAnswers(_ center: UNUserNotificationCenter) {
 }
 
 /// Adds the answer to the file its notification named, as the line it gave
-/// with `answer`, `note` and the time put in.
-func keep(_ answer: String, note: String, for info: [AnyHashable: Any]) {
+/// with `answer` and the time put in.
+func keep(_ answer: String, for info: [AnyHashable: Any]) {
     guard let file = info["file"] as? String, let given = info["line"] as? String,
         var line = (try? JSONSerialization.jsonObject(with: Data(given.utf8))) as? [String: Any]
     else { return }
     line["ts"] = ISO8601DateFormatter().string(from: Date())
     line["answer"] = answer
-    line["note"] = note
     guard var data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys, .withoutEscapingSlashes])
     else { return }
     data.append(0x0A)
@@ -75,8 +75,8 @@ func keep(_ answer: String, note: String, for info: [AnyHashable: Any]) {
 let asking = DispatchGroup()
 
 /// The report behind a notification, in a dialog of macOS's own: the whole
-/// finding, and when the notification asks, its three buttons and room for
-/// a note. It waits for the dialog to be closed.
+/// finding, and when the notification asks, its three buttons. It waits for
+/// the dialog to be closed.
 func report(_ content: UNNotificationContent) {
     let info = content.userInfo
     let detail = info["detail"] as? String ?? ""
@@ -93,7 +93,6 @@ func report(_ content: UNNotificationContent) {
         said[kCFUserNotificationDefaultButtonTitleKey] = answers[1].button
         said[kCFUserNotificationAlternateButtonTitleKey] = answers[2].button
         said[kCFUserNotificationOtherButtonTitleKey] = answers[0].button
-        said[kCFUserNotificationTextFieldTitlesKey] = "A note, if you like"
     }
     var error: Int32 = 0
     guard let dialog = CFUserNotificationCreate(nil, 0, kCFUserNotificationNoteAlertLevel, &error, said as CFDictionary)
@@ -107,8 +106,7 @@ func report(_ content: UNNotificationContent) {
     case UInt(kCFUserNotificationOtherResponse): pressed = answers[0].written
     default: return  // closed some other way: no answer
     }
-    let note = CFUserNotificationGetResponseValue(dialog, kCFUserNotificationTextFieldValuesKey, 0) as String? ?? ""
-    keep(pressed, note: note.trimmingCharacters(in: .whitespacesAndNewlines), for: info)
+    keep(pressed, for: info)
 }
 
 /// What a click on a notification does: one of its buttons keeps that
@@ -133,7 +131,7 @@ final class Clicks: NSObject, UNUserNotificationCenterDelegate {
             }
         } else {
             if answers.contains(where: { $0.written == action }) {
-                keep(action, note: "", for: content.userInfo)
+                keep(action, for: content.userInfo)
             }
             dealt()
         }
@@ -145,19 +143,60 @@ let clicks = Clicks()
 
 // MARK: notify
 
+/// Tangent's own page of System Settings, Notifications, where its switch is.
+func openSettings() {
+    guard let id = Bundle.main.bundleIdentifier else { return }
+    let open = Process()
+    open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    open.arguments = ["x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)"]
+    guard (try? open.run()) != nil else { return }
+    open.waitUntilExit()
+}
+
+/// Whether this Mac's owner allows Tangent's notifications: asked the first
+/// time, and read from macOS after that, since macOS asks an app only once.
+/// Calls `go` when they are allowed. When they are not it says why and
+/// ends, and an owner who said no before has System Settings opened at
+/// Tangent's switch: nothing else can ask them again.
+func allowed(_ center: UNUserNotificationCenter, then go: @escaping () -> Void) {
+    // on a queue of its own: `go` waits for each notification to be added,
+    // and macOS says so on the queue these answers come on, which waits
+    // behind whatever is still running there
+    let show = { DispatchQueue.global().async(execute: go) }
+    center.getNotificationSettings { settings in
+        switch settings.authorizationStatus {
+        case .authorized, .provisional:
+            show()
+        case .denied:
+            openSettings()
+            fail("this Mac does not allow Tangent's notifications: System Settings is open at them, where Allow notifications turns them on")
+        default:  // not asked yet
+            center.requestAuthorization(options: [.alert, .sound]) { yes, error in
+                // macOS refusing to ask is not the owner saying no: an app
+                // that is not signed, or not one bundle, is never asked about
+                if let error {
+                    fail("macOS would not ask whether Tangent may show notifications (\(error.localizedDescription)): the app has to be signed, as ./build.sh signs it")
+                }
+                guard yes else {
+                    fail("Tangent's notifications were not allowed: System Settings, Notifications, Tangent turns them on")
+                }
+                show()
+            }
+        }
+    }
+}
+
 /// `tangent-sensor notify`: asks, the first time, whether this Mac's owner
-/// allows the notifications, and shows one for each line of stdin, until
-/// stdin ends. macOS takes its question back when the process that asked
-/// ends, and counts that as a no, so this waits for the answer as long as it
-/// is let run. It stops at once, and says so, when the answer is no.
+/// allows the notifications ([`allowed`]), and shows one for each line of
+/// stdin, until stdin ends. macOS takes its question back when the process
+/// that asked ends, and counts that as a no, so this waits for the answer as
+/// long as it is let run. It stops at once, and says so, when the answer is
+/// no.
 func notify() -> Never {
     let center = notifications()
     center.delegate = clicks
     registerAnswers(center)
-    center.requestAuthorization(options: [.alert, .sound]) { allowed, _ in
-        guard allowed else {
-            fail("this Mac does not allow Tangent's notifications: System Settings, Notifications, Tangent turns them on")
-        }
+    allowed(center) {
         while let line = readLine() {
             guard let note = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else {
                 continue
@@ -208,12 +247,16 @@ func openedByMacOS() -> Bool {
 let clickWithin = 10.0
 let noClick = DispatchWorkItem { exit(0) }
 
-/// Started by macOS: a notification was clicked, and macOS says which.
+/// Started by macOS: a notification was clicked, and macOS says which. It
+/// says so once the app has finished launching, which is AppKit's to say:
+/// with only a dispatch loop the click never comes. `notify` needs none,
+/// since macOS tells a process that is running already.
 func opened() -> Never {
     clicks.dealt = { exit(0) }
     let center = notifications()
     center.delegate = clicks
     registerAnswers(center)
     DispatchQueue.main.asyncAfter(deadline: .now() + clickWithin, execute: noClick)
-    dispatchMain()
+    NSApplication.shared.run()
+    exit(0)
 }

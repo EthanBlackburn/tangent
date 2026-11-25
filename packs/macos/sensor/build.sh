@@ -3,11 +3,11 @@
 #
 #   ./build.sh /path/to/sensor.provisionprofile              # signed "Apple Development"
 #   ./build.sh /path/to/sensor.provisionprofile "Developer ID Application"
-#   ./build.sh                                               # unsigned: compiles, and says "not entitled" when run
+#   ./build.sh                                               # signed ad hoc: shows notifications, and says "not entitled" as the sensor
 #
 # Endpoint Security's entitlement is one Apple grants to a team, and a
 # provisioning profile is what says so to macOS. A profile has to sit in a
-# bundle, so the binary is built as build/TangentSensor.app/Contents/MacOS/tangent-sensor
+# bundle, so the binary is built as build/Tangent.app/Contents/MacOS/tangent-sensor
 # with the profile beside it, and signed with the entitlements the profile
 # itself lists: the bundle's identifier and the team are read from the
 # profile, and neither is written here. The bundle's version is tangent's,
@@ -17,7 +17,8 @@ cd "$(dirname "$0")"
 
 profile=${1:-}
 identity=${2:-Apple Development}
-app=build/TangentSensor.app
+# macOS names an app by its file, not its Info.plist: notifications say Tangent
+app=build/Tangent.app
 # a bundle's version is digits and dots: 0.2.0-rc.1 is written 0.2.0
 version=$(sed -n 's/^version = "\([0-9.]*\).*"$/\1/p' ../../../Cargo.toml | head -1)
 [ -n "$version" ] || { echo "no version in the workspace's Cargo.toml" >&2; exit 1; }
@@ -35,7 +36,11 @@ rm build/tangent-sensor.arm64 build/tangent-sensor.x86_64
 
 if [ -z "$profile" ]; then
   sed -e "s/BUNDLE_ID/dev.tangent.sensor/" -e "s/VERSION/$version/" Info.plist > "$app/Contents/Info.plist"
-  echo "built $app $version, unsigned: it cannot open an Endpoint Security client"
+  # signed ad hoc, so macOS takes the bundle for one app, by its Info.plist,
+  # and lets it ask to show notifications; the linker's signature is the
+  # binary's alone, under another identifier, and macOS never asks for that
+  codesign --force --sign - "$app"
+  echo "built $app $version, signed ad hoc: it shows notifications, and cannot open an Endpoint Security client"
   exit 0
 fi
 

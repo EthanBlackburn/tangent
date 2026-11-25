@@ -24,7 +24,7 @@ use anyhow::{bail, Context, Result};
 pub const ARCHIVE: &str = "tangent-sensor-macos.zip";
 
 /// The app inside the archive, and the sensor inside the app.
-const APP: &str = "TangentSensor.app";
+const APP: &str = "Tangent.app";
 const BINARY: &str = "Contents/MacOS/tangent-sensor";
 
 /// What the sensor is signed as: its bundle identifier, and the Apple
@@ -93,7 +93,7 @@ mod tests {
         );
         assert_eq!(
             binary(Path::new("/c/sensor")),
-            PathBuf::from("/c/sensor/TangentSensor.app/Contents/MacOS/tangent-sensor")
+            PathBuf::from("/c/sensor/Tangent.app/Contents/MacOS/tangent-sensor")
         );
         assert!(dir()
             .unwrap()
@@ -107,7 +107,7 @@ mod tests {
     fn an_app_that_is_not_the_sensor_fails_the_check() {
         let empty = tempfile::tempdir().unwrap();
         let e = check(empty.path()).unwrap_err().to_string();
-        assert!(e.contains("TangentSensor.app is not the sensor"), "{e}");
+        assert!(e.contains("Tangent.app is not the sensor"), "{e}");
 
         let other = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(
