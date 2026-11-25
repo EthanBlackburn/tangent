@@ -139,7 +139,7 @@ pub struct Prebuilt {
     /// and whose workflow must have built it.
     pub repo: String,
 
-    /// The release's tag. Unset, this tangent's own version (`v0.3.0`): the
+    /// The release's tag. Unset, this tangent's own version (`v0.3.1`): the
     /// packs in this repository are released with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<String>,
