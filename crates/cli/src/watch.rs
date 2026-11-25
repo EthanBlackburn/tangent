@@ -22,10 +22,12 @@ use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use fs2::FileExt as _;
 use tangent_runtime::RuntimeOptions;
+use tangent_shared::Config;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _};
@@ -262,8 +264,11 @@ async fn start(pipeline: Pipeline) -> Result<()> {
             log.display()
         );
     }
-    let app = notify::app(&config, pipeline.no_notify).await;
-    if app.is_some() {
+    let notifier = match notify::app(&config, pipeline.no_notify).await {
+        Some(app) => Notifier::start(app).await,
+        None => None,
+    };
+    if notifier.is_some() {
         println!(
             "A review that upholds an alert is a notification on this Mac too, once you allow Tangent's (--no-notify shows none)."
         );
@@ -273,7 +278,7 @@ async fn start(pipeline: Pipeline) -> Result<()> {
     }
     println!("Ctrl-C stops it.\n");
 
-    following(&dir, &config, RuntimeOptions::default(), app).await
+    following(&dir, &config, RuntimeOptions::default(), notifier).await
 }
 
 /// `tangent watch --config`: the owner's config, run where they are.
@@ -283,7 +288,10 @@ pub async fn config(config: PathBuf, once: bool, no_notify: bool) -> Result<()> 
     let dir = std::env::current_dir().context("reading the directory this runs in")?;
     let log = init_logging(&dir);
     fetch::missing(&config).await?;
-    let app = notify::app(&config, no_notify).await;
+    let notifier = match notify::app(&config, no_notify).await {
+        Some(app) => Notifier::start(app).await,
+        None => None,
+    };
     if !once {
         if let Some(log) = log {
             println!(
@@ -297,20 +305,33 @@ pub async fn config(config: PathBuf, once: bool, no_notify: bool) -> Result<()> 
         once,
         ..Default::default()
     };
-    following(&dir, &config, opts, app).await
+    following(&dir, &config, opts, notifier).await
+}
+
+/// How long the pipeline's review plugin holds an alert before starting the
+/// reviewer (`expire_after_ms` on `macos_review` or `review`), so `Follow`
+/// can tell the user when a queued review will begin.
+fn review_wait(config: &Path) -> Option<Duration> {
+    let cfg = Config::load(config).ok()?.config;
+    let plugin = cfg
+        .plugins
+        .get("macos_review")
+        .or_else(|| cfg.plugins.get("review"))?;
+    Some(Duration::from_millis(plugin.expire_after_ms))
 }
 
 /// Runs `config` until it ends or a signal, saying what it writes in
-/// `dir`, the directory it runs in, and showing through `app`, when there
-/// is one, the reviews that are notifications.
+/// `dir`, the directory it runs in, and showing through `notifier`, when
+/// there is one, the reviews that are notifications.
 async fn following(
     dir: &Path,
     config: &PathBuf,
     opts: RuntimeOptions,
-    app: Option<PathBuf>,
+    notifier: Option<Notifier>,
 ) -> Result<()> {
+    let wait = review_wait(config);
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let said = tokio::spawn(Follow::new(dir, app.map(Notifier::start)).run(stopped));
+    let said = tokio::spawn(Follow::new(dir, notifier, wait).run(stopped));
     tokio::spawn(async {
         if signalled().await {
             println!(

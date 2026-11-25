@@ -103,7 +103,7 @@ On a Mac, a review that upholds its alert is a notification too: `malicious` wit
 #1  MALICIOUS  ana@acme.example (3 alerts)
     ...
     check: ...
-checked 41 · 1 flagged
+checked 41 activities · 1 flagged
 ```
 
 It starts only with what it needs. A variable from the table above that is not set stops it, with the list, where `tangent watch --config` would leave the source idle. With `--local` it downloads the model first, after asking. One `watch cloud` runs at a time.

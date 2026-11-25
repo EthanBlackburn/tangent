@@ -24,12 +24,42 @@ use crate::notify::{Note, Notifier};
 
 /// How often the files are read for what is new.
 const EVERY: Duration = Duration::from_secs(1);
-/// The least time between two lines that say how many records were checked.
+/// The least time between two lines that say how many activities were checked.
 const TALLY_EVERY: Duration = Duration::from_secs(60);
+/// While reviews are pending, how often to print a progress update.
+const PROGRESS_EVERY: Duration = Duration::from_secs(15);
 /// The most of a model's text a settled review shows.
 const SHOWN: usize = 600;
 /// The most of the judge's text an unconfirmed Tier 1 line shows.
 const BRIEF: usize = 100;
+
+/// A human duration: `42s`, `5m 10s`, `1h 05m`.
+fn span(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        let m = secs / 60;
+        let s = secs % 60;
+        if s == 0 {
+            format!("{m}m")
+        } else {
+            format!("{m}m {s:02}s")
+        }
+    } else {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        format!("{h}h {m:02}m")
+    }
+}
+
+fn activities(count: u64) -> String {
+    if count == 1 {
+        "1 activity".to_string()
+    } else {
+        format!("{count} activities")
+    }
+}
 
 /// Terminal styling: ANSI escapes only on a TTY when `NO_COLOR` is unset, and
 /// only around tangent's own labels, never around model or log text.
@@ -401,10 +431,12 @@ pub struct Follow {
     checked: u64,
     marked: u64,
     /// Sequential alert number (`#1`, `#2`, ...) and alerts still awaiting a
-    /// settled review.
+    /// settled review, with when each was raised.
     next_id: u64,
-    pending: Vec<(ReviewKey, u64)>,
-    /// When the last heartbeat line was said.
+    pending: Vec<(ReviewKey, u64, Instant)>,
+    /// How long the pipeline holds an alert before the reviewer starts it.
+    review_wait: Option<Duration>,
+    /// When the last heartbeat / progress line was said.
     told: Instant,
     /// Terminal styling (plain in tests and when stdout is not a TTY).
     style: Style,
@@ -415,11 +447,16 @@ pub struct Follow {
 }
 
 impl Follow {
-    pub fn new(dir: &Path, notifier: Option<Notifier>) -> Self {
-        Self::with_style(dir, notifier, Style::detect())
+    pub fn new(dir: &Path, notifier: Option<Notifier>, review_wait: Option<Duration>) -> Self {
+        Self::with_style(dir, notifier, review_wait, Style::detect())
     }
 
-    fn with_style(dir: &Path, notifier: Option<Notifier>, style: Style) -> Self {
+    fn with_style(
+        dir: &Path,
+        notifier: Option<Notifier>,
+        review_wait: Option<Duration>,
+        style: Style,
+    ) -> Self {
         Self {
             dir: dir.to_path_buf(),
             alerts: Tail::from_end(dir.join("alerts.ndjson")),
@@ -431,6 +468,7 @@ impl Follow {
             marked: 0,
             next_id: 0,
             pending: Vec::new(),
+            review_wait,
             told: Instant::now(),
             style,
             notes: Vec::new(),
@@ -446,12 +484,12 @@ impl Follow {
             ReviewKey::Mac { id, window, entry } => {
                 let exact = !id.is_empty() && !window.is_empty();
                 let mut rest = Vec::with_capacity(self.pending.len());
-                for (k, alert_id) in self.pending.drain(..) {
+                for (k, alert_id, since) in self.pending.drain(..) {
                     let hit = match &k {
                         ReviewKey::Mac {
                             id: pid,
                             window: pw,
-                            entry: pe,
+                            ..
                         } if exact => pid == &id && pw == &window,
                         ReviewKey::Mac {
                             id: pid, entry: pe, ..
@@ -462,7 +500,7 @@ impl Follow {
                     if hit {
                         matched.push(alert_id);
                     } else {
-                        rest.push((k, alert_id));
+                        rest.push((k, alert_id, since));
                     }
                 }
                 self.pending = rest;
@@ -473,7 +511,7 @@ impl Follow {
                     .and_then(Value::as_u64)
                     .map(|n| n as usize);
                 let mut rest = Vec::with_capacity(self.pending.len());
-                for (k, alert_id) in self.pending.drain(..) {
+                for (k, alert_id, since) in self.pending.drain(..) {
                     let under = limit.is_none_or(|max| matched.len() < max);
                     let hit = under
                         && matches!(
@@ -486,7 +524,7 @@ impl Follow {
                     if hit {
                         matched.push(alert_id);
                     } else {
-                        rest.push((k, alert_id));
+                        rest.push((k, alert_id, since));
                     }
                 }
                 self.pending = rest;
@@ -495,25 +533,60 @@ impl Follow {
         matched
     }
 
-    /// The heartbeat line for what was judged since the last one, and how many
-    /// alerts are still waiting for review.
-    fn tally(&mut self) -> String {
+    /// Per-alert progress for pending reviews: countdown while held, elapsed
+    /// investigation time once past the hold.
+    fn progress(&self, now: Instant) -> String {
+        let items: Vec<String> = self
+            .pending
+            .iter()
+            .map(|(_, id, since)| {
+                let elapsed = now.saturating_duration_since(*since);
+                match self.review_wait {
+                    Some(wait) if elapsed < wait => {
+                        let left = wait.saturating_sub(elapsed);
+                        if left.as_secs() >= 5 {
+                            format!("#{id} (starts in ~{})", span(left))
+                        } else {
+                            format!("#{id} (starting)")
+                        }
+                    }
+                    Some(wait) => {
+                        let active = elapsed.saturating_sub(wait);
+                        format!("#{id} (investigating {})", span(active))
+                    }
+                    None => format!("#{id} (reviewing {})", span(elapsed)),
+                }
+            })
+            .collect();
+        format!("reviewing {}", items.join(", "))
+    }
+
+    /// The heartbeat line for what was judged since the last one, and live
+    /// progress on any alerts still awaiting review.
+    fn tally(&mut self, at: Instant) -> String {
         let count = std::mem::take(&mut self.checked);
-        let flagged = match std::mem::take(&mut self.marked) {
-            0 => "all clear".to_string(),
-            n => format!("{n} flagged"),
+        let flagged = std::mem::take(&mut self.marked);
+        self.told = at;
+        let line = if count > 0 {
+            let mark = match flagged {
+                0 => "all clear".to_string(),
+                n => format!("{n} flagged"),
+            };
+            let mut s = format!("checked {} · {mark}", activities(count));
+            if !self.pending.is_empty() {
+                s.push_str(&format!(" · {}", self.progress(at)));
+            }
+            s
+        } else {
+            self.progress(at)
         };
-        let mut line = format!("checked {count} · {flagged}");
-        if !self.pending.is_empty() {
-            line.push_str(&format!(" · {} in review", self.pending.len()));
-        }
-        self.told = Instant::now();
         self.style.dim(&line)
     }
 
     /// The lines for what was written since the last call. `now` asks for
     /// what was checked to be said however lately it was.
     fn said(&mut self, now: bool) -> Vec<String> {
+        let at = Instant::now();
         let mut lines = Vec::new();
         let parsed = |line: String| serde_json::from_str::<Value>(&line).ok();
         for _ in self.verdicts.lines().into_iter().filter_map(parsed) {
@@ -526,7 +599,7 @@ impl Follow {
         for record in &alerts {
             self.next_id += 1;
             let id = self.next_id;
-            self.pending.push((review_key(record), id));
+            self.pending.push((review_key(record), id, at));
             lines.extend(alert(record, id, self.style));
         }
         for record in self.reviews.lines().into_iter().filter_map(parsed) {
@@ -537,8 +610,14 @@ impl Follow {
             lines.extend(review(&record, &ids, self.style));
             self.notes.extend(note(&record, &self.dir));
         }
-        if self.checked > 0 && (now || self.told.elapsed() >= TALLY_EVERY) {
-            lines.push(self.tally());
+        let elapsed = at.saturating_duration_since(self.told);
+        let due = if self.pending.is_empty() {
+            self.checked > 0 && (now || elapsed >= TALLY_EVERY)
+        } else {
+            (self.checked > 0 && now) || elapsed >= PROGRESS_EVERY
+        };
+        if due {
+            lines.push(self.tally(at));
         }
         lines
     }
@@ -712,7 +791,7 @@ mod tests {
     #[test]
     fn a_macs_alert_and_review_correlate_with_short_names() {
         let dir = tempfile::tempdir().unwrap();
-        let mut follow = Follow::with_style(dir.path(), None, Style::plain());
+        let mut follow = Follow::with_style(dir.path(), None, None, Style::plain());
         let look = json!({
             "ts": "2026-11-24T03:09:43Z", "source": "macos_session",
             "_norm": {"actor": "/opt/homebrew/Cellar/python@3.15/Python#501"},
@@ -727,8 +806,8 @@ mod tests {
         );
         assert_eq!(
             follow.said(true),
-            ["checked 1 · 1 flagged · 1 in review"],
-            "heartbeat shows pending review count"
+            ["checked 1 activity · 1 flagged · reviewing #1 (reviewing 0s)"],
+            "heartbeat shows activities and pending review progress"
         );
 
         let reviewed = json!({
@@ -824,7 +903,7 @@ mod tests {
     #[test]
     fn a_pipelines_notifications_are_handed_on() {
         let dir = tempfile::tempdir().unwrap();
-        let mut follow = Follow::with_style(dir.path(), None, Style::plain());
+        let mut follow = Follow::with_style(dir.path(), None, None, Style::plain());
         let review = |verdict: &str| {
             json!({"source": "macos_review", "session": {"entry": "~/bin/agent"},
                 "review": {"verdict": verdict, "finding": "It ran."}})
@@ -853,7 +932,7 @@ mod tests {
     fn what_the_pipeline_writes_is_said() {
         let dir = tempfile::tempdir().unwrap();
         append(&dir.path().join("verdicts.ndjson"), "{}\n");
-        let mut follow = Follow::with_style(dir.path(), None, Style::plain());
+        let mut follow = Follow::with_style(dir.path(), None, None, Style::plain());
         assert!(follow.said(true).is_empty(), "nothing new, nothing said");
 
         let session = |entry: &str| json!({"session": {"entry": entry}}).to_string();
@@ -867,7 +946,7 @@ mod tests {
             ),
         );
         assert!(follow.said(false).is_empty(), "the count waits its turn");
-        assert_eq!(follow.said(true), ["checked 3 · all clear"]);
+        assert_eq!(follow.said(true), ["checked 3 activities · all clear"]);
         assert!(
             follow.said(true).is_empty(),
             "what was checked is said once"
@@ -885,7 +964,31 @@ mod tests {
             ["#1  03:09Z  flagged  okta  ana  odd  (reviewing)"],
             "an alert prints immediately without dumping a noisy checked line"
         );
-        assert_eq!(follow.said(true), ["checked 1 · 1 flagged · 1 in review"]);
+        assert_eq!(
+            follow.said(true),
+            ["checked 1 activity · 1 flagged · reviewing #1 (reviewing 0s)"]
+        );
+    }
+
+    #[test]
+    fn review_progress_shows_hold_countdown_then_investigating_elapsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let wait = Duration::from_secs(60);
+        let mut follow = Follow::with_style(dir.path(), None, Some(wait), Style::plain());
+        let now = Instant::now();
+        let key = ReviewKey::Mac {
+            id: "1".into(),
+            window: "w".into(),
+            entry: "tmux".into(),
+        };
+        follow
+            .pending
+            .push((key.clone(), 1, now - Duration::from_secs(75)));
+        follow.pending.push((key, 2, now - Duration::from_secs(20)));
+        assert_eq!(
+            follow.progress(now),
+            "reviewing #1 (investigating 15s), #2 (starts in ~40s)"
+        );
     }
 
     #[test]
@@ -903,7 +1006,7 @@ mod tests {
     #[test]
     fn cloud_reviews_correlate_multiple_alerts_for_same_actor() {
         let dir = tempfile::tempdir().unwrap();
-        let mut follow = Follow::with_style(dir.path(), None, Style::plain());
+        let mut follow = Follow::with_style(dir.path(), None, None, Style::plain());
         let mk = |why: &str| {
             json!({
                 "ts": "2026-11-24T03:09:43Z", "source": "okta",

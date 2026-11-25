@@ -76,7 +76,7 @@ While `tangent watch` runs, alerts, settled reviews, and a quiet heartbeat strea
 #1  MALICIOUS  ana@acme.example (3 alerts)
     ...
     check: ...
-checked 41 · 1 flagged
+checked 41 activities · 1 flagged
 ```
 
 Want to edit the prompts, route alerts to Slack, or customize the pipeline? Run `tangent init mac` or `tangent init cloud` with the same flags to write a standalone `tangent.yaml` and prompt files in your current directory. See [docs/try-it.md](/docs/try-it.md) for full details and required credentials.
