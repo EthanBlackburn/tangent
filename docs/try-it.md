@@ -149,7 +149,9 @@ It runs an attack for real, of the kind a poisoned package carries, and lists ea
 - **`credentials`** asks the Mac who it is, finds a project's `.env` files, archives and encrypts them, uploads them and removes its traces.
 - **`agent`** takes over a project's AI coding agent: it gives it a hook that sends every tool call to its server, lets it run curl unasked, points its traffic at that server, adds an MCP server of its own, and writes an instruction to fetch and run a script into the project's `CLAUDE.md`.
 
-It is safe to run on the Mac you work on. The project is a directory made for the run, its `.env` files hold made-up keys and its agent files are its own, and the server it downloads from and reports to is the command itself, on 127.0.0.1, which keeps nothing: no file of yours is opened or changed, nothing leaves the Mac, and nothing is left behind.
+It is safe to run on the Mac you work on. The project is a directory made for the run, its `.env` files hold made-up keys and its agent files are its own, and the server it downloads from and reports to is the command itself, which keeps nothing: no file of yours is opened or changed, nothing leaves the Mac, and nothing is left behind.
+
+That server listens on your Mac's own address on its network and not on 127.0.0.1, since an upload to 127.0.0.1 is one that went nowhere. What is sent still goes from your Mac to your Mac, but for the few seconds the attack takes another device on that network could reach the server, to fetch the script or to send it something it throws away. So the command says so and asks before it runs, and runs only from a terminal.
 
 `tangent watch mac` then says what it makes of it, in its own terminal: the session is flagged a minute or two later (up to five in a busy terminal) and reviewed in the minute or so after that. With the hosted pair the judge flagged both and the reviewer then called them benign, rightly: it worked out from the records that the files were made by the command that took or changed them and went no further than this Mac. That is the two passes doing their work, and the alert is the thing to look for.
 
