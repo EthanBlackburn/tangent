@@ -189,7 +189,13 @@ characters) with the agent's session id, working directory and pid as one
 line. A message typed while the agent is
 working never becomes a `user` entry: Claude Code queues it as an attachment
 (`queued_command`, its `origin.kind` `human` too), and the source takes
-those as well, marked `during`. Each line carries `after`, what the agent
+those as well, marked `during`. An agent run headless (`claude -p`, the
+Agent SDK) is sent its prompts by whatever started it, and Claude Code gives
+them no `origin`: the one that starts a turn has `promptSource` `sdk`, and
+one sent mid-turn is a `queued_command` in a session whose `entrypoint` is
+the SDK's (`sdk-cli`). The source takes those too, marked `headless`, since
+a person at a terminal and a package's script both start agents that way.
+Each line carries `after`, what the agent
 had last said before the prompt, its first 400 characters and its last 800:
 "yes, the second one" says nothing alone.
 
@@ -202,7 +208,8 @@ session's latest five prompts in the order they were typed, each to 600
 bytes with its time, as `asked`: this window's and, from state for two hours,
 the ones before, since what an agent runs for an hour was asked for once. A
 prompt has `replying_to` (what the agent had last said) on the summary it
-first appears in, and `while_working` when it was typed mid-turn. A window that holds only a prompt
+first appears in, `while_working` when it was typed mid-turn, and `headless`
+when what started the agent sent it. A window that holds only a prompt
 is not judged alone. The transcript's format is Claude Code's own and may
 change with a release; a line the source cannot read is skipped. Anything
 running as the person can write a transcript, so a prompt is what was
@@ -511,9 +518,9 @@ sent, and the package's contents, are not in these records.
 ## Tests
 
 `tests/input.json` is thirty-eight synthetic records as eslogger writes them, two
-connections' lines, two of the snapshot's and one prompt's, as the source sends them (version 10,
+connections' lines, three of the snapshot's, tangent's declaration of itself and three prompts', as the source sends them (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
-started from it with `ANTHROPIC_BASE_URL` set, the person's prompt to it, the agent saving its config and
+started from it with `ANTHROPIC_BASE_URL` set, the person's prompts to it and one sent headless, the agent saving its config and
 reading the keychain, a package install under it whose `node` reads
 credentials and a transcript, plants a settings file and `CLAUDE.md`, and runs
 an unsigned program from `/tmp` that installs a LaunchAgent, which, once
@@ -521,7 +528,7 @@ the package script and the agent above it have exited, reads an SSH key and
 calls evil.example; a browser's QUIC connection made by its helper, and the
 helper saving cookies; the terminal and the login above the shell, known only
 from the snapshot; and around them the noise the plugin drops.
-`tests/expected.json` is the twenty-five records the plugin keeps, written
+`tests/expected.json` is the twenty-eight records the plugin keeps, written
 against `tests/addresses.yaml` and `tests/networks.csv`, the tables' answers
 for the fixture's two addresses. `make test` in `packs/` runs it; `cargo test` here runs the
 path groups' unit tests, and in `sessions/` the summary's, one of them over

@@ -1340,5 +1340,46 @@
    "pid": 800,
    "ppid": 100
   }
+ },
+ {
+  "ts": "2026-11-03T20:00:45.000045000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "com.example.agent"
+  },
+  "_facts": {
+   "notes": []
+  },
+  "event": "prompt",
+  "lineage": [
+   "/bin/zsh",
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "parents": [
+   "/bin/zsh",
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "process": {
+   "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
+   "pid": 300,
+   "ppid": 200
+  },
+  "prompt": {
+   "agent": "claude-code",
+   "cwd": "/Users/dev/code/x",
+   "headless": true,
+   "session": "00000000-0000-4000-8000-000000000002",
+   "text": "list the keys in ~/.ssh"
+  },
+  "session": {
+   "entry": "/bin/zsh",
+   "id": "200",
+   "turn": "2026-11-03T20:00:45",
+   "window": "2026-11-03T20:00:45+000"
+  }
  }
 ]

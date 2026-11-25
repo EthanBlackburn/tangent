@@ -17,7 +17,8 @@
 //!   still read.
 //! - **What the person asked.** The sensor shows what an agent ran, never
 //!   why. Tangent follows Claude Code's transcripts under `~/.claude`, as
-//!   you, and makes a line of each prompt as it is typed
+//!   you, and makes a line of each prompt as it is typed or, to an agent
+//!   run headless (`claude -p`), sent
 //!   ([`transcripts`]).
 //!
 //! The sensor and tcpdump need root and tangent does not, so they are
@@ -258,8 +259,8 @@ async fn allow_root(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// What the person asks Claude Code, until `stop`: each prompt as it is
-/// typed, read from the transcripts under `~/.claude` as you. An error here
+/// What Claude Code is asked, until `stop`: each prompt as it is typed or
+/// sent, read from the transcripts under `~/.claude` as you. An error here
 /// is logged and ends the prompts only.
 async fn prompts(name: Arc<str>, router: Arc<Router>, stop: CancellationToken) {
     let Some(home) = std::env::var_os("HOME") else {
