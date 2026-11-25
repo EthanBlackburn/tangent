@@ -357,11 +357,11 @@ finding says what is missing); and `check`, what to look at or undo first.
 The alert goes on with its review, with the SQL it ran, the files it read and the
 tokens it took; examples/macos writes them to `reviews.ndjson`.
 
-An alert's own records are in the lake once the sink seals their file, five
-minutes after opening it and up to a quarter more. So the plugin is grouped
-by an alert's session and window with `expire_after_ms: 400000`: each alert
-waits that long before its review, and the table ends that long after the
-alert's last event, so a replay's review sees what a live one would. A
+An alert's own records are the table's once the sink has written them,
+before it seals their file. The plugin is grouped by an alert's session and
+window with `expire_after_ms: 10000`: each alert waits ten seconds before
+its review, and the table ends that long after the alert's last event, so a
+replay's review sees what a live one would. A
 grouped plugin has workers of its own, so a review that takes a minute
 holds up neither the capture nor the judge; reviews themselves go one at a
 time (`concurrency: 1`), a turn given two minutes and three tries before

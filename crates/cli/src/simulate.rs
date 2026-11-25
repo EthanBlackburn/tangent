@@ -156,7 +156,7 @@ pub fn run() -> Result<()> {
     println!(
         "\nAll five steps ran, and the project is removed.\n\
          `tangent watch mac` says what it makes of it in its own terminal: flagged within a minute\n\
-         or two, and reviewed about seven minutes after that."
+         or two, and reviewed as soon as it is flagged."
     );
     Ok(())
 }

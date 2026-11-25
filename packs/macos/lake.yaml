@@ -12,8 +12,9 @@ sinks:
     type: rolling_file
     path: lake/logs/%Y/%m/%d/%H
     wal_path: lake/wal
-    # A record is in a file a query can read within about six minutes, for
-    # an alert's review: twelve files an hour. A query opens every file the
+    # A record is in a file `tangent query` can read within about six
+    # minutes: twelve files an hour. (An alert's review reads it before
+    # that, from the sink.) A query opens every file the
     # lake holds, whatever days it asks for, so trim old hours.
     max_file_age_seconds: 300
     compression: { type: zstd, level: 3 }

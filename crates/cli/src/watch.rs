@@ -179,7 +179,7 @@ pub async fn mac(hosted: bool, no_notify: bool) -> Result<()> {
         ],
         pace: "a session\n\
                is judged five minutes at a time, or an agent's turn at its end, and an alert is\n\
-               reviewed about seven minutes after it.",
+               reviewed as soon as it is raised.",
         shown: Some("To see it catch an attack, run `tangent simulate` in another terminal."),
         no_notify,
     })
