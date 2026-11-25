@@ -21,12 +21,14 @@
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use fs2::FileExt as _;
 use tangent_runtime::RuntimeOptions;
+use tangent_shared::sources::common::SourceConfig;
 use tangent_shared::Config;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
@@ -195,10 +197,82 @@ pub async fn mac(hosted: bool, no_notify: bool) -> Result<()> {
     .await
 }
 
+/// Prints one confirmation line once the pipeline (or Mac sensor, after
+/// `sudo`) is live, so the terminal is not left blank after startup.
+struct Ready {
+    target: &'static str,
+    message: &'static str,
+    printed: AtomicBool,
+}
+
+impl Ready {
+    fn for_config(config: &Path) -> Self {
+        let has_mac = Config::load(config).is_ok_and(|loaded| {
+            loaded
+                .config
+                .sources
+                .values()
+                .any(|s| matches!(s, SourceConfig::Macos(_)))
+        });
+        if has_mac {
+            Self {
+                target: "tangent_runtime::sources::macos",
+                message: "the sensor is started",
+                printed: AtomicBool::new(false),
+            }
+        } else {
+            Self {
+                target: "tangent_runtime",
+                message: "pipeline started",
+                printed: AtomicBool::new(false),
+            }
+        }
+    }
+}
+
+struct MessageMatches {
+    want: &'static str,
+    matched: bool,
+}
+
+impl tracing::field::Visit for MessageMatches {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" && value == self.want {
+            self.matched = true;
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" && format!("{value:?}") == self.want {
+            self.matched = true;
+        }
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Ready {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if self.printed.load(Ordering::Relaxed) || event.metadata().target() != self.target {
+            return;
+        }
+        let mut check = MessageMatches {
+            want: self.message,
+            matched: false,
+        };
+        event.record(&mut check);
+        if check.matched && !self.printed.swap(true, Ordering::SeqCst) {
+            println!("Started. Activity will show up here.");
+        }
+    }
+}
+
 /// Routes runtime logs to `watch.log` in `dir` (info+) and only errors to
 /// stderr, when `RUST_LOG` was not set (otherwise `main` already initialized
 /// stderr tracing and `try_init` is a no-op).
-fn init_logging(dir: &Path) -> Option<PathBuf> {
+fn init_logging(dir: &Path, ready: Option<Ready>) -> Option<PathBuf> {
     if std::env::var_os("RUST_LOG").is_some() {
         return None;
     }
@@ -221,6 +295,7 @@ fn init_logging(dir: &Path) -> Option<PathBuf> {
     let _ = tracing_subscriber::registry()
         .with(stderr)
         .with(file_layer)
+        .with(ready)
         .try_init();
     logged.then_some(path)
 }
@@ -230,13 +305,13 @@ fn init_logging(dir: &Path) -> Option<PathBuf> {
 async fn start(pipeline: Pipeline) -> Result<()> {
     let dir = home(pipeline.what, |name| std::env::var_os(name))?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let log = init_logging(&dir);
     let _held = hold(&dir)?;
     init::place(&dir, &pipeline.files)?;
     // A sink's path is read against the directory tangent runs in, and the
     // file's are its own: the lake, the alerts and their reviews.
     std::env::set_current_dir(&dir).with_context(|| format!("entering {}", dir.display()))?;
     let config = dir.join("tangent.yaml");
+    let log = init_logging(&dir, Some(Ready::for_config(&config)));
     fetch::missing(&config).await?;
     if pipeline.server == Server::Ollama {
         let root = local::root()?;
@@ -286,7 +361,8 @@ pub async fn config(config: PathBuf, once: bool, no_notify: bool) -> Result<()> 
     let config = config.canonicalize().unwrap_or(config);
     // A sink's path is read against the directory tangent runs in.
     let dir = std::env::current_dir().context("reading the directory this runs in")?;
-    let log = init_logging(&dir);
+    let ready = (!once).then(|| Ready::for_config(&config));
+    let log = init_logging(&dir, ready);
     fetch::missing(&config).await?;
     let notifier = match notify::app(&config, no_notify).await {
         Some(app) => Notifier::start(app).await,

@@ -169,6 +169,7 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
 
     let dag_runtime =
         DagRuntime::build(cfg, &config_path, ingest_shutdown.clone(), stop.clone()).await?;
+    info!("pipeline started");
 
     #[cfg(feature = "alloc-prof")]
     jemalloc_dump("warm");
