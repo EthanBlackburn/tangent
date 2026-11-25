@@ -144,7 +144,12 @@ async fn run(app: PathBuf, mut notes: mpsc::UnboundedReceiver<Note>) {
     // someone opened, is still up, which the app goes on waiting with, for
     // the answer to be kept.
     drop(to);
-    let _ = tokio::time::timeout(LAST, child.wait()).await;
+    // A watch that ends at once still says why nothing was shown.
+    if let Ok(Ok(status)) = tokio::time::timeout(LAST, child.wait()).await {
+        if !status.success() {
+            off(child).await;
+        }
+    }
 }
 
 /// A note as the line the app reads. A write that fails is the app gone,
