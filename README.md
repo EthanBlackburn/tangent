@@ -23,6 +23,12 @@
   <a href="https://github.com/EthanBlackburn/tangent/issues/new">Issues</a>
 </p>
 
+<p align="center">
+  <img src="docs/img/demo.gif" alt="Two runs of tangent watch mac. In the first, a developer adds their own SSH key, installs redis and an editor extension; Tangent's judge marks the session and its reviewer clears it as benign, with no notification. In the second, an editor extension update hides a backdoor; the judge flags the editor, the terminal and the login item the backdoor adds, all three are reviewed malicious, and each becomes a macOS notification.">
+  <br>
+  <sub>What <code>tangent watch mac</code> shows for <a href="https://github.com/EthanBlackburn/tangent-eval/tree/main/macos/cases/cursor-extension">two recorded runs</a>, re-created from their records and sped up: a review comes about seven minutes after its alert.</sub>
+</p>
+
 ---
 
 Modern compromises start on a developer's laptop — a poisoned npm or PyPI package, a trojanised editor extension, a fake take-home repo, or a prompt-injected coding agent grabbing `~/.aws`, `~/.ssh`, Keychain, or browser tokens — and finish in your cloud accounts. At most startups, nothing watches either side.

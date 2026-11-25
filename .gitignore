@@ -13,3 +13,6 @@ crates/compact/fuzz/target
 crates/compact/fuzz/corpus
 crates/compact/fuzz/artifacts
 crates/compact/fuzz/coverage
+
+# The demo video render.mjs writes, for posting; the README uses docs/img/demo.gif
+docs/demo/demo.mp4
