@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use rig_core::completion::request::CompletionRequest;
-use rig_core::completion::CompletionResponse;
+use rig_core::completion::{CompletionResponse, FinishReason};
 use rig_core::operation::Completion;
 use rig_core::providers::anthropic::AnthropicConfig;
 use rig_core::providers::openai::{OpenAIConfig, Route};
@@ -21,6 +21,8 @@ pub struct Model {
     pub name: Arc<str>,
     pub cfg: ModelConfig,
     client: DynModel<Completion>,
+    /// `fallback`, reached as this model is: who is asked what it declines.
+    fallback: Option<(Arc<str>, DynModel<Completion>)>,
     /// `concurrency` permits: requests in flight to this model, from every
     /// node that names it.
     sem: Semaphore,
@@ -41,8 +43,8 @@ fn key<'a>(cfg: &'a ModelConfig, kind: &str, var: &str) -> Result<&'a str> {
         })
 }
 
-/// The model `cfg` points at, behind rig's erased handle.
-fn client(cfg: &ModelConfig) -> Result<DynModel<Completion>> {
+/// Model `model` where `cfg` points, behind rig's erased handle.
+fn client(cfg: &ModelConfig, model: &str) -> Result<DynModel<Completion>> {
     Ok(match cfg.kind {
         ModelKind::Openai => {
             // Local servers accept any key, so none is "none". One that is
@@ -65,7 +67,7 @@ fn client(cfg: &ModelConfig) -> Result<DynModel<Completion>> {
                 )
                 .with_route(Route::Chat)
                 .client()
-                .chat(&cfg.model)
+                .chat(model)
                 .erase()
         }
         ModelKind::Responses => {
@@ -73,14 +75,14 @@ fn client(cfg: &ModelConfig) -> Result<DynModel<Completion>> {
             if let Some(url) = &cfg.url {
                 provider = provider.with_base_url(url.trim_end_matches('/'));
             }
-            provider.client().responses(&cfg.model).erase()
+            provider.client().responses(model).erase()
         }
         ModelKind::Anthropic => {
             let mut provider = AnthropicConfig::new(key(cfg, "anthropic", "ANTHROPIC_API_KEY")?);
             if let Some(url) = &cfg.url {
                 provider = provider.with_base_url(url);
             }
-            provider.client().completion(&cfg.model).erase()
+            provider.client().completion(model).erase()
         }
         ModelKind::Bedrock => {
             let mut runtime = rig_bedrock::client::BedrockRuntime::builder();
@@ -90,20 +92,28 @@ fn client(cfg: &ModelConfig) -> Result<DynModel<Completion>> {
             if let Some(profile) = &cfg.aws.profile {
                 runtime = runtime.profile_name(profile);
             }
-            runtime.build().completion(&cfg.model).erase()
+            runtime.build().completion(model).erase()
         }
     })
 }
 
 impl Model {
     pub fn new(name: &Arc<str>, cfg: ModelConfig, stop: Stop) -> Result<Self> {
-        let client = client(&cfg)?;
+        let client = client(&cfg, &cfg.model)?;
+        let fallback = match cfg.fallback.as_deref().map(str::trim) {
+            Some("") => {
+                bail!("`fallback` is empty: it names the model asked what this one declines")
+            }
+            Some(id) => Some((Arc::from(id), self::client(&cfg, id)?)),
+            None => None,
+        };
         let sem = Semaphore::new(cfg.concurrency.max(1));
         tracing::info!(model = %name, kind = ?cfg.kind, id = %cfg.model, "model ready");
         Ok(Self {
             name: Arc::clone(name),
             cfg,
             client,
+            fallback,
             sem,
             stop,
         })
@@ -118,22 +128,47 @@ impl Model {
         self.sem.acquire().await.expect("semaphore is never closed")
     }
 
-    /// One request's reply. A request that got none (nothing within
-    /// `timeout_ms`, a dropped connection, a 429, a 5xx) is sent again,
-    /// `retries` times, a longer wait before each. One the provider would
-    /// refuse the same way again (a key it rejects, a request it cannot
-    /// read) is the error at once.
+    /// One request's reply: the model's, or its `fallback`'s to a request
+    /// the model declined (the reply says it was refused or filtered). The
+    /// fallback is asked once, the same request with the same tries, and
+    /// what it replies is the reply, a decline of its own included. A run
+    /// that is stopping asks no one else.
     pub async fn send(&self, node: &str, request: CompletionRequest) -> Result<CompletionResponse> {
+        let reply = self.ask(&self.client, node, &request).await?;
+        let declined = reply.finish_reason() == Some(FinishReason::ContentFilter);
+        match &self.fallback {
+            Some((id, second)) if declined && !self.stop.finishing() => {
+                tracing::info!(
+                    node, model = %self.name,
+                    "{} declined the request, asking {id}", self.cfg.model
+                );
+                self.ask(second, node, &request).await
+            }
+            _ => Ok(reply),
+        }
+    }
+
+    /// `request`'s reply from `client`. A request that got none (nothing
+    /// within `timeout_ms`, a dropped connection, a 429, a 5xx) is sent
+    /// again, `retries` times, a longer wait before each. One the provider
+    /// would refuse the same way again (a key it rejects, a request it
+    /// cannot read) is the error at once.
+    async fn ask(
+        &self,
+        client: &DynModel<Completion>,
+        node: &str,
+        request: &CompletionRequest,
+    ) -> Result<CompletionResponse> {
         let mut attempt = 0;
         loop {
             attempt += 1;
             let timeout = Duration::from_millis(self.cfg.timeout_ms);
-            let (e, again) =
-                match tokio::time::timeout(timeout, self.client.call(request.clone())).await {
-                    Ok(Ok(reply)) => return Ok(reply),
-                    Ok(Err(e)) => (anyhow!("{e}"), e.is_retryable()),
-                    Err(_) => (anyhow!("no reply within {} ms", self.cfg.timeout_ms), true),
-                };
+            let (e, again) = match tokio::time::timeout(timeout, client.call(request.clone())).await
+            {
+                Ok(Ok(reply)) => return Ok(reply),
+                Ok(Err(e)) => (anyhow!("{e}"), e.is_retryable()),
+                Err(_) => (anyhow!("no reply within {} ms", self.cfg.timeout_ms), true),
+            };
             // A run that is stopping waits for the requests it sent, and
             // sends none again.
             if !again || attempt > self.cfg.retries || self.stop.finishing() {

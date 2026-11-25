@@ -844,7 +844,7 @@ pub(crate) mod stub {
                         let silence = json!({"role": "assistant", "content": ""});
                         let (message, finish) = if body.contains("cut short") {
                             (call, "length")
-                        } else if body.contains("filtered") {
+                        } else if body.contains("filtered") && req["model"] != "second" {
                             (silence, "content_filter")
                         } else if body.contains("say nothing") {
                             (silence, "stop")
@@ -1018,6 +1018,7 @@ pub(crate) mod stub {
                 concurrency: 2,
                 timeout_ms: 5_000,
                 retries: 0,
+                fallback: None,
                 serve: None,
             },
             node: tangent_shared::inference::InferenceConfig {
@@ -1453,6 +1454,45 @@ mod tests {
                 json!({"messages": [{"role": "user", "text": asked}], "tools": tools}).to_string();
             let e = node.chat(&request).await.unwrap_err();
             assert!(format!("{e:#}").contains(says), "{asked}: {e:#}");
+        }
+    }
+
+    /// A turn the model declines is asked of its `fallback`, once, and that
+    /// model's turn is the turn: its call, or a decline of its own, which is
+    /// the error it is with no fallback.
+    #[tokio::test]
+    async fn a_turn_the_model_declines_is_asked_of_its_fallback() {
+        let tools = json!([{"name": "query", "description": "Run SQL.",
+            "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}}}]);
+        let request = |asked: &str| {
+            json!({"messages": [{"role": "user", "text": asked}], "tools": tools}).to_string()
+        };
+        for (fallback, tag) in [
+            ("second", "chat-fallback"),
+            ("third", "chat-fallback-declines"),
+        ] {
+            let (url, seen) = stub::model().await;
+            let mut cfg = stub::config(&url);
+            cfg.model.fallback = Some(fallback.into());
+            let node = cfg.node("reviewer", &stub::dir(tag)).unwrap();
+            let turn = node.chat(&request("filtered")).await;
+            let asked: Vec<Value> = seen
+                .lock()
+                .await
+                .drain(..)
+                .map(|body| serde_json::from_str::<Value>(&body).unwrap()["model"].take())
+                .collect();
+            assert_eq!(asked, [json!("stub"), json!(fallback)]);
+            if fallback == "second" {
+                let reply: Value = serde_json::from_str(&turn.unwrap()).unwrap();
+                assert_eq!(reply["calls"][0]["name"], "query", "{reply}");
+            } else {
+                let e = turn.unwrap_err();
+                assert!(format!("{e:#}").contains("failed the turn"), "{e:#}");
+            }
+            // one it does not decline is the model's own
+            node.chat(&request("look")).await.unwrap();
+            assert_eq!(seen.lock().await.len(), 1);
         }
     }
 

@@ -15,6 +15,7 @@ models:
     type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"
     model: claude-sonnet-5-5
+    fallback: claude-sonnet-5    # asked what Sonnet 5.5 declines, as it does some reviews of an attack
 
 inference:
   judge:
