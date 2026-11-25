@@ -13,6 +13,7 @@ mod follow;
 mod init;
 mod local;
 mod mac;
+mod notify;
 use tangent_runtime::query;
 mod scaffold;
 mod simulate;
@@ -181,6 +182,11 @@ enum Commands {
         /// Exit after one drain cycle (for tests)
         #[arg(long, requires = "config")]
         once: bool,
+        /// Show no notifications. Without it, at a Mac, a review that
+        /// upholds an alert is shown as one, with a sound when it finds
+        /// the alert malicious
+        #[arg(long, global = true)]
+        no_notify: bool,
     },
 
     /// Run one attack on this Mac, for `tangent watch mac` to catch: a
@@ -375,25 +381,28 @@ async fn main() -> Result<()> {
                     provider,
                     model,
                 }),
+            no_notify,
             ..
         } => {
             let (server, models) = init::served(local, provider, model.as_deref())?;
-            watch::cloud(sources, server, models).await?
+            watch::cloud(sources, server, models, no_notify).await?
         }
         Commands::Watch {
             watch: Some(Watch::Mac { hosted }),
+            no_notify,
             ..
-        } => watch::mac(hosted).await?,
+        } => watch::mac(hosted, no_notify).await?,
         Commands::Watch {
             watch: None,
             config,
             once,
+            no_notify,
         } => {
             // clap shows the help when neither is given.
             let Some(config) = config else {
                 anyhow::bail!("watch cloud, watch mac, or watch --config <FILE>");
             };
-            watch::config(config, once).await?
+            watch::config(config, once, no_notify).await?
         }
 
         Commands::Simulate => simulate::run()?,

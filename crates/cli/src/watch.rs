@@ -26,6 +26,7 @@ use tangent_runtime::RuntimeOptions;
 use crate::follow::Follow;
 use crate::init::{self, Choices, Server, Source};
 use crate::mac::{self, Mac};
+use crate::notify::{self, Notifier};
 use crate::{fetch, local};
 
 /// The queue a CloudTrail source reads its trail from as it is written.
@@ -106,6 +107,8 @@ struct Pipeline {
     pace: &'static str,
     /// How to see it catch something now, where there is a way.
     shown: Option<&'static str>,
+    /// Whether it shows no notifications (--no-notify).
+    no_notify: bool,
 }
 
 /// `tangent watch cloud`: the pipeline `tangent init cloud` writes for
@@ -114,6 +117,7 @@ pub async fn cloud(
     sources: Vec<Source>,
     server: Server,
     models: Option<(String, String)>,
+    no_notify: bool,
 ) -> Result<()> {
     if sources.is_empty() {
         bail!(
@@ -151,13 +155,14 @@ pub async fn cloud(
                records are judged together, thirty at a time or an hour after the first, and an alert\n\
                is reviewed a little over an hour after it.",
         shown: None,
+        no_notify,
     })
     .await
 }
 
 /// `tangent watch mac`: the pipeline `tangent init mac` writes, kept in
 /// tangent's own directory, and run.
-pub async fn mac(hosted: bool) -> Result<()> {
+pub async fn mac(hosted: bool, no_notify: bool) -> Result<()> {
     let mac = Mac::new(hosted).watched();
     mac::runs_here(&mac)?;
     needed(&mac.config(), &mac.needs())?;
@@ -176,6 +181,7 @@ pub async fn mac(hosted: bool) -> Result<()> {
                is judged five minutes at a time, or an agent's turn at its end, and an alert is\n\
                reviewed about seven minutes after it.",
         shown: Some("To see it catch an attack, run `tangent simulate` in another terminal."),
+        no_notify,
     })
     .await
 }
@@ -212,32 +218,45 @@ async fn start(pipeline: Pipeline) -> Result<()> {
         "They are kept, with the pipeline and its lake, in {}",
         dir.display()
     );
+    let app = notify::app(&config, pipeline.no_notify).await;
+    if app.is_some() {
+        println!(
+            "A review that upholds an alert is a notification on this Mac too, once you allow Tangent's (--no-notify shows none)."
+        );
+    }
     if let Some(shown) = pipeline.shown {
         println!("{shown}");
     }
     println!("Ctrl-C stops it.\n");
 
-    following(&dir, &config, RuntimeOptions::default()).await
+    following(&dir, &config, RuntimeOptions::default(), app).await
 }
 
 /// `tangent watch --config`: the owner's config, run where they are.
-pub async fn config(config: PathBuf, once: bool) -> Result<()> {
+pub async fn config(config: PathBuf, once: bool, no_notify: bool) -> Result<()> {
     let config = config.canonicalize().unwrap_or(config);
     fetch::missing(&config).await?;
+    let app = notify::app(&config, no_notify).await;
     // A sink's path is read against the directory tangent runs in.
     let dir = std::env::current_dir().context("reading the directory this runs in")?;
     let opts = RuntimeOptions {
         once,
         ..Default::default()
     };
-    following(&dir, &config, opts).await
+    following(&dir, &config, opts, app).await
 }
 
 /// Runs `config` until it ends or a signal, saying what it writes in
-/// `dir`, the directory it runs in.
-async fn following(dir: &Path, config: &PathBuf, opts: RuntimeOptions) -> Result<()> {
+/// `dir`, the directory it runs in, and showing through `app`, when there
+/// is one, the reviews that are notifications.
+async fn following(
+    dir: &Path,
+    config: &PathBuf,
+    opts: RuntimeOptions,
+    app: Option<PathBuf>,
+) -> Result<()> {
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let said = tokio::spawn(Follow::new(dir).run(stopped));
+    let said = tokio::spawn(Follow::new(dir, app.map(Notifier::start)).run(stopped));
     tokio::spawn(async {
         if signalled().await {
             println!(

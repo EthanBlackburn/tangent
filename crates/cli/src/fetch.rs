@@ -157,7 +157,7 @@ fn names_no_sensor(cfg: &Config) -> bool {
 /// by macOS's own `ditto` beside `dir` and checked there
 /// ([`tangent_shared::sensor::check`]), and given its name only once it has
 /// passed. One that does not pass is removed.
-async fn sensor(dir: &Path) -> Result<()> {
+pub(crate) async fn sensor(dir: &Path) -> Result<()> {
     let url = tangent_shared::sensor::url(VERSION);
     println!("tangent {VERSION}: fetching the Mac's sensor (once per version)");
     let Some(bytes) = download(&client()?, &url).await? else {
