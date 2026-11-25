@@ -258,6 +258,17 @@ The reply is read as JSON and nothing else, and the model's API is asked to make
 
 A request holds the records the node is handed, or with `group_by: [_norm.actor]` those of one value of these fields, and is split past `batch_bytes` (32 KiB of JSON) and, with logfmt, past `budget_tokens` (90k). A `sqlite` source hands over a partition value's records `batch_size` at a time, so with `group_by` on the partition's fields a request is one of its batches. A schema is wrapped around each answer, `max_tokens` is per record, and a reply with no answer in it for any of its records (one that is not JSON, an empty list) is asked again in halves; for one record it is asked again as it is, `retries` times.
 
+A model with `fallback: <model id>` has that model asked what it declines: a request whose reply says the model refused it or the provider filtered it (`stop_reason: refusal`, `finish_reason: content_filter`) is sent once more as it was, to that id on the same server with the same key, and its reply is the reply. This holds for a node's requests and for each turn of a plugin's conversation, a turn at a time, so one review may hold turns from both. The log says each time it happens. With no `fallback`, a declined request is the error on its records, or the turn's:
+
+```yaml
+models:
+  reviewer:
+    type: anthropic
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: claude-sonnet-5-5
+    fallback: claude-sonnet-5
+```
+
 `encoding: {type: logfmt, keep: [...], sources: {<source>: {principal, time, keep, ids}}}` writes the records as logfmt lines in about half the tokens of JSON, and the text decodes back to the records: a principal's records are grouped, the fields they share written once above their rows, the `keep` fields on every row, a day's timestamps as times of day; `sidecar: true` swaps a source's `ids` for references the model never sees. The judge pack has a row for each pack's sources ([packs/judge/ingest.yaml](/packs/judge/ingest.yaml)).
 
 A plugin can hold a conversation with a node instead, with `model.chat`: it sends what has been said so far and the tools the model may call, runs the calls the model asks for, and sends their results with the next turn, until the model answers. The node gives `prompt_file` as the system prompt, `max_tokens` (here a turn's) and `extra`, and its model the credentials, `timeout_ms`, `retries` and `concurrency`; the plugin's `inference` names the nodes it may call, and a node named there needs no inputs:
