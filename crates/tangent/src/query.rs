@@ -91,12 +91,20 @@ async fn context(tables: &[String], views: &[String]) -> Result<SessionContext> 
     // `record->>'eventName' = 'ConsoleLogin'` compares the text it reads. As
     // DataFusion reads a statement otherwise, it is `record->>(… = …)`, and
     // a planning error about a Boolean that names nothing in the statement.
+    //
+    // DataFusion 52 gives a wrong least or greatest over many files when a
+    // statement asks for both and some file has the column null in every
+    // row: it passes what it has found so far down to the files' readers.
     let config = SessionConfig::new()
         .set_bool(
             "datafusion.execution.listing_table_ignore_subdirectory",
             false,
         )
-        .set_str("datafusion.sql_parser.dialect", "PostgreSQL");
+        .set_str("datafusion.sql_parser.dialect", "PostgreSQL")
+        .set_bool(
+            "datafusion.optimizer.enable_aggregate_dynamic_filter_pushdown",
+            false,
+        );
     let mut ctx = SessionContext::new_with_config(config);
     datafusion_functions_json::register_all(&mut ctx)?;
     let mut paths: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -435,6 +443,49 @@ pub(crate) mod tests {
         assert!(rows[0].get("none").is_none());
         q.sql = "SELECT pid FROM lake WHERE pid > 900".into();
         assert_eq!(run(&q).await.unwrap(), "");
+    }
+
+    /// The least and the greatest of a column, asked for in one statement
+    /// over many files, some with the column null in every row: DataFusion
+    /// 52 answers it wrongly more often than not unless it is told not to
+    /// pass what it has found so far down to the files' readers.
+    #[tokio::test]
+    async fn the_least_and_the_greatest_of_many_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("n", DataType::Int64, true),
+            Field::new("source", DataType::Utf8, true),
+        ]));
+        for n in 0..30i64 {
+            // a file a record, and every third without a source
+            let source = (n % 3 != 0).then(|| format!("s{:02}", (n * 7) % 30));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int64Array::from(vec![n])),
+                    Arc::new(StringArray::from(vec![source])),
+                ],
+            )
+            .unwrap();
+            let file = File::create(dir.path().join(format!("{n:02}.parquet"))).unwrap();
+            let mut w = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+            w.write(&batch).unwrap();
+            w.close().unwrap();
+        }
+        let q = Query {
+            tables: vec![format!("lake={}", dir.path().display())],
+            views: Vec::new(),
+            sql: "SELECT min(source) AS lo, max(source) AS hi, min(n) AS first FROM lake".into(),
+            max_rows: 10,
+            max_cell: 100,
+            json: true,
+        };
+        for _ in 0..5 {
+            assert_eq!(
+                run(&q).await.unwrap(),
+                "{\"lo\":\"s01\",\"hi\":\"s29\",\"first\":0}\n"
+            );
+        }
     }
 
     #[tokio::test]
