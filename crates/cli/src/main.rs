@@ -325,8 +325,14 @@ enum PluginCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // `tangent watch` writes runtime logs to `watch.log` in its pipeline
+    // directory so the terminal stays readable, unless `RUST_LOG` is set.
+    let watch_quiet =
+        matches!(cli.command, Commands::Watch { .. }) && std::env::var_os("RUST_LOG").is_none();
+    if !watch_quiet {
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
 
     match cli.command {
         Commands::Bench {

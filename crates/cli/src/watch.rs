@@ -14,14 +14,21 @@
 //! a source whose variable is unset is left idle.
 //!
 //! While any of them runs it says what the judge checks and flags and what
-//! each review finds ([`crate::follow`]), among the runtime's own lines.
+//! each review finds ([`crate::follow`]); unless `RUST_LOG` is set, the
+//! runtime's own logs go to `watch.log` in the pipeline's directory and only
+//! errors reach stderr.
 
 use std::ffi::OsString;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
 use fs2::FileExt as _;
 use tangent_runtime::RuntimeOptions;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::{EnvFilter, Layer as _};
 
 use crate::follow::Follow;
 use crate::init::{self, Choices, Server, Source};
@@ -186,11 +193,42 @@ pub async fn mac(hosted: bool, no_notify: bool) -> Result<()> {
     .await
 }
 
+/// Routes runtime logs to `watch.log` in `dir` (info+) and only errors to
+/// stderr, when `RUST_LOG` was not set (otherwise `main` already initialized
+/// stderr tracing and `try_init` is a no-op).
+fn init_logging(dir: &Path) -> Option<PathBuf> {
+    if std::env::var_os("RUST_LOG").is_some() {
+        return None;
+    }
+    let path = dir.join("watch.log");
+    let stderr = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(EnvFilter::new("error"));
+    let file_layer = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()
+        .map(|file| {
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(Mutex::new(file))
+                .with_filter(EnvFilter::new("info"))
+        });
+    let logged = file_layer.is_some();
+    let _ = tracing_subscriber::registry()
+        .with(stderr)
+        .with(file_layer)
+        .try_init();
+    logged.then_some(path)
+}
+
 /// Writes the pipeline to its directory, fetches what it needs, says what
 /// it is, and runs it there until a signal, saying what it finds.
 async fn start(pipeline: Pipeline) -> Result<()> {
     let dir = home(pipeline.what, |name| std::env::var_os(name))?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let log = init_logging(&dir);
     let _held = hold(&dir)?;
     init::place(&dir, &pipeline.files)?;
     // A sink's path is read against the directory tangent runs in, and the
@@ -218,6 +256,12 @@ async fn start(pipeline: Pipeline) -> Result<()> {
         "They are kept, with the pipeline and its lake, in {}",
         dir.display()
     );
+    if let Some(log) = log {
+        println!(
+            "Runtime log: {} (set RUST_LOG=info for verbose terminal logs).",
+            log.display()
+        );
+    }
     let app = notify::app(&config, pipeline.no_notify).await;
     if app.is_some() {
         println!(
@@ -235,10 +279,20 @@ async fn start(pipeline: Pipeline) -> Result<()> {
 /// `tangent watch --config`: the owner's config, run where they are.
 pub async fn config(config: PathBuf, once: bool, no_notify: bool) -> Result<()> {
     let config = config.canonicalize().unwrap_or(config);
-    fetch::missing(&config).await?;
-    let app = notify::app(&config, no_notify).await;
     // A sink's path is read against the directory tangent runs in.
     let dir = std::env::current_dir().context("reading the directory this runs in")?;
+    let log = init_logging(&dir);
+    fetch::missing(&config).await?;
+    let app = notify::app(&config, no_notify).await;
+    if !once {
+        if let Some(log) = log {
+            println!(
+                "Watching {}. Runtime log: {} (Ctrl-C stops it).\n",
+                config.display(),
+                log.display()
+            );
+        }
+    }
     let opts = RuntimeOptions {
         once,
         ..Default::default()
