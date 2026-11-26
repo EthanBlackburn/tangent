@@ -307,7 +307,7 @@ pub const INKLING: &str = r#"    type: openai                 # Ollama serves th
     model: "{{model}}"   # Ollama's build of it for Apple Silicon
     timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
     retries: 2
-    concurrency: 1               # one request at a time, the judge's and the reviewer's together
+    concurrency: 1               # one request at a time: a review's turn, then the judge's next
     # `tangent watch` starts this server, waits until it answers and stops it
     # after; one already answering at `url` is used and left running.
     serve:

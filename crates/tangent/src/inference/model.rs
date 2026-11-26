@@ -1,10 +1,12 @@
 //! A model, as an entry under `models` describes it: the client that reaches
 //! it, and the limits every node that names it shares.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use parking_lot::Mutex;
 use rig_core::completion::request::CompletionRequest;
 use rig_core::completion::{CompletionResponse, FinishReason};
 use rig_core::operation::Completion;
@@ -13,7 +15,7 @@ use rig_core::providers::openai::{OpenAIConfig, Route};
 use rig_core::DynModel;
 use secrecy::ExposeSecret;
 use tangent_shared::models::{ModelConfig, ModelKind, DEFAULT_URL};
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::sync::oneshot;
 
 use crate::stop::Stop;
 
@@ -23,12 +25,56 @@ pub struct Model {
     client: DynModel<Completion>,
     /// `fallback`, reached as this model is: who is asked what it declines.
     fallback: Option<(Arc<str>, DynModel<Completion>)>,
-    /// `concurrency` permits: requests in flight to this model, from every
+    /// `concurrency` places: requests in flight to this model, from every
     /// node that names it.
-    sem: Semaphore,
+    places: Arc<Mutex<Places>>,
     /// The run's stop: once it is finishing, a request sent is not sent
     /// again, and the nodes send no new one.
     stop: Stop,
+}
+
+/// A model's places, and who waits for one. A place that comes free goes to
+/// a conversation's turn before the request of a node's records, and within
+/// each to whoever has waited longest: the records still to be read do not
+/// keep waiting an alert that is being settled, and the conversations end
+/// when no record is read, since it is the records that begin them.
+struct Places {
+    free: usize,
+    turns: VecDeque<oneshot::Sender<Place>>,
+    requests: VecDeque<oneshot::Sender<Place>>,
+}
+
+/// One of a model's places, held while a request is out and given on when
+/// dropped.
+pub struct Place(Option<Arc<Mutex<Places>>>);
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let Some(places) = self.0.take() else { return };
+        loop {
+            let next = {
+                let mut places = places.lock();
+                match places
+                    .turns
+                    .pop_front()
+                    .or_else(|| places.requests.pop_front())
+                {
+                    Some(next) => next,
+                    None => {
+                        places.free += 1;
+                        return;
+                    }
+                }
+            };
+            // Given whole, so one whose waiting ended after this gives it
+            // on in its turn. One that ended before is not there to take
+            // it: the place is still this one's to give.
+            match next.send(Place(Some(Arc::clone(&places)))) {
+                Ok(()) => return,
+                Err(mut unheld) => unheld.0 = None,
+            }
+        }
+    }
 }
 
 /// The key of an API that needs one. `${VAR}` unset is the empty string:
@@ -107,14 +153,18 @@ impl Model {
             Some(id) => Some((Arc::from(id), self::client(&cfg, id)?)),
             None => None,
         };
-        let sem = Semaphore::new(cfg.concurrency.max(1));
+        let places = Arc::new(Mutex::new(Places {
+            free: cfg.concurrency.max(1),
+            turns: VecDeque::new(),
+            requests: VecDeque::new(),
+        }));
         tracing::info!(model = %name, kind = ?cfg.kind, id = %cfg.model, "model ready");
         Ok(Self {
             name: Arc::clone(name),
             cfg,
             client,
             fallback,
-            sem,
+            places,
             stop,
         })
     }
@@ -123,9 +173,35 @@ impl Model {
         &self.stop
     }
 
-    /// One of the model's `concurrency` places, held while a request is out.
-    pub async fn permit(&self) -> SemaphorePermit<'_> {
-        self.sem.acquire().await.expect("semaphore is never closed")
+    /// One of the model's `concurrency` places for the request of a node's
+    /// records, held while it is out.
+    pub async fn place(&self) -> Place {
+        self.wait(|places| &mut places.requests).await
+    }
+
+    /// One for a turn of a conversation, which takes the next that comes
+    /// free ahead of the records' requests.
+    pub async fn turn(&self) -> Place {
+        self.wait(|places| &mut places.turns).await
+    }
+
+    async fn wait(
+        &self,
+        line: impl FnOnce(&mut Places) -> &mut VecDeque<oneshot::Sender<Place>>,
+    ) -> Place {
+        let given = {
+            let mut places = self.places.lock();
+            if places.free > 0 {
+                places.free -= 1;
+                return Place(Some(Arc::clone(&self.places)));
+            }
+            let (give, given) = oneshot::channel();
+            line(&mut places).push_back(give);
+            given
+        };
+        given
+            .await
+            .expect("whoever waits is given a place or is still in line")
     }
 
     /// One request's reply: the model's, or its `fallback`'s to a request

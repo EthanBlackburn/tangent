@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 /// whose credentials, and how hard it may be pushed. An inference node names
 /// one (`model: <name>`) and holds what is asked of it. Nodes that name the
 /// same entry share its `concurrency`: a server that answers one request at a
-/// time is asked one at a time, whoever asks.
+/// time is asked one at a time, whoever asks, a conversation's turn before
+/// the request of a node's records.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
