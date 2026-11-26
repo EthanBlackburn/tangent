@@ -3,10 +3,12 @@
 //!
 //! Privilege split:
 //! - `/Library/LaunchDaemons/com.ethanblackburn.tangent.sensor.plist` (root):
-//!   runs `/Applications/Tangent.app/Contents/MacOS/tangent-sensor daemon`
-//!   exclusively for Endpoint Security + tcpdump over `0600` user-owned Unix
-//!   sockets under `/var/run/tangent`. Lazy-starts on client connect (0% CPU
-//!   when paused).
+//!   runs `tangent-sensor daemon` from root's own copy of the app, under
+//!   `/Library/Application Support/Tangent`, exclusively for Endpoint
+//!   Security + tcpdump over `0600` user-owned Unix sockets under
+//!   `/var/run/tangent`. Lazy-starts on client connect (0% CPU when paused).
+//!   The copy in `/Applications` is never run as root: an administrator's
+//!   programs can replace what is there without a password.
 //! - `~/Library/LaunchAgents/com.ethanblackburn.tangent.watch.plist` (user):
 //!   runs `tangent watch mac` unprivileged, connecting to the daemon sockets
 //!   with zero sudo prompts.
@@ -15,7 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -32,6 +34,10 @@ pub const WATCH_LABEL: &str = "com.ethanblackburn.tangent.watch";
 pub const APP_LABEL: &str = "com.ethanblackburn.tangent.app";
 
 const DAEMON_PLIST: &str = "/Library/LaunchDaemons/com.ethanblackburn.tangent.sensor.plist";
+const DAEMON_LOG: &str = "/var/log/tangent-sensor.log";
+/// How long a LaunchAgent told to stop is waited for. launchd kills what has
+/// not ended twenty seconds after it asked.
+const STOPS_WITHIN: Duration = Duration::from_secs(25);
 const SERVICE_FILE: &str = "service.json";
 const ENV_FILE: &str = "env";
 const LAUNCHCTL: &str = "/bin/launchctl";
@@ -213,24 +219,37 @@ pub async fn up(hosted_flag: bool, local_flag: bool) -> Result<()> {
     fs::create_dir_all(&agents_dir)
         .with_context(|| format!("creating {}", agents_dir.display()))?;
 
-    let tangent_bin = std::env::current_exe()
-        .context("finding current tangent executable")?
-        .canonicalize()
-        .unwrap_or_else(|_| std::env::current_exe().unwrap());
+    // The path tangent was run by, not what it links to: Homebrew's
+    // /opt/homebrew/bin/tangent is a link into a directory named for the
+    // version, which the next upgrade removes.
+    let tangent_bin = std::env::current_exe().context("finding current tangent executable")?;
+    let tangent_bin = std::path::absolute(&tangent_bin).unwrap_or(tangent_bin);
 
     let watch_plist_path = agents_dir.join(format!("{WATCH_LABEL}.plist"));
     let watch_xml = watch_agent_plist(&tangent_bin, &dir, hosted, hosted.then_some(&env_path));
-    fs::write(&watch_plist_path, watch_xml)
-        .with_context(|| format!("writing {}", watch_plist_path.display()))?;
-
     let app_plist_path = agents_dir.join(format!("{APP_LABEL}.plist"));
     let app_xml = app_agent_plist(&tangent_shared::sensor::installed_binary(), &dir, &tangent_bin);
-    fs::write(&app_plist_path, app_xml)
-        .with_context(|| format!("writing {}", app_plist_path.display()))?;
 
     let gui_domain = format!("gui/{uid}");
-    reload_launchd(&gui_domain, WATCH_LABEL, &watch_plist_path)?;
-    reload_launchd(&gui_domain, APP_LABEL, &app_plist_path)?;
+    stop_agent(&gui_domain, WATCH_LABEL)?;
+    // What the last watch left is not this one's: without this, the wait
+    // below reads yesterday's error as today's.
+    let _ = fs::remove_file(dir.join(status::FILE));
+    fs::write(&watch_plist_path, watch_xml)
+        .with_context(|| format!("writing {}", watch_plist_path.display()))?;
+    start_agent(&gui_domain, WATCH_LABEL, &watch_plist_path)?;
+
+    // The menu bar's Resume runs this very command, as the menu bar's child:
+    // stopping the menu bar would end this before it was started again. One
+    // that is up and was started as it would be now is left running.
+    let menu_bar_is_current = is_agent_loaded(APP_LABEL)
+        && fs::read_to_string(&app_plist_path).is_ok_and(|now| now == app_xml);
+    if !menu_bar_is_current {
+        stop_agent(&gui_domain, APP_LABEL)?;
+        fs::write(&app_plist_path, app_xml)
+            .with_context(|| format!("writing {}", app_plist_path.display()))?;
+        start_agent(&gui_domain, APP_LABEL, &app_plist_path)?;
+    }
 
     // 3. Wait briefly for watcher startup to confirm watching vs missing FDA.
     let deadline = Instant::now() + Duration::from_secs(6);
@@ -297,6 +316,8 @@ pub async fn down(all: bool) -> Result<()> {
                 snap.state = "stopped".to_string();
                 snap.pid = None;
                 snap.pending = 0;
+                snap.error = None;
+                snap.needs_fda = false;
                 snap.updated_at = status::now_rfc3339();
                 if let Ok(bytes) = serde_json::to_vec_pretty(&snap.to_json()) {
                     let _ = fs::write(dir.join(status::FILE), bytes);
@@ -405,9 +426,9 @@ pub async fn show_status(as_json: bool) -> Result<()> {
 }
 
 /// `tangent uninstall [--purge]`: cleanly stops and removes the user
-/// LaunchAgents, root LaunchDaemon, `/var/run/tangent`, and
-/// `/Applications/Tangent.app`. Keeps `~/.local/share/tangent/mac` unless
-/// `--purge` is passed.
+/// LaunchAgents, root LaunchDaemon, `/var/run/tangent`, both copies of
+/// `Tangent.app`, and the API keys `tangent up --hosted` kept. Keeps the rest
+/// of `~/.local/share/tangent/mac` unless `--purge` is passed.
 pub async fn uninstall(purge: bool) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("`tangent uninstall` removes the macOS background service, and this machine is not a Mac");
@@ -425,15 +446,17 @@ pub async fn uninstall(purge: bool) -> Result<()> {
 
     let needs_root = Path::new(DAEMON_PLIST).exists()
         || tangent_shared::sensor::installed_app().exists()
+        || Path::new(tangent_shared::sensor::DAEMON_APP_DIR).exists()
         || Path::new(tangent_shared::sensor::DAEMON_DIR).exists();
 
     if needs_root {
         println!("Removing root sensor daemon and /Applications/Tangent.app (requires sudo)...");
         let script = format!(
             "launchctl bootout system/{SENSOR_LABEL} 2>/dev/null || true; \
-             rm -f '{DAEMON_PLIST}'; \
-             rm -rf '{}' '{}'",
+             rm -f '{DAEMON_PLIST}' '{DAEMON_LOG}'; \
+             rm -rf '{}' '{}' '{}'",
             tangent_shared::sensor::DAEMON_DIR,
+            tangent_shared::sensor::DAEMON_APP_DIR,
             tangent_shared::sensor::installed_app().display()
         );
         let status = Command::new("sudo")
@@ -446,6 +469,8 @@ pub async fn uninstall(purge: bool) -> Result<()> {
     }
 
     if let Ok(dir) = watch::data_dir("mac") {
+        // The keys are a secret, and nothing reads them once this is gone.
+        let _ = fs::remove_file(dir.join(ENV_FILE));
         if purge {
             if dir.exists() {
                 fs::remove_dir_all(&dir)
@@ -463,29 +488,45 @@ pub async fn uninstall(purge: bool) -> Result<()> {
 
 // MARK: root LaunchDaemon installation
 
-/// Installs or updates `/Applications/Tangent.app` and the root LaunchDaemon
-/// if not already present, signed, and listening. Needs zero `sudo` when
-/// already up to date.
+/// Whether the app at `installed` is the one at `source`: the same sensor
+/// and the same Info.plist, which has its version.
+fn same_app(source: &Path, installed: &Path) -> bool {
+    ["Contents/MacOS/tangent-sensor", "Contents/Info.plist"]
+        .iter()
+        .all(|file| match (fs::read(source.join(file)), fs::read(installed.join(file))) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        })
+}
+
+/// Installs or updates both copies of `Tangent.app` and the root LaunchDaemon
+/// unless they are this tangent's sensor already, with the daemon listening.
+/// Needs zero `sudo` when already up to date.
 async fn ensure_sensor_daemon(uid: u32) -> Result<()> {
-    let installed_dir = Path::new(tangent_shared::sensor::INSTALLED_DIR);
     let installed_app = tangent_shared::sensor::installed_app();
+    let daemon_app = tangent_shared::sensor::daemon_app();
     let sock_dir = tangent_shared::sensor::daemon_dir();
     let es_sock = tangent_shared::sensor::es_socket(&sock_dir);
 
+    // The daemon's sockets are one user's. Another's `tangent up` would find
+    // them listening and never be let in.
+    #[cfg(unix)]
+    if let Ok(meta) = fs::metadata(&es_sock) {
+        use std::os::unix::fs::MetadataExt as _;
+        if meta.uid() != uid {
+            bail!(
+                "the sensor daemon on this Mac is installed for user {}, and serves one user: \
+                 `tangent uninstall` as them, then `tangent up` here",
+                meta.uid()
+            );
+        }
+    }
+
+    // The app to install: this version's, from the cache, or the one named.
     let custom_app = std::env::var_os("TANGENT_SENSOR_APP")
         .map(PathBuf::from)
         .filter(|p| p.exists());
-
-    let daemon_plist_exists = Path::new(DAEMON_PLIST).is_file();
-    let app_ok = installed_app.exists()
-        && (custom_app.is_some() || tangent_shared::sensor::check(installed_dir).is_ok());
-
-    // Fast path: installed, verified, plist present, and socket already listening.
-    if app_ok && daemon_plist_exists && es_sock.exists() {
-        return Ok(());
-    }
-
-    // Source app bundle to copy into `/Applications/Tangent.app`.
+    let verified = custom_app.is_none();
     let source_app = if let Some(custom) = custom_app {
         custom
     } else {
@@ -497,21 +538,67 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<()> {
         cache_dir.join(tangent_shared::sensor::APP)
     };
 
-    let plist_xml = sensor_daemon_plist(&tangent_shared::sensor::installed_binary(), &sock_dir, uid);
+    // Fast path: both copies are this sensor, the plist is there, and the
+    // daemon is listening. An upgrade of tangent brings a new sensor, and is
+    // not this.
+    if same_app(&source_app, &installed_app)
+        && same_app(&source_app, &daemon_app)
+        && Path::new(DAEMON_PLIST).is_file()
+        && es_sock.exists()
+    {
+        return Ok(());
+    }
+
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "the sensor daemon is to be installed or updated, which asks for your password: \
+             run `tangent up` in a terminal"
+        );
+    }
+
+    let plist_xml = sensor_daemon_plist(&tangent_shared::sensor::daemon_binary(), &sock_dir, uid);
     let tmp_plist = tempfile::NamedTempFile::new().context("creating temporary daemon plist")?;
     fs::write(tmp_plist.path(), plist_xml)?;
 
+    // Root's copy is made first, in a directory only root writes to, and it
+    // is that copy that is checked, as root, after it is made: what was
+    // checked above sits in your cache, where anything running as you could
+    // change it while the password is typed. The copy in /Applications is
+    // made from root's.
+    let verify = if verified {
+        format!(
+            "{} --verify --strict --deep '-R={}' '{}'; ",
+            tangent_shared::sensor::CODESIGN,
+            shell_escape_str(&tangent_shared::sensor::requirement()),
+            shell_escape(&daemon_app),
+        )
+    } else {
+        println!(
+            "TANGENT_SENSOR_APP is set: {} is installed to run as root without its signature being checked.",
+            source_app.display()
+        );
+        String::new()
+    };
     println!("Installing Tangent.app and root sensor daemon (asks for your password once)...");
     let install_script = format!(
         "set -eu; \
          launchctl bootout system/{SENSOR_LABEL} 2>/dev/null || true; \
+         rm -rf '{daemon_dir}'; \
+         mkdir -p '{daemon_dir}'; \
+         chown root:wheel '{daemon_dir}'; \
+         chmod 755 '{daemon_dir}'; \
+         /usr/bin/ditto '{src_app}' '{daemon_app}'; \
+         chown -R root:wheel '{daemon_app}'; \
+         chmod -R go-w '{daemon_app}'; \
+         {verify}\
          rm -rf '{dest_app}'; \
-         /usr/bin/ditto '{src_app}' '{dest_app}'; \
-         chown -R root:wheel '{dest_app}'; \
+         /usr/bin/ditto '{daemon_app}' '{dest_app}'; \
          cp '{tmp_plist}' '{DAEMON_PLIST}'; \
          chown root:wheel '{DAEMON_PLIST}'; \
          chmod 644 '{DAEMON_PLIST}'; \
          launchctl bootstrap system '{DAEMON_PLIST}'",
+        daemon_dir = shell_escape(Path::new(tangent_shared::sensor::DAEMON_APP_DIR)),
+        daemon_app = shell_escape(&daemon_app),
         src_app = shell_escape(&source_app),
         dest_app = shell_escape(&installed_app),
         tmp_plist = shell_escape(tmp_plist.path()),
@@ -540,7 +627,10 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Ok(())
+    bail!(
+        "the sensor daemon was installed and is not listening on {}: {DAEMON_LOG} has what it said",
+        es_sock.display()
+    )
 }
 
 // MARK: launchd helpers & plist generators
@@ -597,22 +687,36 @@ fn bootout(domain: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn reload_launchd(domain: &str, label: &str, plist: &Path) -> Result<()> {
+/// Stops a LaunchAgent and waits until launchd has let go of it. `bootout`
+/// returns before that, and a `bootstrap` in the meantime is refused, or is
+/// taken for done when it is the old one still ending.
+fn stop_agent(domain: &str, label: &str) -> Result<()> {
+    if !is_agent_loaded(label) {
+        return Ok(());
+    }
     let _ = bootout(domain, label);
+    let deadline = Instant::now() + STOPS_WITHIN;
+    while is_agent_loaded(label) {
+        if Instant::now() >= deadline {
+            bail!("{label} was told to stop and has not: `launchctl print {domain}/{label}` says what it is doing");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// Starts a LaunchAgent that is not loaded, from its plist.
+fn start_agent(domain: &str, label: &str, plist: &Path) -> Result<()> {
     let out = Command::new(LAUNCHCTL)
         .args(["bootstrap", domain])
         .arg(plist)
         .output()
         .with_context(|| format!("running launchctl bootstrap for {label}"))?;
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        // If launchctl reports already bootstrapped, kick-start it cleanly.
-        let _ = Command::new(LAUNCHCTL)
-            .args(["kickstart", "-k", &format!("{domain}/{label}")])
-            .status();
-        if !is_agent_loaded(label) {
-            bail!("launchctl bootstrap {label} failed: {stderr}");
-        }
+        bail!(
+            "launchctl bootstrap {label} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }
@@ -626,7 +730,12 @@ fn open_fda_settings() {
 }
 
 fn shell_escape(path: &Path) -> String {
-    path.display().to_string().replace('\'', "'\\''")
+    shell_escape_str(&path.display().to_string())
+}
+
+/// `text` as it is written between single quotes in a shell.
+fn shell_escape_str(text: &str) -> String {
+    text.replace('\'', "'\\''")
 }
 
 fn xml_escape(s: &str) -> String {
@@ -782,10 +891,15 @@ mod tests {
     #[test]
     fn plists_escape_xml_and_include_expected_arguments() {
         let daemon = sensor_daemon_plist(
-            Path::new("/Applications/Tangent.app/Contents/MacOS/tangent-sensor"),
+            &tangent_shared::sensor::daemon_binary(),
             Path::new("/var/run/tangent"),
             501,
         );
+        // root runs its own copy, never the one in /Applications
+        assert!(daemon.contains(
+            "<string>/Library/Application Support/Tangent/Tangent.app/Contents/MacOS/tangent-sensor</string>"
+        ));
+        assert!(!daemon.contains("/Applications/"));
         assert!(daemon.contains("<string>com.ethanblackburn.tangent.sensor</string>"));
         assert!(daemon.contains("<string>daemon</string>"));
         assert!(daemon.contains("<string>501</string>"));
@@ -826,6 +940,28 @@ mod tests {
             let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[test]
+    fn an_app_is_the_same_when_its_sensor_and_its_version_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = |name: &str, sensor: &str, plist: &str| {
+            let app = dir.path().join(name);
+            fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+            fs::write(app.join("Contents/MacOS/tangent-sensor"), sensor).unwrap();
+            fs::write(app.join("Contents/Info.plist"), plist).unwrap();
+            app
+        };
+        let this = app("this", "sensor", "0.3.3");
+        assert!(same_app(&this, &app("same", "sensor", "0.3.3")));
+        assert!(!same_app(&this, &app("older", "sensor", "0.3.2")));
+        assert!(!same_app(&this, &app("other", "another", "0.3.3")));
+        assert!(!same_app(&this, &dir.path().join("absent")));
+    }
+
+    #[test]
+    fn a_requirement_is_quoted_whole_for_the_shell() {
+        assert_eq!(shell_escape_str("it's \"x\""), "it'\\''s \"x\"");
     }
 
     #[test]
