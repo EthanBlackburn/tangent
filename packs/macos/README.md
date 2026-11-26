@@ -540,7 +540,7 @@ sent, and the package's contents, are not in these records.
 
 ## Tests
 
-`tests/input.json` is thirty-eight synthetic records as eslogger writes them, two
+`tests/input.json` is forty-three synthetic records as eslogger writes them, two
 connections' lines, three of the snapshot's, tangent's declaration of itself and three prompts', as the source sends them (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
 started from it with `ANTHROPIC_BASE_URL` set, the person's prompts to it and one sent headless, the agent saving its config and
