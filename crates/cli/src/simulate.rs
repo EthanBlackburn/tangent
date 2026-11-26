@@ -339,8 +339,8 @@ pub fn run(attack: Option<String>) -> Result<()> {
     drop(root);
     println!(
         "\nAll five steps ran, and the project is removed.\n\
-         `tangent watch mac` says what it makes of it in its own terminal: flagged within a minute\n\
-         or two, and reviewed as soon as it is flagged."
+         `tangent watch mac` says what it makes of it in its own terminal: flagged in about half\n\
+         a minute, and reviewed in the half minute or so after that."
     );
     Ok(())
 }

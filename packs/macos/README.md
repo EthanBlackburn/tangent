@@ -263,8 +263,8 @@ unmarked until the file says so.
 
 The judge reads sessions, not records. `macos_sessions` is grouped by
 `session.id` and `session.window`: a session's events within five minutes of
-each other, closed live fifteen minutes after the first or after a minute of
-quiet. An agent's session is cut at the person's prompts instead: a prompt
+each other, closed live fifteen minutes after the first or after fifteen seconds
+of quiet. An agent's session is cut at the person's prompts instead: a prompt
 that sets the agent to work opens a turn (`session.turn`, the prompt's
 time), a message typed while it works joins the turn under way, and the
 turn's events are summed up five minutes of their own time at a time

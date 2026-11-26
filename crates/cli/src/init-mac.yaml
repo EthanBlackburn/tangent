@@ -46,7 +46,7 @@ plugins:
     prebuilt: { repo: EthanBlackburn/tangent, workflow: .github/workflows/attest-packs.yml }
     group_by: [session.id, session.window]   # a session's five minutes, or an agent's turn: from one prompt to the next
     max_age_ms: 900000           # no later than fifteen minutes after the first of them: a long turn comes in parts
-    expire_after_ms: 60000       # or a minute of the session's quiet
+    expire_after_ms: 15000       # or fifteen seconds of the session's quiet
 
   # After the judge. macos_verdicts keeps the judge's account of a session
   # for the session's next summary, and passes on what a person has not been
