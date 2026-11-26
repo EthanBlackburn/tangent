@@ -1381,5 +1381,47 @@
    "turn": "2026-11-03T20:00:45",
    "window": "2026-11-03T20:00:45+000"
   }
+ },
+ {
+  "ts": "2026-11-03T20:00:51.000000000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "/bin/ls",
+   "org": "dev"
+  },
+  "_facts": {
+   "notes": []
+  },
+  "event": "exec",
+  "exec": {
+   "args": [
+    "ls"
+   ],
+   "cwd": "/Users/dev/code/x",
+   "env_count": 12
+  },
+  "lineage": [
+   "(unknown)"
+  ],
+  "parents": [
+   "(unknown)"
+  ],
+  "process": {
+   "path": "/bin/ls",
+   "pid": 811,
+   "platform": true,
+   "ppid": 810,
+   "responsible": 99,
+   "signer": "com.apple.ls",
+   "tty": "/dev/ttys003",
+   "uid": 501
+  },
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+  "session": {
+   "entry": "/bin/zsh",
+   "id": "200",
+   "turn": "2026-11-03T20:00:45",
+   "window": "2026-11-03T20:00:45+000"
+  }
  }
 ]
