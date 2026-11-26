@@ -294,6 +294,25 @@ reads `persistence` or `credentials` on a file as a verdict, and flagged
 sessions that only read `CLAUDE.md` as agents do at every start. Claude Code's marketplace refresh, two thousand events in a
 second, is one line of it; a session is a few kilobytes.
 
+One kind of session gets no summary, and so is not judged: macOS starting a
+service of its own that then does nothing on record. Every record of the
+session's window is a program starting, and each is an Apple platform binary
+by its code signature, under `/System/` or `/usr/libexec/` (the sealed
+system volume, which nothing a person runs can write to), started by launchd
+with nothing between, with no arguments (launchd's own `xpcproxy` aside,
+whose arguments name the job), with none of the facts above, and not a
+program that runs code it is handed (a shell, `jsc`, `perl`). A file in the
+groups above, a connection or a child is another record, and the session is
+summed up whole. None of these is a name a program chooses for itself. On a
+Mac these starts are most sessions, and a model on the same Mac cannot read
+them as fast as they come: over the fourteen recorded cases this leaves out
+627 of the judge's 980 requests, every one of which it had passed, and with
+it the same seven attacks stand and the same seven look-alikes are left
+alone. The records are in the lake like any other, for the reviewer and for
+`tangent query`. What it gives up is the judge's reading of one thing: an
+Apple service launchd started, under whatever job name, that then did
+nothing the log records.
+
 Nothing is left out of a summary for the session having done a great deal,
 which a session can do on purpose: twenty-five commands run twice once hid
 the one run once. A summary longer than 32,000 bytes goes to the judge in
