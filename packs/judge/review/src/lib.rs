@@ -47,6 +47,9 @@ const RESULT_LIMIT: usize = 12_000;
 const ROWS: u32 = 500;
 const CELL: u32 = 2000;
 const QUERY_MS: u32 = 30_000;
+/// Characters of alerts the first message holds: past them an alert is
+/// counted and not shown, and its record is in the table.
+const ALERTS_LIMIT: usize = 24_000;
 
 /// The table: a column's name, the SQL that makes it from the lake's columns
 /// (examples/cloud-infra's sink `lake`), and what the model is told it holds.
@@ -138,22 +141,30 @@ fn view(table: &str, until: &str, days: u64, settle: u64) -> String {
 }
 
 /// The alerts as the model reads them, a line each: `_baseline`, which an
-/// actor's records share, on the first that has each.
-fn lines(alerts: &[Value]) -> String {
+/// actor's records share, on the first that has each. The first of them, as
+/// many as fit [`ALERTS_LIMIT`] and one at least, since a burst of hundreds
+/// is more than a model can be sent: the lines, and how many they are.
+fn lines(alerts: &[Value]) -> (String, usize) {
     let mut said: Vec<&Value> = Vec::new();
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut size = 0;
     for alert in alerts {
         let mut a = alert.clone();
-        if let Some(b) = alert.get("_baseline") {
-            if said.contains(&b) {
-                a.as_object_mut().map(|o| o.remove("_baseline"));
-            } else {
-                said.push(b);
-            }
+        let shared = alert.get("_baseline").filter(|b| said.contains(b)).is_some();
+        if shared {
+            a.as_object_mut().map(|o| o.remove("_baseline"));
         }
-        out.push(a.to_string());
+        let line = a.to_string();
+        size += line.chars().count();
+        if size > ALERTS_LIMIT && !out.is_empty() {
+            break;
+        }
+        if let Some(b) = alert.get("_baseline").filter(|_| !shared) {
+            said.push(b);
+        }
+        out.push(line);
     }
-    out.join("\n")
+    (out.join("\n"), out.len())
 }
 
 /// The first message: what the table holds, its columns, and the alerts.
@@ -173,14 +184,20 @@ fn first_message(alerts: &[Value], held: &Value) -> String {
         " It does not yet hold the last alert's records, which were not written when this review began: \
          if the answer turns on them, the verdict is `unresolved`."
     };
+    let (lines, shown) = lines(alerts);
+    let rest = match alerts.len() - shown {
+        0 => String::new(),
+        _ => format!(
+            ", the first {shown} below; the others are this actor's records after them, which the table holds"
+        ),
+    };
     format!(
-        "The `records` table holds {} records, from {} to {}.{early} Its columns:\n\n{}\n\nThe alerts, {} of them:\n\n{}",
+        "The `records` table holds {} records, from {} to {}.{early} Its columns:\n\n{}\n\nThe alerts, {} of them{rest}:\n\n{lines}",
         at("n"),
         at("first").trim_matches('"'),
         at("last").trim_matches('"'),
         guide.join("\n"),
         alerts.len(),
-        lines(alerts)
     )
 }
 
@@ -606,13 +623,34 @@ mod tests {
     }
 
     /// An actor's records share `_baseline`: the model reads it once.
+    /// A burst of hundreds of alerts is one review, which is shown the
+    /// first of them and told how many there are.
+    #[test]
+    fn a_burst_is_shown_from_its_first_alerts() {
+        let burst: Vec<Value> = (0..400)
+            .map(|n| alert(&format!("2026-03-02T10:{:02}:{:02}Z", n / 60, n % 60), "Login"))
+            .collect();
+        let said = first_message(&burst, &held());
+        let (lines, shown) = lines(&burst);
+        assert!(shown > 20 && shown < 400, "{shown}");
+        assert!(lines.chars().count() <= ALERTS_LIMIT);
+        assert!(said.contains(&format!(
+            "The alerts, 400 of them, the first {shown} below; the others are this actor's records after them, which the table holds:"
+        )));
+        assert!(said.contains("2026-03-02T10:00:00Z") && !said.contains("2026-03-02T10:06:39Z"));
+        // one alert is shown whatever its size
+        let mut long = alert("2026-03-02T10:00:00Z", "Login");
+        long["text"] = json!("x".repeat(2 * ALERTS_LIMIT));
+        assert_eq!(super::lines(&[long.clone(), long]).1, 1);
+    }
+
     #[test]
     fn a_baseline_the_alerts_share_is_written_once() {
         let mut other = alert("2026-03-02T10:06:00Z", "PutUserPolicy");
         other["_baseline"] = json!({"seen_days": 121});
         let mut all = alerts();
         all.push(other);
-        let text = lines(&all);
+        let (text, _) = lines(&all);
         let rows: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0]["_baseline"]["seen_days"], 120);
