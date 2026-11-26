@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use crate::notify::{Note, Notifier};
+use crate::status::{AlertSummary, Tracker};
 
 /// How often the files are read for what is new.
 const EVERY: Duration = Duration::from_secs(1);
@@ -455,17 +456,26 @@ pub struct Follow {
     /// which is there when this watch shows any.
     notes: Vec<Note>,
     notifier: Option<Notifier>,
+    /// Upheld reviews collected since the last `status.json` flush.
+    new_alerts: Vec<AlertSummary>,
+    status: Option<Tracker>,
 }
 
 impl Follow {
-    pub fn new(dir: &Path, notifier: Option<Notifier>, review_wait: Option<Duration>) -> Self {
-        Self::with_style(dir, notifier, review_wait, Style::detect())
+    pub fn new(
+        dir: &Path,
+        notifier: Option<Notifier>,
+        review_wait: Option<Duration>,
+        status: Option<Tracker>,
+    ) -> Self {
+        Self::with_style(dir, notifier, review_wait, status, Style::detect())
     }
 
     fn with_style(
         dir: &Path,
         notifier: Option<Notifier>,
         review_wait: Option<Duration>,
+        status: Option<Tracker>,
         style: Style,
     ) -> Self {
         Self {
@@ -484,6 +494,8 @@ impl Follow {
             style,
             notes: Vec::new(),
             notifier,
+            new_alerts: Vec::new(),
+            status,
         }
     }
 
@@ -630,6 +642,8 @@ impl Follow {
             let ids = self.resolve(&record);
             lines.extend(review(&record, &ids, self.style));
             self.notes.extend(note(&record, &self.dir));
+            self.new_alerts
+                .extend(AlertSummary::from_review(&record, &self.dir));
         }
         let elapsed = at.saturating_duration_since(self.told);
         let due = if self.pending.is_empty() {
@@ -648,6 +662,12 @@ impl Follow {
     fn say(&mut self, now: bool) {
         for line in self.said(now) {
             println!("{line}");
+        }
+        if let Some(status) = &self.status {
+            let alerts = std::mem::take(&mut self.new_alerts);
+            status.update(self.judged, self.flagged, self.pending.len() as u64, alerts);
+        } else {
+            self.new_alerts.clear();
         }
         for note in self.notes.drain(..) {
             if let Some(notifier) = &self.notifier {
@@ -812,7 +832,7 @@ mod tests {
     #[test]
     fn a_macs_alert_and_review_correlate_with_short_names() {
         let dir = tempfile::tempdir().unwrap();
-        let mut follow = Follow::with_style(dir.path(), None, None, Style::plain());
+        let mut follow = Follow::with_style(dir.path(), None, None, None, Style::plain());
         let look = json!({
             "ts": "2026-11-24T03:09:43Z", "source": "macos_session",
             "_norm": {"actor": "/opt/homebrew/Cellar/python@3.15/Python#501"},
@@ -924,7 +944,7 @@ mod tests {
     #[test]
     fn a_pipelines_notifications_are_handed_on() {
         let dir = tempfile::tempdir().unwrap();
-        let mut follow = Follow::with_style(dir.path(), None, None, Style::plain());
+        let mut follow = Follow::with_style(dir.path(), None, None, None, Style::plain());
         let review = |verdict: &str| {
             json!({"source": "macos_review", "session": {"entry": "~/bin/agent"},
                 "review": {"verdict": verdict, "finding": "It ran."}})
@@ -953,7 +973,7 @@ mod tests {
     fn what_the_pipeline_writes_is_said() {
         let dir = tempfile::tempdir().unwrap();
         append(&dir.path().join("verdicts.ndjson"), "{}\n");
-        let mut follow = Follow::with_style(dir.path(), None, None, Style::plain());
+        let mut follow = Follow::with_style(dir.path(), None, None, None, Style::plain());
         assert!(follow.said(true).is_empty(), "nothing new, nothing said");
 
         let session = |entry: &str| json!({"session": {"entry": entry}}).to_string();
@@ -995,7 +1015,7 @@ mod tests {
     fn review_progress_shows_hold_countdown_then_investigating_elapsed() {
         let dir = tempfile::tempdir().unwrap();
         let wait = Duration::from_secs(60);
-        let mut follow = Follow::with_style(dir.path(), None, Some(wait), Style::plain());
+        let mut follow = Follow::with_style(dir.path(), None, Some(wait), None, Style::plain());
         let now = Instant::now();
         let key = ReviewKey::Mac {
             id: "1".into(),
@@ -1033,7 +1053,7 @@ mod tests {
     #[test]
     fn cloud_reviews_correlate_multiple_alerts_for_same_actor() {
         let dir = tempfile::tempdir().unwrap();
-        let mut follow = Follow::with_style(dir.path(), None, None, Style::plain());
+        let mut follow = Follow::with_style(dir.path(), None, None, None, Style::plain());
         let mk = |why: &str| {
             json!({
                 "ts": "2026-11-24T03:09:43Z", "source": "okta",

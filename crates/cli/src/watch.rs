@@ -38,6 +38,7 @@ use crate::follow::Follow;
 use crate::init::{self, Choices, Provider, Server, Source};
 use crate::mac::{self, Mac};
 use crate::notify::{self, Notifier};
+use crate::status::Tracker;
 use crate::{fetch, local};
 
 /// The queue a CloudTrail source reads its trail from as it is written.
@@ -46,6 +47,10 @@ const QUEUE: &str = "CLOUDTRAIL_QUEUE_URL";
 /// Where `tangent watch <what>` keeps its pipeline:
 /// `$XDG_DATA_HOME/tangent/<what>`, else `$HOME/.local/share/tangent/<what>`.
 /// A variable that is unset, empty or relative is not one.
+pub fn data_dir(what: &str) -> Result<PathBuf> {
+    home(what, |name| std::env::var_os(name))
+}
+
 fn home(what: &str, var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
     let var = |name| var(name).map(PathBuf::from).filter(|p| p.is_absolute());
     let Some(data) = var("XDG_DATA_HOME").or_else(|| Some(var("HOME")?.join(".local/share")))
@@ -109,6 +114,10 @@ fn needed(config: &str, needs: &[(&'static str, &'static str)]) -> Result<()> {
 struct Pipeline {
     /// Its directory's name under tangent's own: what is watched.
     what: &'static str,
+    /// Short mode name written into `status.json` (`local` or `hosted`).
+    mode: &'static str,
+    /// Concise model label shown in `tangent status` and the menu bar.
+    models: String,
     /// tangent.yaml and the files beside it.
     files: Vec<(&'static str, String)>,
     server: Server,
@@ -164,8 +173,14 @@ pub async fn cloud(
     }
     said.push(format!("{}.", choices.models()));
     said.push(format!("Your records {}.", choices.records()));
+    let mode = match server {
+        Server::Ollama | Server::Yours => "local",
+        Server::Hosted(_) => "hosted",
+    };
     start(Pipeline {
         what: "cloud",
+        mode,
+        models: choices.models(),
         files: choices.files(),
         server,
         said,
@@ -184,8 +199,15 @@ pub async fn mac(provider: Option<Provider>, no_notify: bool) -> Result<()> {
     let mac = Mac::new(provider).watched();
     mac::runs_here(&mac)?;
     needed(&mac.config(), &mac.needs())?;
+    let (mode, models) = if hosted {
+        ("hosted", "Claude Haiku 5.5 + Sonnet 5.5".to_string())
+    } else {
+        ("local", "Inkling 2 Mini (local)".to_string())
+    };
     start(Pipeline {
         what: "mac",
+        mode,
+        models,
         files: mac.files(),
         server: mac.server(),
         said: vec![
@@ -205,15 +227,17 @@ pub async fn mac(provider: Option<Provider>, no_notify: bool) -> Result<()> {
 }
 
 /// Prints one confirmation line once the pipeline (or Mac sensor, after
-/// `sudo`) is live, so the terminal is not left blank after startup.
+/// `sudo`) is live, so the terminal is not left blank after startup, and
+/// marks `status.json` as watching.
 struct Ready {
     target: &'static str,
     message: &'static str,
     printed: AtomicBool,
+    status: Option<Tracker>,
 }
 
 impl Ready {
-    fn for_config(config: &Path) -> Self {
+    fn for_config(config: &Path, status: Option<Tracker>) -> Self {
         let has_mac = Config::load(config).is_ok_and(|loaded| {
             loaded
                 .config
@@ -226,12 +250,14 @@ impl Ready {
                 target: "tangent_runtime::sources::macos",
                 message: "the sensor is started",
                 printed: AtomicBool::new(false),
+                status,
             }
         } else {
             Self {
                 target: "tangent_runtime",
                 message: "pipeline started",
                 printed: AtomicBool::new(false),
+                status,
             }
         }
     }
@@ -271,6 +297,9 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Ready {
         };
         event.record(&mut check);
         if check.matched && !self.printed.swap(true, Ordering::SeqCst) {
+            if let Some(status) = &self.status {
+                status.set_watching();
+            }
             println!("Started. Activity will show up here.");
         }
     }
@@ -310,24 +339,33 @@ fn init_logging(dir: &Path, ready: Option<Ready>) -> Option<PathBuf> {
 /// Writes the pipeline to its directory, fetches what it needs, says what
 /// it is, and runs it there until a signal, saying what it finds.
 async fn start(pipeline: Pipeline) -> Result<()> {
-    let dir = home(pipeline.what, |name| std::env::var_os(name))?;
+    let dir = data_dir(pipeline.what)?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let _held = hold(&dir)?;
+    let status = Tracker::start(&dir, pipeline.mode, &pipeline.models);
     init::place(&dir, &pipeline.files)?;
     // A sink's path is read against the directory tangent runs in, and the
     // file's are its own: the lake, the alerts and their reviews.
     std::env::set_current_dir(&dir).with_context(|| format!("entering {}", dir.display()))?;
     let config = dir.join("tangent.yaml");
-    let log = init_logging(&dir, Some(Ready::for_config(&config)));
-    fetch::missing(&config).await?;
+    let log = init_logging(&dir, Some(Ready::for_config(&config, Some(status.clone()))));
+    if let Err(e) = fetch::missing(&config).await {
+        status.set_error(&format!("{e:#}"));
+        return Err(e);
+    }
     if pipeline.server == Server::Ollama {
         let root = local::root()?;
         let missing = local::missing(&root);
         if !missing.nothing() {
             if !init::ask_to_fetch(&missing, &root) {
-                bail!("the model is not on this Mac, so there is nothing to judge with: `tangent model fetch` downloads it");
+                let msg = "the model is not on this Mac, so there is nothing to judge with: `tangent model fetch` downloads it";
+                status.set_error(msg);
+                bail!("{msg}");
             }
-            local::fetch(&root).await?;
+            if let Err(e) = local::fetch(&root).await {
+                status.set_error(&format!("{e:#}"));
+                return Err(e);
+            }
         }
     }
 
@@ -360,7 +398,14 @@ async fn start(pipeline: Pipeline) -> Result<()> {
     }
     println!("Ctrl-C stops it.\n");
 
-    following(&dir, &config, RuntimeOptions::default(), notifier).await
+    following(
+        &dir,
+        &config,
+        RuntimeOptions::default(),
+        notifier,
+        Some(status),
+    )
+    .await
 }
 
 /// `tangent watch --config`: the owner's config, run where they are.
@@ -368,7 +413,7 @@ pub async fn config(config: PathBuf, once: bool, no_notify: bool) -> Result<()> 
     let config = config.canonicalize().unwrap_or(config);
     // A sink's path is read against the directory tangent runs in.
     let dir = std::env::current_dir().context("reading the directory this runs in")?;
-    let ready = (!once).then(|| Ready::for_config(&config));
+    let ready = (!once).then(|| Ready::for_config(&config, None));
     let log = init_logging(&dir, ready);
     fetch::missing(&config).await?;
     let notifier = match notify::app(&config, no_notify).await {
@@ -388,7 +433,7 @@ pub async fn config(config: PathBuf, once: bool, no_notify: bool) -> Result<()> 
         once,
         ..Default::default()
     };
-    following(&dir, &config, opts, notifier).await
+    following(&dir, &config, opts, notifier, None).await
 }
 
 /// How long the pipeline's review plugin holds an alert before starting the
@@ -411,10 +456,11 @@ async fn following(
     config: &PathBuf,
     opts: RuntimeOptions,
     notifier: Option<Notifier>,
+    status: Option<Tracker>,
 ) -> Result<()> {
     let wait = review_wait(config);
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let said = tokio::spawn(Follow::new(dir, notifier, wait).run(stopped));
+    let said = tokio::spawn(Follow::new(dir, notifier, wait, status.clone()).run(stopped));
     tokio::spawn(async {
         if signalled().await {
             println!(
@@ -425,6 +471,12 @@ async fn following(
     let ran = tangent_runtime::run(config, opts).await;
     let _ = stop.send(());
     let _ = said.await;
+    if let Some(status) = status {
+        match &ran {
+            Ok(()) => status.set_stopped(),
+            Err(e) => status.set_error(&format!("{e:#}")),
+        }
+    }
     ran
 }
 

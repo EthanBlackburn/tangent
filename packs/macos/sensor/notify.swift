@@ -247,16 +247,44 @@ func openedByMacOS() -> Bool {
 let clickWithin = 10.0
 let noClick = DispatchWorkItem { exit(0) }
 
-/// Started by macOS: a notification was clicked, and macOS says which. It
-/// says so once the app has finished launching, which is AppKit's to say:
-/// with only a dispatch loop the click never comes. `notify` needs none,
-/// since macOS tells a process that is running already.
+/// Started by macOS: either a notification was clicked after `notify` ended,
+/// or the user opened `Tangent.app` directly from Finder / Spotlight. If a
+/// notification click arrives within a moment we handle it and exit; otherwise
+/// if no menu bar instance is running we bring up the menu bar.
 func opened() -> Never {
+    // Wait briefly for a notification click before deciding this was a direct
+    // app launch (macOS delivers the click right after launch finishes).
+    var gotClick = false
     clicks.dealt = { exit(0) }
     let center = notifications()
     center.delegate = clicks
     registerAnswers(center)
+    let launchMenu = DispatchWorkItem {
+        guard !gotClick else { return }
+        noClick.cancel()
+        startMenuBarInRunningApp()
+    }
+    // Wrap clicks to mark `gotClick` as soon as a response arrives.
+    let watcher = ClickOrMenuDelegate(
+        onClick: { gotClick = true; launchMenu.cancel() }
+    )
+    center.delegate = watcher
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: launchMenu)
     DispatchQueue.main.asyncAfter(deadline: .now() + clickWithin, execute: noClick)
     NSApplication.shared.run()
     exit(0)
+}
+
+private final class ClickOrMenuDelegate: NSObject, UNUserNotificationCenterDelegate {
+    let onClick: () -> Void
+    init(onClick: @escaping () -> Void) { self.onClick = onClick }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler done: @escaping () -> Void
+    ) {
+        onClick()
+        clicks.userNotificationCenter(center, didReceive: response, withCompletionHandler: done)
+    }
 }
