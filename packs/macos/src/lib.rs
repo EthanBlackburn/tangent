@@ -549,10 +549,33 @@ fn keep(pid: i64, k: &Known, now: Option<i64>) {
     }
 }
 
+/// A command line as `ps` lists it, its arguments joined with spaces, as
+/// the tree keeps one: the script an interpreter runs, and the arguments
+/// after it, with their keys taken out. The arguments are what follows the
+/// program's path where the line starts with it (a path may hold spaces),
+/// else what follows the first word, which the process chose. An argument
+/// that held a space is read as two, so this names a script as well as the
+/// line allows and no better.
+fn listed(path: &str, line: &str) -> (Option<String>, Option<String>) {
+    let rest = match line.strip_prefix(path) {
+        Some(rest) if rest.is_empty() || rest.starts_with(' ') => rest,
+        _ => line.split_once(' ').map_or("", |(_, rest)| rest),
+    };
+    let mut args = vec![path.to_string()];
+    args.extend(rest.split_whitespace().map(str::to_string));
+    let args = secrets::hidden(&args);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let named = script_name(path, &args, None);
+    let from = named.as_ref().map_or(1, |(_, at)| *at);
+    (named.map(|(n, _)| n), command(&args, from))
+}
+
 /// A line of the source's snapshot: a process that was running when the capture
 /// began, which no fork or exec will ever show. The tree takes its parent
 /// and path, so the programs started before the log (the terminal, the
 /// apps, an agent left open) are named in `parents` and as `responsible`;
+/// and its command line, as `ps` gives it, so a server or an agent left
+/// running says what it was started to do;
 /// a process the tree already knows keeps what its events said, unless the
 /// snapshot's started at another time: then the row is of a process that
 /// had the pid in an earlier run, and the snapshot's takes its place.
@@ -569,6 +592,11 @@ fn snapshot(rec: &Map<String, Value>) {
     let mut fields = vec![String::new(); WRITTEN + 1];
     fields[0] = int_at(p, "/ppid").unwrap_or(0).to_string();
     fields[1] = path.to_string();
+    if let Some(line) = str_at(p, "/command") {
+        let (name, command) = listed(path, line);
+        fields[2] = name.unwrap_or_default();
+        fields[3] = command.unwrap_or_default();
+    }
     fields[10] = start.unwrap_or_default();
     fields[WRITTEN] = now_of(rec).unwrap_or(0).to_string();
     let _ = state::set(
@@ -956,6 +984,7 @@ fn connection(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
             p.insert("ppid".into(), json!(k.ppid));
             p.insert("path".into(), json!(k.path));
             put(&mut p, "name", k.name.clone());
+            put(&mut p, "command", k.command.clone());
             put(&mut p, "signer", k.signer.clone());
             put(&mut p, "team", k.team.clone());
             if k.seen {
@@ -1185,6 +1214,9 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
                 a.ppid = k.ppid;
             }
             a.pstart = parent_started(a.ppid);
+            // what the snapshot said it was started to do
+            a.name = k.name.clone();
+            a.command = k.command.clone();
             remember(&a, None, now);
         }
         Some(k) => {
@@ -1286,7 +1318,11 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
         _ => {
             let mut a = actor;
             a.ppid = first_ppid(a.ppid);
-            a.name = mine.filter(|k| k.path == a.path).and_then(|k| k.name);
+            // as the tree has it: from its exec, or from a snapshot, whose
+            // path is `ps`'s and may be written another way
+            let k = mine.filter(|k| k.path == a.path || !k.seen);
+            a.name = k.as_ref().and_then(|k| k.name.clone());
+            a.command = k.and_then(|k| k.command);
             a
         }
     };
@@ -1298,7 +1334,16 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
 
     let mut out = Map::new();
     out.insert("event".into(), json!(kind));
-    out.insert("process".into(), actor.json());
+    let mut process = actor.json();
+    // what it was started to do, on a record that is not its start: the
+    // exec holds the whole command line, and a summary without the exec
+    // (a later window, a process older than the log) has this of it
+    if kind != "exec" {
+        if let (Some(command), Some(p)) = (&actor.command, process.as_object_mut()) {
+            p.insert("command".into(), json!(command));
+        }
+    }
+    out.insert("process".into(), process);
     situate(&mut out, actor.pid, actor.ppid, rec);
     // whose behalf it works on, by name: `process.responsible` is a pid
     if let Some(r) = actor.responsible {
@@ -1501,6 +1546,38 @@ impl Guest for Component {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command line as `ps` lists it: the script an interpreter runs and
+    /// what follows it, whatever the process calls itself and whatever
+    /// spaces its path holds, with a key taken out.
+    #[test]
+    fn a_listed_command_line_is_the_script_and_its_arguments() {
+        assert_eq!(
+            listed("/usr/local/bin/node", "node /srv/app/server.js --port 8080"),
+            (
+                Some("node /srv/app/server.js".into()),
+                Some("--port 8080".into())
+            )
+        );
+        // the path, spaces and all, is not an argument
+        assert_eq!(
+            listed(
+                "/Applications/Visual Studio Code.app/Contents/MacOS/Electron",
+                "/Applications/Visual Studio Code.app/Contents/MacOS/Electron --type=renderer"
+            ),
+            (None, Some("--type=renderer".into()))
+        );
+        // a login shell, as the source names it and as it names itself
+        assert_eq!(listed("zsh", "-zsh"), (None, None));
+        let (_, command) = listed(
+            "/usr/bin/curl",
+            "curl -H ghp_examplesecretvalue0000000000000000 https://x.example",
+        );
+        assert_eq!(
+            command.unwrap(),
+            "-H ghp_[secret: 34 bytes] https://x.example"
+        );
+    }
 
     fn name(path: &str, args: &[&str], cwd: &str) -> Option<String> {
         script_name(path, args, Some(cwd)).map(|(n, _)| n)

