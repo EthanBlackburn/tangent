@@ -22,9 +22,9 @@
 //! covered, the SQL the model ran, what the review took and the node. A
 //! review that fails is an `error` in `review`, and the alerts stand.
 //!
-//! The lake has an alert's own records once their file is sealed. The config
-//! holds an actor's alerts back that long by grouping (`expire_after_ms`),
-//! which also gathers them into one review, on workers of the plugin's own.
+//! The lake has an alert's own records once its sink has written them. The
+//! config holds an actor's alerts by grouping (`expire_after_ms`), which
+//! gathers them into one review, on workers of the plugin's own.
 
 wit_bindgen::generate!({
     path: ".tangent/wit",

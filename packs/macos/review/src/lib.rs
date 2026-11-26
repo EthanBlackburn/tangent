@@ -33,13 +33,13 @@
 //! the queries allowed; tangent stopping) is an `error` in `review`, and the
 //! alert stands.
 //!
-//! The lake has an alert's own records once their file is sealed, minutes
-//! after the alert. The config holds each alert back that long by grouping:
-//! `group_by` an alert's session and window, `expire_after_ms` the wait. A
-//! grouped plugin has workers of its own, so a review that takes minutes
-//! holds up neither the capture nor the judge. A group that closes sooner
-//! (the input ended) is reviewed before the lake has the alert's last
-//! records: the model is told, and the record is marked `early`.
+//! The lake has an alert's own records once its sink has written them,
+//! sealed in a file or not. The config holds each alert a few seconds by
+//! grouping: `group_by` an alert's session and window, `expire_after_ms` the
+//! wait. A grouped plugin has workers of its own, so a review that takes
+//! minutes holds up neither the capture nor the judge. A review that finds
+//! the lake without the alert's last records tells the model, and the record
+//! is marked `early`.
 
 wit_bindgen::generate!({
     path: ".tangent/wit",
@@ -100,7 +100,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
       the table whatever its time"),
     ("event", "event",
      "`exec` (a program started), `open`, `close`, `create`, `rename`, `unlink` (a file), `connect` (a network \
-      connection opened), `prompt` (what the person typed to an AI coding agent), or a rarer Endpoint Security \
+      connection opened), `prompt` (what an AI coding agent was asked), or a rarer Endpoint Security \
       event as it came (`btm_launch_item_add`, a login item added; `tcc_modify`, a privacy permission changed)"),
     ("session", "\"session\"['id']", "the session the record belongs to: `session.id` in the alert"),
     ("entry", tilde!("\"session\"['entry']"),
@@ -136,7 +136,9 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("host", "\"connect\"['host']", "`connect`: the name the TLS hello or a DNS answer gave"),
     ("dst", "\"connect\"['dst']", "`connect`: the address"),
     ("port", "\"connect\"['port']", "`connect`: the port"),
-    ("prompt", "prompt['text']", "`prompt`: the text typed"),
+    ("prompt", "prompt['text']",
+     "`prompt`: the text typed; when `record->'prompt'->>'headless'` is `true`, the text sent by what started the agent \
+      (`claude -p`, the Agent SDK), a person at a terminal or a program"),
     ("facts", "_facts",
      "a struct of marks the pack made, null when not set: which kept group a file is in (`credentials`, `persistence`, \
       `agent_settings`, `agent_instructions`, `agent_mcp`, `agent_state`, `agent_extensions`), `scratch_program` \

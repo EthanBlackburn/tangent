@@ -74,16 +74,15 @@ tangent watch cloud --sources okta,github
   ```
 - **Choose any model or run locally:** Add `--local` to keep every cloud record on your Mac with Inkling 2 Mini, `--local --model <name>` for your own local server (`llama-server`, `mlx_lm.server`, Ollama, vLLM), or `--provider openrouter|openai|bedrock --model <judge>,<reviewer>`.
 
-While `tangent watch` runs, what it checked, each alert and each settled review stream to your terminal:
+While `tangent watch` runs, alerts, settled reviews, and a quiet heartbeat stream cleanly to your terminal (runtime logs go to `watch.log` unless `RUST_LOG` is set):
 
 ```text
-checked   41 (deploy-bot x30, ana@acme.example x9, 2 more): 1 flagged
-flagged   2026-11-24 03:09Z  okta  ana@acme.example
-          a sign-in from a Tor exit, with no second factor
-          sent to review
-reviewed  ana@acme.example, 3 alerts: malicious
-          ...
-          check: ...
+#1  03:09Z  flagged  okta  ana@acme.example  a sign-in from a Tor exit  (reviewing)
+
+#1  MALICIOUS  ana@acme.example (3 alerts)
+    ...
+    check: ...
+checked 41 activities · 1 flagged
 ```
 
 Want to edit the prompts, route alerts to Slack, or customize the pipeline? Run `tangent init mac` or `tangent init cloud` with the same flags to write a standalone `tangent.yaml` and prompt files in your current directory. See [docs/try-it.md](/docs/try-it.md) for full details and required credentials.
@@ -112,21 +111,25 @@ And here is what Tangent said of a benign look-alike on the same Mac — a devel
 
 ### On the Mac
 
-We recreated seven real-world developer attacks inside a Mac VM with Tangent watching, alongside seven benign developer look-alikes doing similar things for legitimate reasons. Each recording was run three times with Claude Haiku 5.5 (judge) and Claude Sonnet 5.5 (reviewer):
+We recreated eleven real-world developer attacks inside a Mac VM with Tangent watching, alongside eleven benign developer look-alikes doing similar things for legitimate reasons. Two of them run a real Claude Code in the VM. Each recording was run three times through Tangent 0.3.2 with Claude Haiku 5.5 (judge) and Claude Sonnet 5.5 (reviewer):
 
 | Attack | What it does on the Mac |
 |---|---|
 | **Shai-Hulud** | An `npm` install script sweeps tokens and keys and republishes the developer's packages with itself added |
 | **axios compromise** | An `npm` install script drops a remote-access tool disguised as an Apple daemon |
 | **LiteLLM compromise** | A PyPI package installs a hook that runs on every Python startup and harvests credentials |
+| **Nx "s1ngularity"** | An `npm` install script takes tokens and starts the developer's own coding agent, permission prompts off, to list the files worth taking |
+| **Ultralytics compromise** | A PyPI package's model download fetches a coin miner into `/tmp`, runs it against a pool, and deletes the file |
+| **Malicious Hugging Face models** | Loading a model's pickle weights makes the developer's Python connect back and start a shell |
 | **Contagious Interview (CLI)** | A fake recruiter's take-home repo exfiltrates wallets, browser data, and Keychain, and installs a backdoor |
 | **Contagious Interview (editor)** | Opening the repo folder triggers a hidden editor task that pipes a script into `bash` |
 | **GlassWorm** | An editor extension steals Keychain, wallets, and credentials and adds a login item |
 | **Trojanised Claude Code extension** | An editor extension injects an SSH key, opens a reverse tunnel, and installs a LaunchAgent |
+| **Hijacked coding agent** | A cloned repo's agent settings run the attacker's script when Claude Code starts and send its traffic and API key to the attacker's endpoint |
 
-- **Caught:** **7 of 7** attacks in all 3 runs.
-- **False alarms:** The judge alone marked look-alikes in 16 of 21 runs; after the reviewer investigated, **0 of 7** stood.
-- All recordings and harness code: [tangent-eval/macos](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos). *(Note: local Inkling 2 Mini results on this Mac suite are not published yet.)*
+- **Caught:** **11 of 11** attacks in all 3 runs.
+- **False alarms:** The judge alone marked look-alikes in 18 of 33 runs; after the reviewer investigated, **0 of 11** stood.
+- All cases and harness code: [tangent-eval/macos](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos). *(Note: local Inkling 2 Mini results on this Mac suite are not published yet.)*
 
 ### In the cloud
 
@@ -142,7 +145,7 @@ Evaluated against 59,342 records across ~13.5 months of a synthetic startup's AW
 
 **Being candid about what this doesn't prove yet:**
 - The cloud logs are synthetic, and our 36 custom cases were written while developing the judge's brief.
-- Elastic's rules matched Tangent on the Mac suite and caught all 35 Stratus AWS techniques — the difference is that Tangent gets there with one binary and no detection-engineering team.
+- Elastic's rules matched Tangent on the first seven Mac cases (the four newer ones have not been compared) and caught all 35 Stratus AWS techniques — the difference is that Tangent gets there with one binary and no detection-engineering team.
 - False-alarm volume across a real company's working week has not been benchmarked yet.
 
 ## Privacy & cost

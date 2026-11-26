@@ -1,7 +1,7 @@
 # The example with the second reviewer: haiku.yaml, and each alert settled by
 # a stronger model with the lake to query (packs/macos/review.yaml: Claude
-# Sonnet 5.5 on Bedrock, REVIEW_MODEL for another). An alert waits until the
-# lake has its records, about seven minutes, and goes to reviews.ndjson with
+# Sonnet 5.5 on Bedrock, REVIEW_MODEL for another). An alert is reviewed as
+# soon as it is raised, and goes to reviews.ndjson with
 # its review: malicious, benign or unresolved. It costs money and sends
 # records to a second model, so it is its own config.
 #

@@ -190,10 +190,16 @@ enum Commands {
         no_notify: bool,
     },
 
-    /// Run one attack on this Mac, for `tangent watch mac` to catch: a
-    /// credential sweep of a project made up for the run, uploaded to this
-    /// command itself. Nothing of yours is opened and nothing leaves the Mac
-    Simulate,
+    /// Run an attack on this Mac, for `tangent watch mac` to catch, in a
+    /// project made up for the run and against a server that is this
+    /// command itself. Nothing of yours is opened or changed and nothing
+    /// leaves the Mac
+    Simulate {
+        /// `credentials`: a script sweeps the project's keys and uploads
+        /// them. `agent`: a script takes over the project's AI coding
+        /// agent. With neither, the two are listed and you pick one
+        attack: Option<String>,
+    },
 
     /// The model that runs on this machine with `--local`
     Model {
@@ -325,8 +331,14 @@ enum PluginCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // `tangent watch` writes runtime logs to `watch.log` in its pipeline
+    // directory so the terminal stays readable, unless `RUST_LOG` is set.
+    let watch_quiet =
+        matches!(cli.command, Commands::Watch { .. }) && std::env::var_os("RUST_LOG").is_none();
+    if !watch_quiet {
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
 
     match cli.command {
         Commands::Bench {
@@ -406,7 +418,7 @@ async fn main() -> Result<()> {
             watch::config(config, once, no_notify).await?
         }
 
-        Commands::Simulate => simulate::run()?,
+        Commands::Simulate { attack } => simulate::run(attack)?,
 
         Commands::Model {
             command: ModelCommand::Fetch,

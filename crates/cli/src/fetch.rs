@@ -67,7 +67,7 @@ pub async fn run(opts: FetchOptions) -> Result<()> {
         };
         let out = plugins::fetched(&cache, prebuilt);
         fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
-        fetch_one(&client, name, plugin, prebuilt, &out).await?;
+        fetch_one(&client, name, plugin, prebuilt, &out, true).await?;
         fetched += 1;
         if let Some(local) = remove_local_build(name, plugin, &plugins_dir)? {
             println!(
@@ -120,19 +120,18 @@ pub async fn missing(config_path: &Path) -> Result<()> {
     let wanted = wanted(&cfg, &plugins_dir, cache.as_deref().ok());
     if !wanted.is_empty() {
         let cache = cache?;
-        let names: Vec<&str> = wanted.iter().map(|(name, ..)| *name).collect();
-        println!(
-            "tangent {VERSION}: fetching {} (once per version)",
-            names.join(", ")
-        );
+        let count = wanted.len();
+        let noun = if count == 1 { "plugin" } else { "plugins" };
+        println!("Fetching {count} {noun} (v{VERSION})...");
         let client = client()?;
         for (name, plugin, prebuilt) in wanted {
             let out = plugins::fetched(&cache, prebuilt);
             fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
-            fetch_one(&client, name, plugin, prebuilt, &out)
+            fetch_one(&client, name, plugin, prebuilt, &out, false)
                 .await
                 .map_err(|e| unreached(name, "each pack's plugin", e))?;
         }
+        println!("Verified {count} {noun}.");
     }
     if cfg!(target_os = "macos") && names_no_sensor(&cfg) {
         let dir = tangent_shared::sensor::dir()?;
@@ -159,7 +158,7 @@ fn names_no_sensor(cfg: &Config) -> bool {
 /// passed. One that does not pass is removed.
 pub(crate) async fn sensor(dir: &Path) -> Result<()> {
     let url = tangent_shared::sensor::url(VERSION);
-    println!("tangent {VERSION}: fetching the Mac's sensor (once per version)");
+    println!("Fetching Mac sensor (v{VERSION})...");
     let Some(bytes) = download(&client()?, &url).await? else {
         bail!(
             "the Mac's sensor: {url} is not there: a release without a sensor, or a tangent built \
@@ -191,10 +190,11 @@ pub(crate) async fn sensor(dir: &Path) -> Result<()> {
         fs::remove_dir_all(dir).with_context(|| format!("removing {}", dir.display()))?;
     }
     fs::rename(&unpacked, dir).with_context(|| format!("naming {}", dir.display()))?;
-    println!(
-        "✅ the Mac's sensor: signed by tangent's team and notarized by Apple\n   {}",
-        tangent_shared::sensor::binary(dir).display()
+    tracing::info!(
+        sensor = %tangent_shared::sensor::binary(dir).display(),
+        "verified Mac sensor (signed by tangent's team and notarized by Apple)"
     );
+    println!("Verified Mac sensor (Apple notarized).");
     Ok(())
 }
 
@@ -236,6 +236,7 @@ async fn fetch_one(
     plugin: &PluginConfig,
     p: &Prebuilt,
     out: &Path,
+    verbose: bool,
 ) -> Result<Attested> {
     let release = p.release(VERSION);
     let asset = p.asset(name);
@@ -243,7 +244,9 @@ async fn fetch_one(
     // Written beside their destination, so the move into place is a rename.
     let tmp = tempfile::tempdir_in(out)?;
 
-    println!("⬇️  {name}: {asset} from {}/{} {release}", p.host(), p.repo);
+    if verbose {
+        println!("⬇️  {name}: {asset} from {}/{} {release}", p.host(), p.repo);
+    }
     let url = p.asset_url(VERSION, &asset);
     let Some(bytes) = download(client, &url).await? else {
         bail!(not_there(name, plugin, p, &url));
@@ -273,12 +276,22 @@ async fn fetch_one(
         .context("the attestation bundle is not text")
         .and_then(|bundle| attest::verify(&digest, &asset, bundle, p, &release))
         .with_context(|| format!("{name}: {asset} did not verify, and is not kept"))?;
-    println!(
-        "✅ {name}: sha256 {digest}\n   built by {} from {} ({})",
-        verified.signer,
-        short(&verified.commit),
-        verified.source_ref
+    tracing::info!(
+        plugin = name,
+        sha256 = %digest,
+        signer = %verified.signer,
+        commit = %short(&verified.commit),
+        source_ref = %verified.source_ref,
+        "verified prebuilt plugin"
     );
+    if verbose {
+        println!(
+            "✅ {name}: sha256 {digest}\n   built by {} from {} ({})",
+            verified.signer,
+            short(&verified.commit),
+            verified.source_ref
+        );
+    }
 
     let cwasm = tmp.path().join(format!("{name}.cwasm"));
     compile_wasm::precompile(&component, &cwasm)

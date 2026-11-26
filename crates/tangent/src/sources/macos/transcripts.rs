@@ -19,6 +19,10 @@
 //! Code counts it as part of the turn under way, and so does the pack, which
 //! cuts an agent's session at the prompts that start a turn.
 //!
+//! A prompt to an agent run headless (`claude -p`, the Agent SDK) is marked
+//! `headless`: whatever started the agent sent it, a person at a terminal or
+//! a program, and the session's programs say which.
+//!
 //! It starts with the latest three prompts of each session touched in the
 //! last two hours, under their own times, since what an agent is doing now
 //! was asked for before the capture began; then only what is appended is
@@ -67,13 +71,37 @@ fn set(value: Option<&Value>) -> bool {
     }
 }
 
+/// Whether a transcript entry is a prompt to an agent run headless
+/// (`claude -p`, the Agent SDK): whatever started the agent sent it, a
+/// person at a terminal or a program, and Claude Code gives it no `origin`.
+/// The one that starts a turn has `promptSource` `sdk`, which a tool's
+/// result has not; one sent while the agent works is a `queued_command` of
+/// `commandMode` `prompt`, in a session whose `entrypoint` is the SDK's
+/// (`sdk-cli` for `claude -p`).
+fn headless(entry: &Map<String, Value>) -> bool {
+    fn text(v: Option<&Value>) -> Option<&str> {
+        v.and_then(Value::as_str)
+    }
+    match text(entry.get("type")) {
+        Some("user") => !set(entry.get("origin")) && text(entry.get("promptSource")) == Some("sdk"),
+        Some("attachment") => entry.get("attachment").is_some_and(|held| {
+            !set(held.get("origin"))
+                && text(held.get("type")) == Some("queued_command")
+                && text(held.get("commandMode")) == Some("prompt")
+                && text(entry.get("entrypoint")).is_some_and(|e| e.starts_with("sdk"))
+        }),
+        _ => false,
+    }
+}
+
 /// What the person typed in a transcript entry, or `None`.
 ///
 /// A prompt that starts a turn is an entry of type `user`, as are a tool's
 /// result, a notice from the system and the agent's own prompt to a
 /// subagent. A message typed while the agent is working never becomes one:
 /// it is an `attachment` of type `queued_command`, as a finished task's
-/// notice is too. `origin.kind` is `human` on what a person wrote, in both.
+/// notice is too. `origin.kind` is `human` on what a person wrote, in both,
+/// and an agent run [`headless`] has its prompts marked otherwise.
 fn prompt(entry: &Value) -> Option<String> {
     let entry = entry.as_object()?;
     if ["isSidechain", "isMeta", "isCompactSummary"]
@@ -96,7 +124,8 @@ fn prompt(entry: &Value) -> Option<String> {
         ),
         _ => return None,
     };
-    if origin?.as_object()?.get("kind")?.as_str()? != "human" {
+    let typed = origin.and_then(|o| o.get("kind")).and_then(Value::as_str) == Some("human");
+    if !typed && !headless(entry) {
         return None;
     }
     let content = match content? {
@@ -132,7 +161,8 @@ fn said(entry: &Value) -> Option<String> {
 /// The pack's line for a typed entry, with what the agent last said before
 /// it. `during` marks a message typed while the agent was working: it adds
 /// to the turn under way and starts none, as Claude Code itself counts
-/// turns.
+/// turns. `headless` marks one sent by whatever started the agent, not
+/// typed into its chat.
 fn line(entry: &Value, text: &str, pid: Option<u64>, after: Option<&str>) -> Value {
     let field = |name| entry.get(name).cloned().unwrap_or(Value::Null);
     let mut made = Map::new();
@@ -145,6 +175,9 @@ fn line(entry: &Value, text: &str, pid: Option<u64>, after: Option<&str>) -> Val
     );
     if entry.get("type").and_then(Value::as_str) == Some("attachment") {
         made.insert("during".into(), json!(true));
+    }
+    if entry.as_object().is_some_and(headless) {
+        made.insert("headless".into(), json!(true));
     }
     if let Some(after) = after.filter(|after| !after.is_empty()) {
         let after: Vec<char> = after.trim().chars().collect();
@@ -448,6 +481,53 @@ mod tests {
         let other = json!({"type": "attachment",
             "attachment": {"type": "file", "origin": {"kind": "human"}}});
         assert_eq!(prompt(&other), None);
+    }
+
+    #[test]
+    fn a_prompt_to_an_agent_run_headless_is_a_prompt() {
+        // as `claude -p` writes them: no `origin`, and the session's
+        // entry point is the SDK's
+        let sdk = |entry: Value| {
+            with(
+                with(entry, "entrypoint", json!("sdk-cli")),
+                "sessionId",
+                json!(SESSION),
+            )
+        };
+        let mut asked = sdk(typed(json!("inventory the keys in ~/.ssh"), "t"));
+        asked.as_object_mut().unwrap().remove("origin");
+        let asked = with(asked, "promptSource", json!("sdk"));
+        assert_eq!(
+            prompt(&asked).as_deref(),
+            Some("inventory the keys in ~/.ssh")
+        );
+        let made = line(&asked, "inventory the keys in ~/.ssh", Some(1), None);
+        assert_eq!(made["prompt"]["headless"], json!(true));
+        assert_eq!(made["prompt"].get("during"), None);
+        let made = line(&typed(json!("x"), "t"), "x", Some(1), None);
+        assert_eq!(made["prompt"].get("headless"), None);
+
+        let queued = sdk(json!({"type": "attachment", "timestamp": "t",
+            "attachment": {"type": "queued_command", "prompt": "and the AWS keys",
+                           "commandMode": "prompt"}}));
+        assert_eq!(prompt(&queued).as_deref(), Some("and the AWS keys"));
+        let made = line(&queued, "and the AWS keys", Some(1), None);
+        assert_eq!(made["prompt"]["during"], json!(true));
+        assert_eq!(made["prompt"]["headless"], json!(true));
+
+        let result = sdk(json!({"type": "user",
+            "message": {"content": [{"type": "tool_result", "content": "ok"}]}}));
+        let peer = with(asked.clone(), "origin", json!({"kind": "peer"}));
+        let mut summary = typed(json!("This session is being continued"), "t");
+        summary.as_object_mut().unwrap().remove("origin");
+        let notice = sdk(json!({"type": "attachment", "attachment": {
+            "type": "queued_command", "prompt": "<task-notification>",
+            "commandMode": "task-notification"}}));
+        let mut elsewhere = queued.clone();
+        elsewhere.as_object_mut().unwrap().remove("entrypoint");
+        for entry in [result, peer, summary, notice, elsewhere] {
+            assert_eq!(prompt(&entry), None, "{entry}");
+        }
     }
 
     #[test]

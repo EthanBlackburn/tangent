@@ -1,11 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use bytes::Bytes;
 use flate2::write::GzEncoder;
 use flate2::Compression as f2Compression;
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::fs::File as stdFile;
-use std::io::{copy, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{copy, BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -20,7 +21,7 @@ use tokio::time::{sleep, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::sinks::encoding::{self, Unfit};
-use crate::sinks::manager::{Sink, SinkWrite};
+use crate::sinks::manager::{Sink, SinkWrite, NO_RECORDS};
 use crate::sinks::s3;
 use crate::SINK_BYTES_UNCOMPRESSED_TOTAL;
 use crate::{
@@ -59,6 +60,22 @@ pub struct DurableFileSink {
     uploads: tokio::sync::Mutex<JoinSet<()>>,
     /// Sealed files being sent now: a retry passes them by.
     sending: Arc<parking_lot::Mutex<HashSet<PathBuf>>>,
+    /// What the sink's readers have had encoded of its open files
+    /// ([`Sink::unsealed`]), by each file's path without its extensions: an
+    /// open file is encoded once, as it grows, and not whole for each
+    /// reader. Empty until a reader asks, and a file's goes when the file is
+    /// sealed, so it is never more than the open files' records.
+    unsealed: Arc<parking_lot::Mutex<HashMap<PathBuf, Encoded>>>,
+}
+
+/// What has been encoded of a WAL file for the sink's readers: the name the
+/// file will go out by, how many of its bytes are encoded, and for each
+/// stretch of them, in the file's order, where it starts and its object.
+#[derive(Default)]
+struct Encoded {
+    name: String,
+    upto: u64,
+    objects: Vec<(u64, Bytes)>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -131,6 +148,7 @@ impl DurableFileSink {
             stop: CancellationToken::new(),
             uploads: Mutex::new(JoinSet::new()),
             sending: Arc::default(),
+            unsealed: Arc::default(),
         });
         let d = s.dir.clone();
         let recovered = spawn_blocking(move || recover(&d)).await?;
@@ -214,6 +232,12 @@ impl DurableFileSink {
 
             (sealed, sealed_bytes, meta)
         };
+        // What its readers had encoded of it goes, off this task: a reader
+        // may be encoding now, and whoever sealed the file does not wait.
+        let (held, base) = (self.unsealed.clone(), base_for(&sealed_ready));
+        drop(spawn_blocking(move || {
+            held.lock().remove(&base);
+        }));
 
         WAL_SEALED_FILES_TOTAL.inc();
         WAL_SEALED_BYTES_TOTAL.inc_by(sealed_bytes);
@@ -543,6 +567,67 @@ impl Sink for DurableFileSink {
         }
         Ok(())
     }
+
+    async fn unsealed(&self) -> Result<Vec<(String, Bytes)>> {
+        // Each open file and the length acknowledged. A write holds the
+        // routes until it is whole in its file, so none is in progress here,
+        // and the routes are held only for this copy.
+        let open: Vec<(PathBuf, u64)> = {
+            let routes = self.routes.lock().await;
+            let open = routes.values().filter(|rs| rs.cur.bytes > 0);
+            open.map(|rs| (rs.cur.path.clone(), rs.cur.bytes as u64))
+                .collect()
+        };
+        let dir = self.dir.clone();
+        let own = (self.encoding.clone(), self.compression.clone());
+        let encoded = self.unsealed.clone();
+        spawn_blocking(move || {
+            let mut objects = Vec::new();
+            let mut add = |held: &Encoded| {
+                let named = |(_, object): &(u64, Bytes)| (held.name.clone(), object.clone());
+                objects.extend(held.objects.iter().map(named));
+            };
+            // Then the sealed files, whole. A file goes from open to sealed
+            // to out and never back, so one sealed since the routes were
+            // read is found here too, not missed: it is taken once, as it
+            // was open. A sealed file is encoded for this reader alone:
+            // while sends fail there are as many as the WAL has room for.
+            for entry in std::fs::read_dir(&dir)? {
+                let path = entry?.path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let found = |(open, _): &(PathBuf, u64)| base_for(open) == base_for(&path);
+                let mut whole = Encoded::default();
+                if is_sealed_file_name(&name)
+                    && !open.iter().any(found)
+                    && encode_more(&mut whole, &path, u64::MAX, &own)?
+                {
+                    add(&whole);
+                }
+            }
+            // One reader encodes an open file at a time, and the next finds
+            // what it made.
+            let mut encoded = encoded.lock();
+            for (path, len) in open {
+                let base = base_for(&path);
+                let mut held = encoded.remove(&base).unwrap_or_default();
+                if !encode_more(&mut held, &path, len, &own)? {
+                    continue;
+                }
+                add(&held);
+                // Kept while the file is open. Sealed, what was kept of it
+                // went, or goes once this lock is free (`rotate_route`).
+                if path.exists() {
+                    encoded.insert(base, held);
+                }
+            }
+            // and the sink's own encoding of no records, so a reader finds
+            // the columns of a table with none
+            let (none, _) = encode(&[][..], Vec::new(), &own.0, &own.1)?;
+            objects.push((format!("{NO_RECORDS}.{}", own.0.extension()), none.into()));
+            Ok(objects)
+        })
+        .await?
+    }
 }
 
 impl DurableFileSink {
@@ -560,6 +645,67 @@ impl DurableFileSink {
             let _ = self.rotate_route(k, None).await;
         }
     }
+}
+
+/// Encodes what a WAL file holds from where `held` ends to `len`, as its
+/// send would: `held`'s stretches are then the file's first `len` bytes,
+/// each once. False for a file that has gone out since it was found.
+fn encode_more(
+    held: &mut Encoded,
+    path: &Path,
+    len: u64,
+    own: &(Encoding, Compression),
+) -> Result<bool> {
+    if len <= held.upto {
+        return Ok(true);
+    }
+    // The meta before the file: it is made before its file and removed
+    // after, and it holds the encoding the file goes out in, which is an
+    // earlier config's for a file an earlier process left. Without one a
+    // send falls back to the sink's own, and so does this.
+    let meta = std::fs::read(meta_path_for(path))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<WalMeta>(&bytes).ok());
+    let (enc, comp) = match &meta {
+        Some(meta) => (&meta.encoding, &meta.compression),
+        None => (&own.0, &own.1),
+    };
+    // Open, then sealed, the way a file goes: sealed since it was found
+    // open, it is under its sealed name, and under neither, it is out.
+    let mut sealed = base_for(path);
+    sealed.set_extension("bin.sealed");
+    let file = match stdFile::open(path) {
+        Err(e) if e.kind() == ErrorKind::NotFound => stdFile::open(&sealed),
+        opened => opened,
+    };
+    let mut file = match file {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    // a sealed file is taken whole, and an open one no further than `len`
+    let len = len.min(file.metadata()?.len());
+    if len > held.upto {
+        // The new stretch takes in each one before it that is not twice
+        // its length, and they are encoded again as one. So a file read as
+        // it grows is a few objects, each a half of the one before it at
+        // most, and what a reader encodes is in step with what is new.
+        let mut from = held.upto;
+        while let Some(&(start, _)) = held.objects.last() {
+            if from - start > 2 * (len - from) {
+                break;
+            }
+            held.objects.pop();
+            from = start;
+        }
+        file.seek(SeekFrom::Start(from))?;
+        let lines = BufReader::new(file.take(len - from));
+        let (object, _) = encode(lines, Vec::new(), enc, comp)?;
+        held.name = object_name(path, enc, comp);
+        held.objects.push((from, object.into()));
+        held.upto = len;
+    }
+    Ok(true)
 }
 
 /// The sealed NDJSON as the object it goes out as: the sealed file itself
@@ -607,7 +753,21 @@ async fn encode_to_file(
 fn encode_file(src: &Path, tmp: &Path, enc: &Encoding, comp: &Compression) -> Result<Unfit> {
     let fin = BufReader::new(stdFile::open(src)?);
     let out = BufWriter::new(stdFile::create(tmp)?);
-    let (mut out, unfit) = match (enc, comp) {
+    let (mut out, unfit) = encode(fin, out, enc, comp)?;
+    out.flush()?;
+    Ok(unfit)
+}
+
+/// [`encode_file`] from a reader to a writer: a sealed file to the file it
+/// goes out as, or what is not yet out to memory, for a reader of the sink
+/// ([`Sink::unsealed`]).
+fn encode<R: BufRead, W: Write + Send>(
+    fin: R,
+    out: W,
+    enc: &Encoding,
+    comp: &Compression,
+) -> Result<(W, Unfit)> {
+    Ok(match (enc, comp) {
         (
             Encoding::Parquet {
                 schema,
@@ -630,9 +790,7 @@ fn encode_file(src: &Path, tmp: &Path, enc: &Encoding, comp: &Compression) -> Re
             (zst.finish()?, unfit)
         }
         _ => write_whole(enc, fin, out)?,
-    };
-    out.flush()?;
-    Ok(unfit)
+    })
 }
 
 /// NDJSON as it is, or JSON as one array.
@@ -1235,6 +1393,307 @@ mod tests {
                 .write_path_with(path, name, encoding, compression, meta)
                 .await
         }
+    }
+
+    /// Holds each send until it is given a permit, then records it.
+    struct Waits {
+        go: Semaphore,
+        rec: Recorder,
+    }
+
+    #[async_trait]
+    impl WALSink for Waits {
+        async fn write_path_with(
+            &self,
+            path: &Path,
+            name: &str,
+            encoding: &Encoding,
+            compression: &Compression,
+            meta: &s3::S3SinkItem,
+        ) -> Result<()> {
+            self.go.acquire().await?.forget();
+            self.rec
+                .write_path_with(path, name, encoding, compression, meta)
+                .await
+        }
+    }
+
+    /// What a reader of the sink's files is given of what is in none yet:
+    /// each open file up to the length acknowledged and each sealed file,
+    /// once, under the name it will go out by, and the sink's encoding of
+    /// no records.
+    #[tokio::test]
+    async fn unsealed_is_what_was_acknowledged_and_is_not_yet_out() {
+        let dir = wal_dir("unsealed");
+        let far = Arc::new(Waits {
+            go: Semaphore::new(0),
+            rec: Recorder::default(),
+        });
+        let wal = DurableFileSink::new(
+            far.clone(),
+            &dir,
+            4,
+            1 << 20,
+            Duration::from_secs(3600),
+            Compression::None,
+            Encoding::NDJSON,
+        )
+        .await
+        .unwrap();
+        let unsealed = || async {
+            let mut objects = wal.unsealed().await.unwrap();
+            objects.sort();
+            let text = |(name, bytes): (String, Bytes)| {
+                (name, String::from_utf8_lossy(&bytes).into_owned())
+            };
+            objects.into_iter().map(text).collect::<Vec<_>>()
+        };
+        let none = ("none.ndjson".to_string(), String::new());
+        assert_eq!(unsealed().await, std::slice::from_ref(&none));
+
+        wal.write(routed("{\"n\":1}\n", "h1")).await.unwrap();
+        wal.write(routed("{\"n\":2}\n", "h1")).await.unwrap();
+        wal.write(routed("{\"n\":3}\n", "h2")).await.unwrap();
+        let (h1, open) = {
+            let routes = wal.routes.lock().await;
+            let (k, rs) = routes
+                .iter()
+                .find(|(k, _)| k.prefix.as_deref() == Some("h1"))
+                .unwrap();
+            (k.clone(), rs.cur.path.clone())
+        };
+        let name = object_name(&open, &Encoding::NDJSON, &Compression::None);
+        let mut both = vec![
+            (name.clone(), "{\"n\":1}\n{\"n\":2}\n".to_string()),
+            (unsealed().await[1].0.clone(), "{\"n\":3}\n".to_string()),
+            none.clone(),
+        ];
+        both.sort();
+        assert_eq!(unsealed().await, both);
+
+        // a write in progress: in the file, and not acknowledged
+        let mut torn = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&open)
+            .unwrap();
+        torn.write_all(b"{\"n\":").unwrap();
+        assert_eq!(unsealed().await, both);
+        torn.set_len(16).unwrap();
+        drop(torn);
+
+        // sealed, its send held: still one file, by the same name, and
+        // nothing of it is kept from here on
+        wal.rotate_route(h1, None).await.unwrap();
+        assert!(!open.exists() && open.with_extension("bin.sealed").exists());
+        kept(&wal, 1).await;
+        assert_eq!(unsealed().await, both);
+        // found open and sealed before it was read: what was acknowledged
+        // when it was found
+        let own = (Encoding::NDJSON, Compression::None);
+        let mut found = Encoded::default();
+        assert!(encode_more(&mut found, &open, 8, &own).unwrap());
+        assert_eq!((found.name, found.upto), (name, 8));
+        assert_eq!(found.objects, [(0, Bytes::from("{\"n\":1}\n"))]);
+
+        // out: gone from here, and whoever found it here before finds it there
+        far.go.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while names_in(&dir).iter().any(|n| n.ends_with(".sealed")) {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("sent");
+        assert_eq!(unsealed().await, both[1..]);
+        assert!(!encode_more(&mut Encoded::default(), &open, 8, &own).unwrap());
+        assert_eq!(wal.unsealed.lock().len(), 1, "the open file's alone");
+        assert_eq!(far.rec.got.lock().await.len(), 1);
+
+        far.go.add_permits(10);
+        wal.flush().await.unwrap();
+        kept(&wal, 0).await;
+        assert_eq!(unsealed().await, [none]);
+        assert_eq!(wal.unsealed.lock().len(), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Waits until the sink keeps, for its readers, what it has encoded of
+    /// `files` files: a sealed file's goes off the task that sealed it.
+    async fn kept(wal: &DurableFileSink, files: usize) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while wal.unsealed.lock().len() != files {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("what was kept of a sealed file goes");
+    }
+
+    /// Never sends: every sealed file stays in the WAL.
+    struct Down;
+
+    #[async_trait]
+    impl WALSink for Down {
+        async fn write_path_with(
+            &self,
+            _path: &Path,
+            _name: &str,
+            _encoding: &Encoding,
+            _compression: &Compression,
+            _meta: &s3::S3SinkItem,
+        ) -> Result<()> {
+            anyhow::bail!("the disk is full")
+        }
+    }
+
+    /// What the sink keeps in memory for its readers is its open files'
+    /// records and no more. Sealed files that cannot be sent pile up in the
+    /// WAL, on disk: a reader is given each, and none is kept. And what was
+    /// kept of an open file goes when the file is sealed, not when the next
+    /// reader comes.
+    #[tokio::test]
+    async fn only_the_open_files_are_kept_for_readers_and_only_while_open() {
+        let dir = wal_dir("unsealed-kept");
+        let wal = DurableFileSink::new(
+            Arc::new(Down),
+            &dir,
+            4,
+            16,
+            Duration::from_secs(3600),
+            Compression::None,
+            Encoding::NDJSON,
+        )
+        .await
+        .unwrap();
+        let held = || {
+            let held = wal.unsealed.lock();
+            let bytes = |e: &Encoded| e.objects.iter().map(|(_, o)| o.len()).sum::<usize>();
+            (held.len(), held.values().map(bytes).sum::<usize>())
+        };
+        let mut lines = Vec::new();
+        for round in 1..=3 {
+            // each write seals the file before it, whose send fails
+            for n in 0..20 {
+                let line = format!("{{\"n\":{n},\"round\":{round}}}\n");
+                wal.write(write(&line)).await.unwrap();
+                lines.push(line);
+            }
+            let names = names_in(&dir);
+            let sealed = names.iter().filter(|n| n.ends_with(".sealed"));
+            assert_eq!(sealed.count(), round * 20 - 1, "waiting in the WAL");
+            let found = wal.unsealed().await.unwrap();
+            let all: Vec<u8> = found.iter().flat_map(|o| o.1.to_vec()).collect();
+            let mut read: Vec<&str> = std::str::from_utf8(&all)
+                .unwrap()
+                .split_inclusive('\n')
+                .collect();
+            read.sort_unstable();
+            let last = lines.last().unwrap().len();
+            let mut written = lines.clone();
+            written.sort_unstable();
+            assert_eq!(read, written, "each once");
+            assert_eq!(held(), (1, last), "kept: the open file's");
+        }
+
+        // asked once, and then nobody asks: the open file is sealed, and
+        // what a reader was given of it is the reader's alone
+        let open = wal.routes.lock().await.keys().next().unwrap().clone();
+        let found = wal.unsealed().await.unwrap();
+        let records = found.iter().filter(|(_, object)| !object.is_empty());
+        let shared = || records.clone().filter(|(_, object)| !object.is_unique());
+        assert_eq!((records.clone().count(), shared().count()), (60, 1));
+        wal.rotate_route(open, None).await.unwrap();
+        kept(&wal, 0).await;
+        assert_eq!(shared().count(), 0);
+        wal.flush().await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A file sealed while a reader that found it open is still encoding
+    /// the sealed files before it: the reader is given its records, and
+    /// nothing is kept of it, though it was sealed before it was read.
+    #[tokio::test]
+    async fn nothing_is_kept_of_a_file_sealed_under_its_reader() {
+        let dir = wal_dir("unsealed-race");
+        let wal = DurableFileSink::new(
+            Arc::new(Down),
+            &dir,
+            4,
+            16,
+            Duration::from_secs(3600),
+            Compression::Zstd { level: 3 },
+            Encoding::Parquet {
+                schema: serde_yaml::from_str("{ n: int }").unwrap(),
+                record_column: Some("record".into()),
+            },
+        )
+        .await
+        .unwrap();
+        // sealed files to encode first, each write sealing the one before
+        for n in 0..40 {
+            wal.write(write(&format!("{{\"n\":{n},\"pad\":\"x\"}}\n")))
+                .await
+                .unwrap();
+        }
+        for round in 0..5 {
+            let open = wal.routes.lock().await.keys().next().unwrap().clone();
+            let (found, sealed) = tokio::join!(wal.unsealed(), wal.rotate_route(open, None));
+            sealed.unwrap();
+            assert_eq!(found.unwrap().len(), 41 + round, "each file, and none");
+            kept(&wal, 0).await;
+            wal.write(write("{\"n\":40}\n")).await.unwrap();
+        }
+        wal.flush().await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A file a reader finds longer than the last reader did is encoded
+    /// from where that one stopped, not again from its start: its objects,
+    /// in order, are its records once. A reader that finds nothing new
+    /// encodes nothing. And the objects stay few however many readers
+    /// came: each is more than twice the one after it.
+    #[tokio::test]
+    async fn a_file_is_encoded_for_its_readers_once_as_it_grows() {
+        let dir = wal_dir("unsealed-grows");
+        let wal = DurableFileSink::new(
+            Arc::new(Recorder::default()),
+            &dir,
+            4,
+            1 << 20,
+            Duration::from_secs(3600),
+            Compression::None,
+            Encoding::NDJSON,
+        )
+        .await
+        .unwrap();
+        let objects = || async {
+            let mut objects = wal.unsealed().await.unwrap();
+            assert_eq!(objects.pop().unwrap().0, "none.ndjson");
+            objects
+        };
+        let mut lines = String::new();
+        let mut most = 0;
+        for n in 0..200 {
+            // a line or a few, so the stretches are of many lengths
+            let line = format!("{{\"n\":{n}}}\n").repeat(1 + n % 7);
+            wal.write(write(&line)).await.unwrap();
+            lines.push_str(&line);
+            let found = objects().await;
+            let all: Vec<u8> = found.iter().flat_map(|o| o.1.to_vec()).collect();
+            assert_eq!(String::from_utf8(all).unwrap(), lines, "after {n}");
+            assert!(found.iter().all(|o| o.0 == found[0].0), "one file's");
+            let sizes: Vec<usize> = found.iter().map(|o| o.1.len()).collect();
+            assert!(sizes.windows(2).all(|w| w[0] > 2 * w[1]), "{sizes:?}");
+            most = most.max(found.len());
+            // nothing new: the same objects, not the same bytes made again
+            let again = objects().await;
+            assert_eq!(again, found);
+            assert_eq!(again[0].1.as_ptr(), found[0].1.as_ptr());
+        }
+        assert!((2..=12).contains(&most), "at most {most} objects");
+        wal.flush().await.unwrap();
+        assert_eq!(objects().await, []);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
