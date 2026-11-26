@@ -1,7 +1,8 @@
 //! What `tangent watch` says while its pipeline runs: each minute how many
 //! records the judge checked, each alert as the judge flags it (numbered `#1`,
-//! `#2`, ... while it waits for review), and each review as it settles the
-//! alert (`cleared`, `MALICIOUS`, `ALERT`, or `REVIEW FAILED`). A review
+//! `#2`, ... while it waits for review; the alerts one review will settle
+//! are one number and one line, with their count), and each review as it
+//! settles them (`cleared`, `MALICIOUS`, `ALERT`, or `REVIEW FAILED`). A review
 //! that upholds its alert is a notification too, at a Mac ([`crate::notify`]).
 //! It reads them where the pipeline writes them (alerts.ndjson, reviews.ndjson
 //! and verdicts.ndjson, in the pipeline's directory), from where each file
@@ -249,6 +250,16 @@ fn review_key(record: &Value) -> ReviewKey {
     }
 }
 
+/// What waits for one review: the alerts of one key, under one number.
+#[derive(Debug)]
+struct Waiting {
+    key: ReviewKey,
+    id: u64,
+    /// When the first of them was raised.
+    since: Instant,
+    alerts: u64,
+}
+
 /// Formats matched alert IDs (`#1`, `#1, #2`, `#1-#3`), or empty when none.
 fn format_ids(ids: &[u64]) -> String {
     match ids {
@@ -430,10 +441,10 @@ pub struct Follow {
     /// Judged records and flags since the last heartbeat line.
     checked: u64,
     marked: u64,
-    /// Sequential alert number (`#1`, `#2`, ...) and alerts still awaiting a
-    /// settled review, with when each was raised.
+    /// The last number given (`#1`, `#2`, ...), and what still awaits a
+    /// settled review.
     next_id: u64,
-    pending: Vec<(ReviewKey, u64, Instant)>,
+    pending: Vec<Waiting>,
     /// How long the pipeline holds an alert before the reviewer starts it.
     review_wait: Option<Duration>,
     /// When the last heartbeat / progress line was said.
@@ -476,7 +487,9 @@ impl Follow {
         }
     }
 
-    /// Removes and returns the alert IDs in `pending` that `record` settles.
+    /// The numbers in `pending` that `record` settles, each taken out once
+    /// all its alerts are settled: a review that covers some of an actor's
+    /// alerts leaves the rest waiting under their number.
     fn resolve(&mut self, record: &Value) -> Vec<u64> {
         let key = review_key(record);
         let mut matched = Vec::new();
@@ -484,8 +497,8 @@ impl Follow {
             ReviewKey::Mac { id, window, entry } => {
                 let exact = !id.is_empty() && !window.is_empty();
                 let mut rest = Vec::with_capacity(self.pending.len());
-                for (k, alert_id, since) in self.pending.drain(..) {
-                    let hit = match &k {
+                for waiting in self.pending.drain(..) {
+                    let hit = match &waiting.key {
                         ReviewKey::Mac {
                             id: pid,
                             window: pw,
@@ -498,63 +511,58 @@ impl Follow {
                         _ => false,
                     };
                     if hit {
-                        matched.push(alert_id);
+                        matched.push(waiting.id);
                     } else {
-                        rest.push((k, alert_id, since));
+                        rest.push(waiting);
                     }
                 }
                 self.pending = rest;
             }
-            ReviewKey::Cloud { org, actor } => {
-                let limit = record
-                    .pointer("/reviewed/alerts")
-                    .and_then(Value::as_u64)
-                    .map(|n| n as usize);
-                let mut rest = Vec::with_capacity(self.pending.len());
-                for (k, alert_id, since) in self.pending.drain(..) {
-                    let under = limit.is_none_or(|max| matched.len() < max);
-                    let hit = under
-                        && matches!(
-                            &k,
-                            ReviewKey::Cloud {
-                                org: po,
-                                actor: pa
-                            } if po == &org && pa == &actor
-                        );
-                    if hit {
-                        matched.push(alert_id);
-                    } else {
-                        rest.push((k, alert_id, since));
+            key @ ReviewKey::Cloud { .. } => {
+                // how many alerts the review covered; all that wait, if it
+                // does not say
+                let mut left = record.pointer("/reviewed/alerts").and_then(Value::as_u64);
+                for waiting in self.pending.iter_mut().filter(|w| w.key == key) {
+                    let settled = left.map_or(waiting.alerts, |left| left.min(waiting.alerts));
+                    if settled > 0 {
+                        waiting.alerts -= settled;
+                        matched.push(waiting.id);
                     }
+                    left = left.map(|left| left - settled);
                 }
-                self.pending = rest;
+                self.pending.retain(|w| w.alerts > 0);
             }
         }
         matched
     }
 
-    /// Per-alert progress for pending reviews: countdown while held, elapsed
-    /// investigation time once past the hold.
+    /// Progress for each pending review: countdown while held, elapsed
+    /// investigation time once past the hold, and how many alerts it has
+    /// when more than one.
     fn progress(&self, now: Instant) -> String {
         let items: Vec<String> = self
             .pending
             .iter()
-            .map(|(_, id, since)| {
-                let elapsed = now.saturating_duration_since(*since);
-                match self.review_wait {
+            .map(|waiting| {
+                let elapsed = now.saturating_duration_since(waiting.since);
+                let state = match self.review_wait {
                     Some(wait) if elapsed < wait => {
                         let left = wait.saturating_sub(elapsed);
                         if left.as_secs() >= 5 {
-                            format!("#{id} (starts in ~{})", span(left))
+                            format!("starts in ~{}", span(left))
                         } else {
-                            format!("#{id} (starting)")
+                            "starting".to_string()
                         }
                     }
                     Some(wait) => {
                         let active = elapsed.saturating_sub(wait);
-                        format!("#{id} (investigating {})", span(active))
+                        format!("investigating {}", span(active))
                     }
-                    None => format!("#{id} (reviewing {})", span(elapsed)),
+                    None => format!("reviewing {}", span(elapsed)),
+                };
+                match waiting.alerts {
+                    1 => format!("#{} ({state})", waiting.id),
+                    alerts => format!("#{} ({alerts} alerts, {state})", waiting.id),
                 }
             })
             .collect();
@@ -597,9 +605,22 @@ impl Follow {
         self.flagged += alerts.len() as u64;
         self.marked += alerts.len() as u64;
         for record in &alerts {
+            // One line for what one review will settle: an alert whose
+            // actor has alerts waiting is counted with them, so a burst of
+            // a hundred is a number that grows and not a hundred lines.
+            let key = review_key(record);
+            if let Some(waiting) = self.pending.iter_mut().find(|w| w.key == key) {
+                waiting.alerts += 1;
+                continue;
+            }
             self.next_id += 1;
             let id = self.next_id;
-            self.pending.push((review_key(record), id, at));
+            self.pending.push(Waiting {
+                key,
+                id,
+                since: at,
+                alerts: 1,
+            });
             lines.extend(alert(record, id, self.style));
         }
         for record in self.reviews.lines().into_iter().filter_map(parsed) {
@@ -981,13 +1002,17 @@ mod tests {
             window: "w".into(),
             entry: "tmux".into(),
         };
-        follow
-            .pending
-            .push((key.clone(), 1, now - Duration::from_secs(75)));
-        follow.pending.push((key, 2, now - Duration::from_secs(20)));
+        let waiting = |id, ago, alerts| Waiting {
+            key: key.clone(),
+            id,
+            since: now - Duration::from_secs(ago),
+            alerts,
+        };
+        follow.pending.push(waiting(1, 75, 1));
+        follow.pending.push(waiting(2, 20, 12));
         assert_eq!(
             follow.progress(now),
-            "reviewing #1 (investigating 15s), #2 (starts in ~40s)"
+            "reviewing #1 (investigating 15s), #2 (12 alerts, starts in ~40s)"
         );
     }
 
@@ -1003,6 +1028,8 @@ mod tests {
         assert!(cut.ends_with("..."));
     }
 
+    /// An actor's alerts that wait for one review are one line and one
+    /// number, however many they are; another actor's are their own.
     #[test]
     fn cloud_reviews_correlate_multiple_alerts_for_same_actor() {
         let dir = tempfile::tempdir().unwrap();
@@ -1014,15 +1041,24 @@ mod tests {
                 "judge": {"flag": true, "why": why},
             })
         };
+        let mut other = mk("c");
+        other["_norm"]["actor"] = json!("ci");
         append(
             &dir.path().join("alerts.ndjson"),
-            &format!("{}\n{}\n", mk("a"), mk("b")),
+            &format!("{}\n{}\n{other}\n", mk("a"), mk("b")),
         );
         let first = follow.said(false);
-        assert_eq!(first.len(), 2);
-        assert!(first[0].starts_with("#1  "));
-        assert!(first[1].starts_with("#2  "));
-        assert_eq!(follow.pending.len(), 2);
+        assert_eq!(first.len(), 2, "{first:?}");
+        assert!(first[0].starts_with("#1  ") && first[0].contains("ana@acme.example"));
+        assert!(first[1].starts_with("#2  ") && first[1].contains("ci"));
+        // a third of hers, a second later, is counted and not said
+        append(&dir.path().join("alerts.ndjson"), &format!("{}\n", mk("d")));
+        assert!(follow.said(false).is_empty());
+        assert_eq!(
+            follow.progress(Instant::now()),
+            "reviewing #1 (3 alerts, reviewing 0s), #2 (reviewing 0s)"
+        );
+        assert_eq!(follow.flagged, 4);
 
         let rev = json!({
             "source": "okta",
@@ -1035,11 +1071,24 @@ mod tests {
             follow.said(false),
             [
                 "",
-                "#1, #2  MALICIOUS  ana@acme.example (2 alerts)",
+                "#1  MALICIOUS  ana@acme.example (2 alerts)",
                 "    Stolen session.",
                 "    check: Revoke."
             ]
         );
-        assert!(follow.pending.is_empty());
+        // the review covered two of her three: the third waits, as #1 still
+        assert_eq!(
+            follow.progress(Instant::now()),
+            "reviewing #1 (reviewing 0s), #2 (reviewing 0s)"
+        );
+        let mut rest = rev.clone();
+        rest["reviewed"]["alerts"] = json!(1);
+        rest["review"] = json!({"verdict": "benign", "finding": "Hers."});
+        append(&dir.path().join("reviews.ndjson"), &format!("{rest}\n"));
+        assert_eq!(
+            follow.said(false),
+            ["#1  cleared  ana@acme.example (1 alert)  Hers."]
+        );
+        assert_eq!(follow.pending.len(), 1, "ci's alert waits");
     }
 }
