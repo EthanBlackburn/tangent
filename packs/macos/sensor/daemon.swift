@@ -151,9 +151,18 @@ private func peerAuthorized(_ clientFd: Int32, allowedUid: uid_t) -> Bool {
     return true
 }
 
-/// Configures a connected client socket: SO_NOSIGPIPE and a bounded write
-/// timeout so a stalled reader can never wedge Endpoint Security or shutdown.
+/// Configures a connected client socket: blocking, SO_NOSIGPIPE, and a bounded
+/// write timeout so a stalled reader can never wedge Endpoint Security or
+/// shutdown.
+///
+/// macOS hands `accept` the listener's O_NONBLOCK, and with it a write to a
+/// reader that is a few kilobytes behind fails at once with EAGAIN, where the
+/// timeout below was meant to wait for it. So the flag is cleared here.
 private func configureClientSocket(_ fd: Int32) {
+    let flags = fcntl(fd, F_GETFL, 0)
+    if flags >= 0 {
+        _ = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)
+    }
     var one: Int32 = 1
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
     var tv = timeval(tv_sec: 2, tv_usec: 0)
@@ -169,82 +178,171 @@ private func sendControl(_ object: [String: Any], to fd: Int32) -> Bool {
     return writeAll(data, to: fd)
 }
 
+/// One thread that runs what it is given, in order. Endpoint Security wants
+/// `es_delete_client` called from the thread that called `es_new_client`, and
+/// a dispatch queue promises an order, not a thread.
+private final class SerialThread {
+    private let cond = NSCondition()
+    private var jobs: [() -> Void] = []
+
+    init(name: String) {
+        let thread = Thread { [self] in
+            while true {
+                cond.lock()
+                while jobs.isEmpty { cond.wait() }
+                let job = jobs.removeFirst()
+                cond.unlock()
+                job()
+            }
+        }
+        thread.name = name
+        thread.start()
+    }
+
+    func async(_ job: @escaping () -> Void) {
+        cond.lock()
+        jobs.append(job)
+        cond.signal()
+        cond.unlock()
+    }
+
+    /// Runs `job` on the thread and waits for it. Not to be called from it.
+    func sync(_ job: @escaping () -> Void) {
+        let done = DispatchSemaphore(value: 0)
+        async {
+            job()
+            done.signal()
+        }
+        done.wait()
+    }
+}
+
+/// Watches a connected client for hanging up, which is the only thing a
+/// client says: what it writes is read and dropped. It owns the socket from
+/// here on, and closes it when cancelled, once its handler is out of it.
+private final class HangupWatch {
+    private let source: DispatchSourceRead
+    private let lock = NSLock()
+    private var suspended = false
+
+    init(fd: Int32, queue: DispatchQueue, onHangup: @escaping () -> Void) {
+        source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            var scratch = [UInt8](repeating: 0, count: 256)
+            let n = Darwin.recv(fd, &scratch, scratch.count, MSG_DONTWAIT)
+            if n > 0 || (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) { return }
+            // A socket at its end stays readable: no more of these until the
+            // session is torn down.
+            self.lock.lock()
+            if !self.suspended {
+                self.source.suspend()
+                self.suspended = true
+            }
+            self.lock.unlock()
+            onHangup()
+        }
+        source.setCancelHandler { Darwin.close(fd) }
+        source.resume()
+    }
+
+    func cancel() {
+        lock.lock()
+        source.cancel()
+        // A suspended source is not cancelled, and its socket not closed,
+        // until it is resumed.
+        if suspended {
+            source.resume()
+            suspended = false
+        }
+        lock.unlock()
+    }
+}
+
 // MARK: Endpoint Security session (lazy on es.sock)
 
 private final class ESSession {
-    private let queue = DispatchQueue(label: "com.ethanblackburn.tangent.daemon.es")
+    /// Everything here but the writes runs on this one thread.
+    private let thread = SerialThread(name: "com.ethanblackburn.tangent.daemon.es")
+    private let ioQueue = DispatchQueue(label: "com.ethanblackburn.tangent.daemon.es.io")
     private let writeLock = NSLock()
+    /// The client being written to, once it has been told the daemon is
+    /// ready. Set on the thread, under `writeLock`.
     private var clientFd: Int32 = -1
     private var esClient: OpaquePointer?
-    private var eofSource: DispatchSourceRead?
+    private var hangup: HangupWatch?
 
     func attach(fd: Int32) {
-        queue.async { [weak self] in
-            self?.attachLocked(fd: fd)
+        thread.async { [weak self] in
+            self?.attachOnThread(fd: fd)
         }
     }
 
     func stopSync() {
-        queue.sync {
-            teardownLocked()
+        thread.sync { [weak self] in
+            self?.teardownOnThread()
         }
     }
 
-    private func attachLocked(fd: Int32) {
-        teardownLocked()
+    private func teardownIfStill(_ fd: Int32) {
+        thread.async { [weak self] in
+            guard let self, self.clientFd == fd else { return }
+            self.teardownOnThread()
+        }
+    }
+
+    private func attachOnThread(fd: Int32) {
+        teardownOnThread()
         configureClientSocket(fd)
 
         let targetFd = fd
-        switch openESClient(forApp: true, onLine: { [weak self] line in
+        let opened = openESClient(forApp: true, onLine: { [weak self] line in
             guard let self else { return }
             self.writeLock.lock()
-            let current = self.clientFd
-            let ok = (current == targetFd && current >= 0) ? writeAll(line, to: current) : false
+            // Events come as soon as each subscription is made, which is
+            // before the client has been told the daemon is ready: those are
+            // not this stream's yet, and are dropped. Only a write that was
+            // tried and failed ends the session.
+            let failed = self.clientFd == targetFd && !writeAll(line, to: targetFd)
             self.writeLock.unlock()
-            if !ok {
-                self.queue.async { [weak self] in
-                    guard let self, self.clientFd == targetFd else { return }
-                    self.teardownLocked()
-                }
-            }
-        }) {
+            if failed { self.teardownIfStill(targetFd) }
+        })
+        switch opened {
         case .failure(let err):
             _ = sendControl(["daemon_error": err.code, "message": err.message], to: fd)
             Darwin.close(fd)
         case .success(let client):
-            writeLock.lock()
-            clientFd = fd
-            writeLock.unlock()
             esClient = client
-            if !sendControl(["daemon_ready": true], to: fd) {
-                teardownLocked()
+            // The ready line and the first event's turn are decided under the
+            // one lock, so no event is written ahead of it.
+            writeLock.lock()
+            let ready = sendControl(["daemon_ready": true], to: fd)
+            if ready { clientFd = fd }
+            writeLock.unlock()
+            guard ready else {
+                teardownOnThread()
+                Darwin.close(fd)
                 return
             }
             // Watch for client disconnect even when no ES events are firing.
-            let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-            src.setEventHandler { [weak self] in
-                guard let self, self.clientFd == targetFd else { return }
-                var byte: UInt8 = 0
-                let n = Darwin.recv(targetFd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
-                if n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    self.teardownLocked()
-                }
+            hangup = HangupWatch(fd: fd, queue: ioQueue) { [weak self] in
+                self?.teardownIfStill(targetFd)
             }
-            eofSource = src
-            src.resume()
         }
     }
 
-    private func teardownLocked() {
-        if let src = eofSource {
-            eofSource = nil
-            src.cancel()
+    private func teardownOnThread() {
+        // Only this thread sets clientFd, so it is read here without the
+        // lock: a write that is waiting on a stalled reader holds the lock,
+        // and this is what ends its wait.
+        let fd = clientFd
+        if fd >= 0 {
+            _ = Darwin.shutdown(fd, SHUT_RDWR)
         }
         // Invalidate clientFd before deleting the ES client so any in-flight
-        // callback stops writing immediately, then delete the ES client
-        // synchronously before closing the fd so it is never reused mid-write.
+        // callback stops writing, then delete the ES client before the socket
+        // is closed so its number is never reused mid-write.
         writeLock.lock()
-        let fd = clientFd
         clientFd = -1
         writeLock.unlock()
 
@@ -253,7 +351,10 @@ private final class ESSession {
             es_unsubscribe_all(client)
             es_delete_client(client)
         }
-        if fd >= 0 {
+        if let watch = hangup {
+            hangup = nil
+            watch.cancel()  // closes the socket
+        } else if fd >= 0 {
             Darwin.close(fd)
         }
     }
@@ -264,9 +365,10 @@ private final class ESSession {
 private final class NetSession {
     private let queue = DispatchQueue(label: "com.ethanblackburn.tangent.daemon.net")
     private let writeLock = NSLock()
+    /// Set on `queue`, under `writeLock`.
     private var clientFd: Int32 = -1
     private var process: Process?
-    private var eofSource: DispatchSourceRead?
+    private var hangup: HangupWatch?
 
     func attach(fd: Int32) {
         queue.async { [weak self] in
@@ -277,6 +379,13 @@ private final class NetSession {
     func stopSync() {
         queue.sync {
             teardownLocked()
+        }
+    }
+
+    private func teardownIfStill(_ fd: Int32) {
+        queue.async { [weak self] in
+            guard let self, self.clientFd == fd else { return }
+            self.teardownLocked()
         }
     }
 
@@ -310,12 +419,22 @@ private final class NetSession {
         let outHandle = outPipe.fileHandleForReading
         let errHandle = errPipe.fileHandleForReading
 
-        // Drain tcpdump stderr so it never blocks its pipe.
+        // What tcpdump says goes to the daemon's log, a line at a time: it is
+        // how a tcpdump that will not start says why. It says what it listens
+        // on as it starts, too, which is no warning and is kept all the same.
         DispatchQueue.global(qos: .utility).async {
+            var pending = Data()
             while true {
                 let data = errHandle.availableData
                 if data.isEmpty { break }
+                pending.append(data)
+                while let end = pending.firstIndex(of: 0x0A) {
+                    let line = String(decoding: pending[pending.startIndex..<end], as: UTF8.self)
+                    pending.removeSubrange(pending.startIndex...end)
+                    if !line.isEmpty { warn("tcpdump: \(line)") }
+                }
             }
+            if !pending.isEmpty { warn("tcpdump: \(String(decoding: pending, as: UTF8.self))") }
         }
 
         // Forward tcpdump stdout straight to the connected client socket.
@@ -325,53 +444,30 @@ private final class NetSession {
                 if data.isEmpty { break }
                 guard let self else { break }
                 self.writeLock.lock()
-                let current = self.clientFd
-                let ok = (current == targetFd && current >= 0) ? writeAll(data, to: current) : false
+                let ok = self.clientFd == targetFd && writeAll(data, to: targetFd)
                 self.writeLock.unlock()
                 if !ok { break }
             }
-            self?.queue.async { [weak self] in
-                guard let self else { return }
-                self.writeLock.lock()
-                let stillSame = (self.clientFd == targetFd)
-                self.writeLock.unlock()
-                if stillSame {
-                    self.teardownLocked()
-                }
-            }
+            self?.teardownIfStill(targetFd)
         }
 
         // Watch for client disconnect even during quiet network periods.
-        let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-        src.setEventHandler { [weak self] in
-            guard let self else { return }
-            self.writeLock.lock()
-            let stillSame = (self.clientFd == targetFd)
-            self.writeLock.unlock()
-            guard stillSame else { return }
-            var byte: UInt8 = 0
-            let n = Darwin.recv(targetFd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
-            if n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                self.teardownLocked()
-            }
+        hangup = HangupWatch(fd: fd, queue: queue) { [weak self] in
+            guard let self, self.clientFd == targetFd else { return }
+            self.teardownLocked()
         }
-        eofSource = src
-        src.resume()
     }
 
     private func teardownLocked() {
-        if let src = eofSource {
-            eofSource = nil
-            src.cancel()
+        // Only `queue` sets clientFd, so it is read here without the lock: a
+        // write that is waiting on a stalled reader holds the lock, and this
+        // is what ends its wait.
+        let fd = clientFd
+        if fd >= 0 {
+            _ = Darwin.shutdown(fd, SHUT_RDWR)
         }
-        // Wake any blocked write before waiting on writeLock / process exit.
-        let fdToClose: Int32
         writeLock.lock()
-        fdToClose = clientFd
-        if fdToClose >= 0 {
-            _ = Darwin.shutdown(fdToClose, SHUT_RDWR)
-            clientFd = -1
-        }
+        clientFd = -1
         writeLock.unlock()
 
         if let proc = process {
@@ -381,8 +477,11 @@ private final class NetSession {
             }
             proc.waitUntilExit()
         }
-        if fdToClose >= 0 {
-            Darwin.close(fdToClose)
+        if let watch = hangup {
+            hangup = nil
+            watch.cancel()  // closes the socket
+        } else if fd >= 0 {
+            Darwin.close(fd)
         }
     }
 }

@@ -109,7 +109,7 @@ pub async fn run_consumer(
     // The connections are read beside the sensor, and stop with it however
     // this returns.
     let stop = shutdown.child_token();
-    let _stops_with_the_sensor = stop.clone().drop_guard();
+    let stops_with_the_sensor = stop.clone().drop_guard();
     let network = tokio::spawn(connections(name.clone(), None, router.clone(), stop.clone()));
     let asked = tokio::spawn(prompts(name.clone(), router.clone(), stop));
 
@@ -124,6 +124,9 @@ pub async fn run_consumer(
     .await?;
     // The pipe closes here, and the sensor ends at its next line.
     drop(out);
+    // The connections and the prompts end only when told to, and are waited
+    // for below: a sensor that stopped by itself has told them nothing yet.
+    drop(stops_with_the_sensor);
     if eof {
         let status = sensor.wait().await?;
         let last = said.await.unwrap_or_default();
@@ -155,7 +158,7 @@ async fn run_daemon_consumer(
     tracing::info!(source = %name, sensor = %es_sock.display(), "the sensor is started");
 
     let stop = shutdown.child_token();
-    let _stops_with_the_sensor = stop.clone().drop_guard();
+    let stops_with_the_sensor = stop.clone().drop_guard();
     let net_sock = tangent_shared::sensor::net_socket(&sock_dir);
     let network = tokio::spawn(connections(
         name.clone(),
@@ -167,6 +170,8 @@ async fn run_daemon_consumer(
 
     let eof = stream_es(&name, &from, &mut stream, buf, &router, &shutdown).await?;
     drop(stream);
+    // As above: the prompts are told to end before they are waited for.
+    drop(stops_with_the_sensor);
     let _ = tokio::join!(network, asked);
     if eof {
         bail!(

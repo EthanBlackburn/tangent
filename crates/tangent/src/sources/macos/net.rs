@@ -423,6 +423,25 @@ fn server_name(p: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The sensor daemon starts tcpdump as root with a filter of its own, so
+    /// that nothing unprivileged chooses root's arguments. It has to be this
+    /// one, or the daemon's connections are not the ones read here.
+    #[test]
+    fn the_daemons_filter_is_this_one() {
+        let daemon = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packs/macos/sensor/daemon.swift");
+        let swift = std::fs::read_to_string(&daemon).unwrap();
+        for start in STARTS {
+            assert!(swift.contains(&format!("\"{start}\",")), "{start}");
+        }
+        let flags = arguments()[..8]
+            .iter()
+            .map(|flag| format!("\"{flag}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(swift.contains(&flags), "{flags}");
+    }
+
     const ME: [u8; 4] = [10, 0, 0, 2];
     const EVIL: [u8; 4] = [203, 0, 113, 5];
     const CDN: [u8; 4] = [198, 51, 100, 7];
