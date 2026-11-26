@@ -1094,6 +1094,10 @@ fn prompt(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     if during {
         x.insert("during".into(), json!(true));
     }
+    // sent by whatever started the agent (`claude -p`), not typed into it
+    if p["headless"] == true {
+        x.insert("headless".into(), json!(true));
+    }
     out.insert("prompt".into(), Value::Object(x));
     let n = Norm {
         actor: Some(k.ident),

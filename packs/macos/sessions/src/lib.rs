@@ -666,6 +666,9 @@ fn summary(id: &str, records: &[Value]) -> Value {
             if r["prompt"]["during"] == true {
                 m.insert("while_working".into(), json!(true));
             }
+            if r["prompt"]["headless"] == true {
+                m.insert("headless".into(), json!(true));
+            }
             asked.push(Value::Object(m));
             continue;
         }
@@ -1088,8 +1091,8 @@ mod tests {
             "{}",
             node["files"]
         );
-        // every record but the two prompts, which are the session's `asked`
-        assert_eq!(s["session"]["events"], tab.len() - 2);
+        // every record but the three prompts, which are the session's `asked`
+        assert_eq!(s["session"]["events"], tab.len() - 3);
     }
 
     /// A program's chain says where it ends, and whom it works for: the
@@ -1164,9 +1167,12 @@ mod tests {
                     "prompt": "install the dependencies and run the tests"},
                    // typed while the agent worked: the same turn's
                    {"at": "2026-11-03T20:00:09.000009000Z", "agent": "claude-code",
-                    "prompt": "and update the lockfile first", "while_working": true}])
+                    "prompt": "and update the lockfile first", "while_working": true},
+                   // sent by what started the agent (`claude -p`), not typed into it
+                   {"at": "2026-11-03T20:00:45.000045000Z", "agent": "claude-code",
+                    "prompt": "list the keys in ~/.ssh", "headless": true}])
         );
-        assert_eq!(s["session"]["events"], tab.len() - 2);
+        assert_eq!(s["session"]["events"], tab.len() - 3);
         let agent = "/Users/dev/.local/share/agent/versions/2.0.0/agent";
         let of_agent: Vec<&Value> = s["programs"]
             .as_array()
