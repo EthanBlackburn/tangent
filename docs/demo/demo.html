@@ -16,16 +16,21 @@
   What is whose:
   - Every line tangent prints, and every banner, is made from those runs'
     alerts.ndjson and reviews.ndjson by the same rules as
-    crates/cli/src/follow.rs: alert(), review(), note(), and clean(), which
-    makes a field one line and cuts it at 600 characters. The judge's and
+    crates/cli/src/follow.rs: alert(), review(), tally(), progress(),
+    note(), brief() and clean(), in its colours. The judge's and the
     reviewer's words are the runs' own, verbatim.
   - The commands typed on the right are the case's twin.sh and attack.sh.
     Their output is not from the runs.
   - The two runs were separate VMs, so they are two takes here.
-  - The time is compressed: a review comes a minute or so after its alert,
-    which the clock in the menu bar shows passing.
-  - The runs were judged when a review waited 400 s for the lake and read
-    that far past its alert; today's waits 10 s. Its words would differ.
+  - The time is compressed, and when each line comes is the demo's: an
+    alert about 25 s after the session's last event and its review about
+    half a minute after the alert, the medians tangent-eval measured on
+    today's settings (#277). The clock in the menu bar and the `reviewing`
+    lines, every 15 s as a live watch says them, show the time passing.
+  - The runs were judged when a session was judged after a minute of quiet
+    and a review read 400 s past its alert; today's are 15 s and 10 s.
+    tangent-eval's runs of this case end the same way on them (#277), but
+    the words would differ.
   - The dimming of a window and of older lines is the demo's, to show where
     to look; a terminal does neither.
 -->
@@ -87,6 +92,10 @@
   .cur { background: #e4e4e7; color: #1e1e20; }
   .cur.off { background: transparent; color: inherit; }
   .cur.hollow { background: transparent; color: inherit; box-shadow: inset 0 0 0 1px #b8b8bd; }
+  /* follow.rs's Style: dim, yellow, bold red, bold. */
+  .a-dim { color: #8b8b91; }
+  .a-yellow { color: #dcb64c; }
+  .a-red { color: #ff5f56; font-weight: 700; }
 
   /* macOS's banner, at its own size; a newer one stacks over the older. */
   .note {
@@ -148,7 +157,7 @@
   </div>
   <div class="win" id="left"><div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="title"></span></div><div class="term"></div><div class="shade"></div></div>
   <div class="win" id="right"><div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="title"></span></div><div class="term"></div><div class="shade"></div></div>
-  <div id="skip"><svg width="30" height="21" viewBox="0 0 22 16"><path d="M1 1l9 7-9 7zM11 1l9 7-9 7z" fill="#ffd27a"/></svg>About a minute later</div>
+  <div id="skip"><svg width="30" height="21" viewBox="0 0 22 16"><path d="M1 1l9 7-9 7zM11 1l9 7-9 7z" fill="#ffd27a"/></svg>Half a minute later</div>
   <div id="notes"></div>
   <div id="band"></div>
   <div id="caps"></div>
@@ -168,7 +177,7 @@ const BTM = '/System/Library/PrivateFrameworks/BackgroundTaskManagement.framewor
 
 const TWIN = {
   alerts: [{
-    ts: '2026-11-14T02:36:10.721049512Z', source: 'macos_session', actor: `${TERMINAL}#353`, mark: 'look',
+    ts: '2026-11-14T02:36:10.721049512Z', entry: TERMINAL, mark: 'look',
     why: "Appending a public key to authorized_keys grants remote SSH login to this Mac, and pairing it with a public-IP lookup looks like remote-access setup. Check whether the owner meant to enable SSH access and whether sshd is on, and confirm the key in authorized_keys is one the owner recognizes.",
   }],
   reviews: [{
@@ -179,13 +188,13 @@ const TWIN = {
 
 const ATTACK = {
   alerts: [{
-    ts: '2026-11-14T02:32:10.026635696Z', source: 'macos_session', actor: `${TERMINAL}#353`, mark: 'look',
+    ts: '2026-11-14T02:32:10.026635696Z', entry: TERMINAL, mark: 'look',
     why: "The extension is sideloaded from a non-marketplace host and will run code inside VS Code, so confirm the host is an expected internal source and that the package matches what the owner intended.",
   }, {
-    ts: '2026-11-14T02:32:15.134334545Z', source: 'macos_session', actor: `${BTM}#291`, mark: 'flag',
+    ts: '2026-11-14T02:32:15.134334545Z', entry: BTM, mark: 'flag',
     why: "This is a login item that runs a shell at login, and its name copies Apple's naming to look like a system component. Nothing in the record shows the owner or an app they chose asked for it. Check which app smd acted for, the plist's contents and its ProgramArguments, and whether the owner installed anything around this time.",
   }, {
-    ts: '2026-11-14T02:32:02.942940000Z', source: 'macos_session', actor: `${VSCODE}#351`, mark: 'flag',
+    ts: '2026-11-14T02:32:02.942940000Z', entry: VSCODE, mark: 'flag',
     why: "Remote login enabled, an SSH reverse tunnel to a hidden key, authorized_keys and a LaunchAgent created, and the chain traced to an extension helper with no prompt or owner request. Check the extension's origin, the authorized_keys contents, and the LaunchAgent plist first, and disable the tunnel and remote login.",
   }],
   reviews: [{
@@ -203,16 +212,13 @@ const ATTACK = {
   }],
 };
 
-// What was judged in each run, for the `checked` line said before its
-// alerts: from its verdicts.ndjson, each session's program (follow.rs's
-// name(): the entry's last part) in the order first judged, and how many.
-// A live watch says them a minute at a time; here each run's are one line.
-const CHECKED = {
-  twin: [['xpcproxy', 42], ['mDNSResponder', 1], ['Terminal', 1], [VSCODE, 1], ['nsurlsessiond', 1], ['accountsd', 1], ['backgroundtaskmanagementd', 1]],
-  attack: [['xpcproxy', 58], ['Terminal', 1], ['backgroundtaskmanagementd', 1], ['accountsd', 1], ['mobileassetd', 1], [VSCODE, 1], ['softwareupdated', 1], ['nsurlsessiond', 2], ['oahd', 1]],
-};
+// How many sessions each run's judge read: the lines of its verdicts.ndjson.
+// A live watch says them a minute at a time; here each run's are one line,
+// said with its alerts.
+const CHECKED = { twin: 48, attack: 67 };
 
 // ---- follow.rs, as tangent says them -------------------------------------
+// A line is a list of runs, [text, class]; the classes are follow.rs's Style.
 
 // clean(): control characters are spaces, white space one space, and no
 // more than 600 characters.
@@ -221,25 +227,55 @@ function clean(s) {
   const chars = Array.from(line);
   return chars.length > 600 ? chars.slice(0, 600).join('') + '...' : line;
 }
-// when(): `2026-11-24 03:09Z`.
-const when = ts => ts.endsWith('Z') ? `${ts.slice(0, 10)} ${ts.slice(11, 16)}Z` : ts;
-const alertLines = a => [
-  `${(a.mark === 'look' ? 'look' : 'flagged').padEnd(8)}  ${when(a.ts)}  ${a.source}  ${a.actor}`,
-  `          ${clean(a.why)}`,
-  '          sent to review',
-];
-const reviewLines = r => [
-  `reviewed  ${r.entry}: ${r.verdict}`,
-  `          ${clean(r.finding)}`,
-  ...(r.check ? [`          check: ${clean(r.check)}`] : []),
-];
-function tally(checked, flagged) {
-  const sorted = [...checked].sort((a, b) => b[1] - a[1]);
-  const count = sorted.reduce((n, [, k]) => n + k, 0);
-  const names = sorted.slice(0, 5).map(([name, k]) => k === 1 ? name : `${name} x${k}`);
-  if (sorted.length > 5) names.push(`${sorted.length - 5} more`);
-  return `checked   ${count} (${names.join(', ')}): ${flagged ? `${flagged} flagged` : 'nothing flagged'}`;
+// brief(): the first sentence when it is 100 characters or fewer, or else
+// the first 100.
+function brief(text) {
+  const stop = text.indexOf('. ');
+  const first = stop >= 0 ? text.slice(0, stop + 1) : text;
+  if (Array.from(first).length <= 100) return first;
+  const chars = Array.from(text);
+  return chars.length > 100 ? chars.slice(0, 100).join('').trimEnd() + '...' : text;
 }
+// when(): `03:09Z`.
+const when = ts => ts.endsWith('Z') ? `${ts.slice(11, 16)}Z` : ts;
+// subject(): the session's program, its entry's last part.
+const subject = entry => entry.split('/').pop();
+// alert(): one line while the alert waits for its review.
+const alertLine = (a, id) => [
+  [`#${id}`, 'a-dim'], ['  '], [when(a.ts), 'a-dim'], ['  '], [a.mark === 'look' ? 'look   ' : 'flagged', 'a-yellow'],
+  [`  ${subject(a.entry)}  ${brief(clean(a.why))}  `], ['(reviewing)', 'a-dim'],
+];
+// review(): one quiet line when it clears its alert, or the finding and what
+// to check, under the verdict, when it upholds it.
+function reviewLines(r, id) {
+  const tag = [[`#${id}`, 'a-dim'], ['  ']];
+  if (r.verdict === 'benign') {
+    return [[...tag, ['cleared', 'a-dim'], [`  ${subject(r.entry)}  `], [brief(clean(r.finding)), 'a-dim']]];
+  }
+  const label = { malicious: ['MALICIOUS', 'a-red'], unresolved: ['ALERT', 'a-red'] }[r.verdict] || [r.verdict.toUpperCase(), 'bold'];
+  return [
+    [],
+    [...tag, label, ['  '], [subject(r.entry), 'bold']],
+    [[`    ${clean(r.finding)}`]],
+    ...(r.check ? [[['    '], ['check:', 'bold'], [` ${clean(r.check)}`]]] : []),
+  ];
+}
+// span(): `42s`, `1m 05s`.
+const span = s => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60 ? ` ${String(s % 60).padStart(2, '0')}s` : ''}`;
+// The pipeline holds an alert this long before its review starts: the
+// macos_review plugin's expire_after_ms, which watch reads from the config.
+const HOLD = 10;
+// progress(): each alert still in review, by the seconds since it was
+// raised: the hold's countdown, then how long it has been in review.
+const progress = pending => 'reviewing ' + pending.map(([id, s]) =>
+  s < HOLD ? (HOLD - s >= 5 ? `#${id} (starts in ~${span(HOLD - s)})` : `#${id} (starting)`) : `#${id} (investigating ${span(s - HOLD)})`
+).join(', ');
+// tally(): what was judged since the last, and how the reviews are going.
+const activities = n => n === 1 ? '1 activity' : `${n} activities`;
+const tally = (count, flagged, pending) =>
+  [[`checked ${activities(count)} · ${flagged ? `${flagged} flagged` : 'all clear'}${pending.length ? ` · ${progress(pending)}` : ''}`, 'a-dim']];
+// While reviews are pending and nothing new was judged, tally() is progress() alone.
+const progressLine = pending => [[progress(pending), 'a-dim']];
 // note(): what the banner says of a review that upholds its alert.
 const noteOf = r => ({
   title: r.verdict === 'malicious' ? 'Tangent: malicious activity' : 'Tangent: needs a look',
@@ -262,6 +298,7 @@ const STARTUP = [
   "is judged five minutes at a time, or an agent's turn at its end, and an alert is",
   'reviewed as soon as it is raised.',
   'They are kept, with the pipeline and its lake, in /Users/admin/.local/share/tangent/mac',
+  'Runtime log: /Users/admin/.local/share/tangent/mac/watch.log (set RUST_LOG=info for verbose terminal logs).',
   "A review that upholds an alert is a notification on this Mac too, once you allow Tangent's (--no-notify shows none).",
   'To see it catch an attack, run `tangent simulate` in another terminal.',
   'Ctrl-C stops it.',
@@ -285,8 +322,15 @@ function typing(start, commands, prompt = PROMPT) {
   return ev;
 }
 
-// The look-alike: twin.sh.
-const T1 = { start: 0, work: 3.0, alerts: 8.3, skip: [9.0, 10.0], reviews: [10.15], end: 12.9 };
+// Said once the sensor is up, after the password.
+const STARTED = 'Started. Activity will show up here.';
+
+// A `reviewing` line: [when in the demo, seconds since the alerts were
+// raised, the alerts still in review].
+const reviewing = take => take.progress.map(([at, s, ids]) => [at, 'print', [progressLine(ids.map(id => [id, s]))]]);
+
+// The look-alike: twin.sh. Its review comes 29 s after its alert.
+const T1 = { start: 0, work: 3.0, alerts: 8.3, skip: [9.0, 10.0], progress: [[9.5, 15, [1]]], reviews: [10.15], end: 12.9 };
 const TAKE1 = {
   ...T1,
   left: [
@@ -296,9 +340,11 @@ const TAKE1 = {
     [1.3, 'print', STARTUP],
     [1.45, 'ask', 'Password:'],
     [1.85, 'enter'],
-    [T1.alerts, 'print', [tally(CHECKED.twin, TWIN.alerts.length)]],
-    [T1.alerts, 'print', alertLines(TWIN.alerts[0]), 'alert'],
-    [T1.reviews[0], 'print', reviewLines(TWIN.reviews[0]), 'review'],
+    [2.2, 'print', [STARTED]],
+    [T1.alerts, 'print', [alertLine(TWIN.alerts[0], 1)], 'alert'],
+    [T1.alerts, 'print', [tally(CHECKED.twin, 1, [[1, 0]])]],
+    ...reviewing(T1),
+    [T1.reviews[0], 'print', reviewLines(TWIN.reviews[0], 1), 'review'],
   ],
   right: typing(T1.work, [
     ['cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys'],
@@ -310,18 +356,25 @@ const TAKE1 = {
     ['code ~/code/acme-web'],
   ]),
   notes: [],
-  clock: [[0, 34.2], [T1.alerts, 36.3], [T1.skip[0], 36.4], [T1.skip[1], 37.3], [T1.end, 37.6]],
+  // The clock, in minutes past six: the twin's first command was at 6:36:10.
+  // Its alert is 25 s after its last, and its review 29 s after that.
+  clock: [[0, 35.2], [T1.work, 36.1], [T1.alerts, 37.1], [T1.skip[0], 37.12], [T1.skip[1], 37.57], [T1.end, 37.7]],
 };
 
-// The attack: attack.sh, in its own run.
-const T2 = { start: 13.2, work: 13.6, alerts: 17.6, skip: [18.6, 19.6], reviews: [19.9, 20.9, 21.9], end: DURATION };
+// The attack: attack.sh, in its own run. The reviewer takes one alert at a
+// time, so the three reviews come 29 s, 55 s and 80 s after the alerts.
+const T2 = {
+  start: 13.2, work: 13.6, alerts: 17.6, skip: [18.6, 19.6], reviews: [19.9, 20.9, 21.9], end: DURATION,
+  progress: [[19.1, 15, [1, 2, 3]], [20.25, 30, [2, 3]], [20.6, 45, [2, 3]], [21.25, 60, [3]], [21.6, 75, [3]]],
+};
 const TAKE2 = {
   ...T2,
   left: [
-    [T2.start - 1, 'print', [PROMPT + 'tangent watch mac --hosted', ...STARTUP, 'Password:']],
-    [T2.alerts, 'print', [tally(CHECKED.attack, ATTACK.alerts.length)]],
-    ...ATTACK.alerts.map(a => [T2.alerts, 'print', alertLines(a), 'alert']),
-    ...ATTACK.reviews.map((r, i) => [T2.reviews[i], 'print', reviewLines(r), 'review']),
+    [T2.start - 1, 'print', [PROMPT + 'tangent watch mac --hosted', ...STARTUP, 'Password:', STARTED]],
+    ...ATTACK.alerts.map((a, i) => [T2.alerts, 'print', [alertLine(a, i + 1)], 'alert']),
+    [T2.alerts, 'print', [tally(CHECKED.attack, ATTACK.alerts.length, [[1, 0], [2, 0], [3, 0]])]],
+    ...reviewing(T2),
+    ...ATTACK.reviews.map((r, i) => [T2.reviews[i], 'print', reviewLines(r, i + 1), 'review']),
   ],
   right: typing(T2.work, [
     ['cd ~/Downloads', [], 'admin@mac Downloads % '],
@@ -331,7 +384,8 @@ const TAKE2 = {
   ], PROMPT),
   notes: ATTACK.reviews.filter(r => r.verdict !== 'benign').map((r, i) => ({ ...noteOf(r), at: T2.reviews[i] + 0.15 })),
   noteOut: 26.3,
-  clock: [[T2.start, 30.2], [T2.alerts, 32.2], [T2.skip[0], 32.3], [T2.skip[1], 33.1], [T2.reviews[2], 34.4], [DURATION, 34.7]],
+  // The extension was installed at 6:32:10 to 6:32:14.
+  clock: [[T2.start, 31.2], [T2.work, 32.1], [T2.alerts, 32.67], [T2.skip[0], 32.7], [T2.skip[1], 33.13], [T2.reviews[0], 33.15], [T2.reviews[1], 33.6], [T2.reviews[2], 34.0], [DURATION, 34.1]],
 };
 const TAKES = [TAKE1, TAKE2];
 
@@ -339,7 +393,7 @@ const CAPTIONS = [
   [0.3, 2.9, 'Tangent is watching this Mac'],
   [2.9, 8.2, 'Your own setup: your SSH key, GitHub, redis, an editor extension'],
   [8.2, 9.95, 'Its judge marks the session for a second look'],
-  [9.95, 12.9, 'The reviewer clears it: <span class="ok">benign</span>. No notification.'],
+  [9.95, 12.9, 'The reviewer <span class="ok">clears</span> it. No notification.'],
   [13.2, 17.5, '<span class="dim">Another run:</span> an editor extension update with a hidden backdoor'],
   [17.5, 19.75, 'The judge flags three sessions: the editor, the terminal, a login item'],
   [19.75, DURATION, 'All three reviewed <span class="bad">malicious</span>: each is a notification'],
@@ -379,7 +433,8 @@ function state(events, t, markup) {
       lines.push({ cells: input.head.concat(input.echo ? cells(input.full, '', false) : []), at });
       input = null;
     } else if (kind === 'print') {
-      for (const l of a) lines.push({ cells: cells(l, '', markup), block: b || null, at });
+      // A line is text, or tangent's: runs of [text, class], never marked up.
+      for (const l of a) lines.push({ cells: Array.isArray(l) ? l.flatMap(([s, c = '']) => cells(s, c, false)) : cells(l, '', markup), block: b || null, at });
     }
   }
   return { lines, input };

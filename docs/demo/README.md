@@ -31,22 +31,32 @@ one take each, since each was its own VM:
 
 - **tangent's lines and banners** are made from those runs' `alerts.ndjson`
   and `reviews.ndjson`, with the judge's and the reviewer's words verbatim, by
-  the rules of `crates/cli/src/follow.rs`: `alert()`, `review()`, `note()`, and
-  `clean()`, which cuts a field at 600 characters. If those change, change
-  the functions under "follow.rs, as tangent says them" in `demo.html`.
+  the rules of `crates/cli/src/follow.rs`, in its colours: `alert()`,
+  `review()`, `tally()`, `progress()`, `note()`, `brief()`, which keeps a
+  waiting alert to its first sentence or 100 characters, and `clean()`,
+  which cuts a finding at 600. If those change, change the functions under
+  "follow.rs, as tangent says them" in `demo.html`. The words before the
+  first alert are `watch.rs`'s.
 - **The `checked` line** counts each run's `verdicts.ndjson`. A live watch
-  says it a minute at a time; here each run's is one line before its alerts.
+  says it a minute at a time; here each run's is one line, with its alerts.
 - **The commands** are the case's `twin.sh` and `attack.sh`. Their output is
   not from the runs.
-- **The time is compressed.** A review comes a minute or so after its alert;
-  the clock in the menu bar shows it passing.
-- **The runs were judged on 2026-11-13**, when a review waited 400 seconds for
-  the lake and its table reached that far past the alert. Today's waits 10
-  (#263, #264), so a review of the same recording sees less of what came
-  after, and its words would not be these. Judging the two recordings again
-  and putting their records in `demo.html` brings the demo up to date.
+- **The time is compressed**, and when each line comes is the demo's. An
+  alert comes about 25 seconds after its session's last event, and its review
+  about half a minute after the alert: tangent-eval's medians on today's
+  settings (#277). The clock in the menu bar, and the `reviewing` lines a
+  live watch says every 15 seconds, show it passing.
+- **The runs were judged on 2026-11-13**, when a session was judged after a
+  minute of quiet and a review read 400 seconds past its alert. Today's are 15
+  seconds (#277) and 10 (#263, #264). The outcome is the same on them:
+  #277's runs at 15 seconds had an alert standing after review in every
+  attack run, this case's three among them, and in no look-alike run. The
+  words would not be these, since a review now sees less of what came after
+  its alert.
+  Judging the two recordings again and putting their records in `demo.html`
+  brings them up to date.
 - **The dimming** of a window and of older lines is the demo's, to show where
-  to look. Tangent's output has no colour.
+  to look.
 
 It is not `tangent simulate`. The reviewer rightly calls that attack benign,
 since its files were made by the command that took them and nothing left
