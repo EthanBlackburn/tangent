@@ -107,12 +107,16 @@ from nowhere, and four in five programs on a Mac are launchd's own children.
 (the app a helper works for, the terminal a command was typed in). All from a process
 tree the plugin keeps in state from `fork`, `exec` and `exit` (the pack
 runs the pipeline on one worker, which keeps the events in order; an entry
-lasts a day, or ten minutes once its process exits, so what it left running
-still has it among its `parents`, and is written again every ten minutes its
-process is at work, with the entries above it, so a shell open for a week
-stays; an entry holds when its process started, and one whose pid has
-another start in a later event or snapshot is of an earlier process, from
-before a restart, and is replaced). `session` is the entry point the
+lasts a day, or ten minutes once its process exits, and is written again
+every ten minutes its process is at work, with the entries above it, so a
+shell open for a week stays; an exited process whose child is seen at work
+is kept as a live one is, for as long as the child goes on, so what a
+launcher left running still has the launcher, and the shell or the agent
+above it, among its `parents`; an entry holds when its process started and
+when its parent did, so one whose pid has another start in a later event or
+snapshot is of an earlier process and is replaced, and a chain that would
+pass through a process that took a parent's pid since ends there,
+`(unknown)`, rather than name a stranger). `session` is the entry point the
 process's session started from, as ECS's entry leader, which a process takes
 from its parent when it forks and keeps when that parent exits; for a
 process whose fork was not seen, walking up the tree, the first process whose

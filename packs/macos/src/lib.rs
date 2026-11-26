@@ -223,6 +223,9 @@ struct Proc {
     /// when it started, to the second: a pid comes back, and with another
     /// start it is another process
     start: Option<String>,
+    /// when its parent started, where the tree saw its fork: the process
+    /// that has the parent's pid at another start is not its parent
+    pstart: Option<String>,
 }
 
 /// A time to the second, as far as `ps` knows a process's start.
@@ -251,6 +254,7 @@ fn proc_of(v: &Value) -> Option<Proc> {
         responsible: int_at(v, "/responsible_audit_token/pid").filter(|r| *r != pid),
         group: int_at(v, "/group_id"),
         start: str_at(v, "/start_time").and_then(second),
+        pstart: None,
     })
 }
 
@@ -289,13 +293,14 @@ impl Proc {
 }
 
 // The process tree, in state: `p:<pid>` holds
-// "<ppid>\t<program>\t<name>\t<command>\t<ident>\t<entry pid>\t<entry ident>\t<signer>\t<team>\t<platform>\t<start>\t<written>",
+// "<ppid>\t<program>\t<name>\t<command>\t<ident>\t<entry pid>\t<entry ident>\t<signer>\t<team>\t<platform>\t<start>\t<written>\t<parent's start>",
 // each field with its tabs, newlines and backslashes escaped ([`esc`]): a
 // path is the program's to choose, and one with a tab in it would otherwise
 // be read back as the fields after it, its signer among them.
 // fork adds the child with its parent's program, name and command and its
 // session's entry point, exec replaces the program and keeps the rest, exit
-// leaves the entry for [`EXITED_TTL_MS`]; a process seen before any of those
+// leaves the entry for [`EXITED_TTL_MS`], or for as long as something it
+// started is at work ([`hold`]); a process seen before any of those
 // is added as the event shows it. The tree answers which programs are above
 // this one and what each was doing, the name of a process whose exec it saw,
 // who a process group's leader is, and which session a process is in.
@@ -322,6 +327,8 @@ struct Known {
     /// when the row was last written, in the events' seconds; None once the
     /// process has exited, and the row is left to run out
     written: Option<i64>,
+    /// when its parent started, where its fork was seen
+    pstart: Option<String>,
     /// the row's fields as stored, to write it again as it is
     fields: Vec<String>,
 }
@@ -404,6 +411,7 @@ fn read_row(s: &str) -> Option<Known> {
         platform: field(9).is_some(),
         start: field(10),
         written: field(11).and_then(|w| w.parse().ok()),
+        pstart: field(12),
         fields,
     })
 }
@@ -420,9 +428,38 @@ fn known(pid: i64) -> Option<Known> {
 const PROC_TTL_MS: u64 = 86_400_000;
 
 /// An exited process stays this long, so that what it left running (a
-/// daemon forked twice, `nohup … &`) still has it in its `parents`. A fork
-/// that takes its pid again replaces it.
+/// daemon forked twice, `nohup … &`) still has it in its `parents`: time
+/// for what it left to be seen at work, which keeps it from then on
+/// ([`hold`]). A fork that takes its pid again replaces it.
 const EXITED_TTL_MS: u64 = 600_000;
+
+/// What an exited process's row has for `written` once [`hold`] keeps it.
+const HELD: &str = "held";
+
+/// Keep an exited process's row as a live one's is kept, because something
+/// it started is still at work: without it that program's `parents` end
+/// where it was, `(unknown)`, ten minutes after it exited, and the shell,
+/// the terminal or the agent above it are lost with it. Written once, and
+/// again by [`keep`] while what it started goes on.
+fn hold(pid: i64, k: &Known) {
+    if k.written.is_some() || k.fields.get(WRITTEN).is_some_and(|w| w == HELD) {
+        return;
+    }
+    held(pid, k);
+}
+
+fn held(pid: i64, k: &Known) {
+    let mut fields = k.fields.clone();
+    if fields.len() <= WRITTEN {
+        fields.resize(WRITTEN + 1, String::new());
+    }
+    fields[WRITTEN] = HELD.to_string();
+    let _ = state::set(
+        &format!("p:{pid}"),
+        &Scalar::Str(row(&fields)),
+        Some(PROC_TTL_MS),
+    );
+}
 
 /// A process's row: `written` is the event's time, or None for one that
 /// has exited.
@@ -445,6 +482,7 @@ fn fields_of(p: &Proc, entry: Option<&(i64, String)>, written: Option<i64>) -> V
         if p.platform { "1" } else { "" }.to_string(),
         opt(&p.start),
         written.map(|w| w.to_string()).unwrap_or_default(),
+        opt(&p.pstart),
     ]
 }
 
@@ -472,7 +510,8 @@ const WRITTEN: usize = 11;
 /// Keep `pid`'s row, and the rows above it, for as long as it is at work:
 /// when its own is [`REFRESH_SECS`] old, each is written again as it is. The
 /// rows above are written whatever their age, so none of them runs out
-/// while something under it is still running. An exited one is left.
+/// while something under it is still running, an exited one among them
+/// ([`hold`]).
 fn keep(pid: i64, k: &Known, now: Option<i64>) {
     let (Some(now), Some(written)) = (now, k.written) else {
         return;
@@ -482,10 +521,12 @@ fn keep(pid: i64, k: &Known, now: Option<i64>) {
     }
     let again = |pid: i64, k: &Known| {
         if k.written.is_none() {
-            return;
+            return held(pid, k);
         }
         let mut fields = k.fields.clone();
-        fields.resize(WRITTEN + 1, String::new());
+        if fields.len() <= WRITTEN {
+            fields.resize(WRITTEN + 1, String::new());
+        }
         fields[WRITTEN] = now.to_string();
         let _ = state::set(
             &format!("p:{pid}"),
@@ -494,14 +535,17 @@ fn keep(pid: i64, k: &Known, now: Option<i64>) {
         );
     };
     again(pid, k);
-    let mut up = k.ppid;
+    let (mut up, mut started) = (k.ppid, k.pstart.clone());
     for _ in 0..40 {
         if up <= 1 {
             break;
         }
-        let Some(k) = known(up) else { break };
+        // a row of another process with the pid is nothing of this one's
+        let Some(k) = known(up).filter(|k| !k.other(started.as_deref())) else {
+            break;
+        };
         again(up, &k);
-        up = k.ppid;
+        (up, started) = (k.ppid, k.pstart);
     }
 }
 
@@ -614,7 +658,11 @@ fn inherited(parent: &Proc, child: &Proc) -> (i64, String) {
 /// The processes above `ppid`, nearest first, and where the chain ends
 /// ([`LAUNCHD`], [`UNSEEN`] or [`MORE`]): no parents and "launchd started it"
 /// are not one thing, and a model reads the first as a program from nowhere.
-fn parents(mut ppid: i64) -> (Vec<Known>, &'static str) {
+/// `started` is when the process at `ppid` started, where its child's fork
+/// was seen: a pid comes back, and a row with another start is of a process
+/// that took the pid since, so the chain ends there, [`UNSEEN`], and does
+/// not go on through a stranger.
+fn parents(mut ppid: i64, mut started: Option<String>) -> (Vec<Known>, &'static str) {
     let mut out = Vec::new();
     loop {
         if ppid == 1 {
@@ -623,10 +671,10 @@ fn parents(mut ppid: i64) -> (Vec<Known>, &'static str) {
         if out.len() == PARENTS {
             return (out, MORE);
         }
-        let Some(k) = known(ppid) else {
+        let Some(k) = known(ppid).filter(|k| !k.other(started.as_deref())) else {
             return (out, UNSEEN);
         };
-        ppid = k.ppid;
+        (ppid, started) = (k.ppid, k.pstart.clone());
         out.push(k);
     }
 }
@@ -803,7 +851,9 @@ fn environment(env: Option<&Value>) -> (Map<String, Value>, usize) {
 /// does, and its `session`. launchd itself has none.
 fn situate(out: &mut Map<String, Value>, pid: i64, ppid: i64, rec: &Map<String, Value>) {
     if pid > 1 {
-        let (above, end) = parents(ppid);
+        // when its parent started, if the tree has the process under it
+        let started = known(pid).filter(|k| k.ppid == ppid).and_then(|k| k.pstart);
+        let (above, end) = parents(ppid, started);
         let mut shown: Vec<String> = above
             .iter()
             .map(|k| match &k.command {
@@ -1119,8 +1169,14 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
     // earlier process with this pid is as good as none
     let now = now_of(rec);
     let mine = known(actor.pid).filter(|k| !k.other(actor.start.as_deref()));
+    // first seen: its parent is whoever has the parent's pid now
+    let parent_started = |ppid: i64| known(ppid).and_then(|p| p.start).filter(|_| ppid > 1);
     match &mine {
-        None => remember(&actor, None, now),
+        None => {
+            let mut a = actor.clone();
+            a.pstart = parent_started(a.ppid);
+            remember(&a, None, now);
+        }
         // known from a snapshot: now by its signature too, under the parent
         // the snapshot saw if launchd has taken it since
         Some(k) if !k.seen => {
@@ -1128,9 +1184,19 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
             if a.ppid <= 1 && k.ppid > 1 {
                 a.ppid = k.ppid;
             }
+            a.pstart = parent_started(a.ppid);
             remember(&a, None, now);
         }
-        Some(k) => keep(actor.pid, k, now),
+        Some(k) => {
+            // launchd has taken it: what started it has exited, and is kept
+            // for as long as this is at work
+            if actor.ppid <= 1 && k.ppid > 1 {
+                if let Some(p) = known(k.ppid).filter(|p| !p.other(k.pstart.as_deref())) {
+                    hold(k.ppid, &p);
+                }
+            }
+            keep(actor.pid, k, now);
+        }
     }
     match kind.as_str() {
         "fork" => {
@@ -1139,6 +1205,7 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
                     child.name = k.name.clone();
                     child.command = k.command.clone();
                 }
+                child.pstart = actor.start.clone();
                 let e = inherited(&actor, &child);
                 remember(&child, Some(&e), now);
             }
@@ -1150,6 +1217,7 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
                 gone.ppid = k.ppid;
                 gone.name = k.name;
                 gone.command = k.command;
+                gone.pstart = k.pstart;
                 store(&gone, k.entry.as_ref(), None, EXITED_TTL_MS);
             }
             return None;
@@ -1202,6 +1270,7 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
             target.name = named.map(|(n, _)| n);
             target.command = command(&args, from);
             target.ppid = first_ppid(target.ppid);
+            target.pstart = mine.as_ref().and_then(|k| k.pstart.clone());
             // an exec keeps the process's session; an entry point that execs
             // (login's shell, a shell's `exec`) takes its new name
             let e = mine.and_then(|k| k.entry).map(|(pid, who)| {
