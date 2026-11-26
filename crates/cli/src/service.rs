@@ -1,0 +1,840 @@
+//! Background macOS service management: `tangent up`, `tangent down`,
+//! `tangent status`, and `tangent uninstall`.
+//!
+//! Privilege split:
+//! - `/Library/LaunchDaemons/com.ethanblackburn.tangent.sensor.plist` (root):
+//!   runs `/Applications/Tangent.app/Contents/MacOS/tangent-sensor daemon`
+//!   exclusively for Endpoint Security + tcpdump over `0600` user-owned Unix
+//!   sockets under `/var/run/tangent`. Lazy-starts on client connect (0% CPU
+//!   when paused).
+//! - `~/Library/LaunchAgents/com.ethanblackburn.tangent.watch.plist` (user):
+//!   runs `tangent watch mac` unprivileged, connecting to the daemon sockets
+//!   with zero sudo prompts.
+//! - `~/Library/LaunchAgents/com.ethanblackburn.tangent.app.plist` (user Aqua):
+//!   runs `/Applications/Tangent.app/Contents/MacOS/tangent-sensor menubar`.
+
+use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use anyhow::{bail, Context, Result};
+use serde_json::{json, Value};
+
+use crate::init::Server;
+use crate::mac::{self, Mac};
+use crate::{fetch, local, status, watch};
+
+pub const SENSOR_LABEL: &str = "com.ethanblackburn.tangent.sensor";
+pub const WATCH_LABEL: &str = "com.ethanblackburn.tangent.watch";
+pub const APP_LABEL: &str = "com.ethanblackburn.tangent.app";
+
+const DAEMON_PLIST: &str = "/Library/LaunchDaemons/com.ethanblackburn.tangent.sensor.plist";
+const SERVICE_FILE: &str = "service.json";
+const ENV_FILE: &str = "env";
+const LAUNCHCTL: &str = "/bin/launchctl";
+const FDA_SETTINGS_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+
+/// Saved preference in `<data_dir>/service.json` so plain `tangent up` (and
+/// the menu bar's "Resume Watching" button) remembers local vs hosted mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Local,
+    Hosted,
+}
+
+impl Mode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Mode::Local => "local",
+            Mode::Hosted => "hosted",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "local" => Some(Mode::Local),
+            "hosted" => Some(Mode::Hosted),
+            _ => None,
+        }
+    }
+}
+
+fn read_mode(dir: &Path) -> Option<Mode> {
+    let text = fs::read_to_string(dir.join(SERVICE_FILE)).ok()?;
+    let val: Value = serde_json::from_str(&text).ok()?;
+    val.get("mode").and_then(Value::as_str).and_then(Mode::from_str)
+}
+
+fn write_mode(dir: &Path, mode: Mode) -> Result<()> {
+    let body = serde_json::to_string_pretty(&json!({ "mode": mode.as_str() }))?;
+    fs::write(dir.join(SERVICE_FILE), format!("{body}\n"))
+        .with_context(|| format!("writing {}", dir.join(SERVICE_FILE).display()))
+}
+
+/// Loads `KEY=VALUE` pairs from `path` into this process's environment when not
+/// already set (used by `tangent watch mac --env-file ...` under launchd).
+pub fn load_env_file(path: &Path) -> Result<()> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("reading env file {}", path.display()))?;
+    for (key, value) in parse_env(&text) {
+        if std::env::var_os(&key).is_none() {
+            // Called at startup before background tasks are spawned.
+            std::env::set_var(&key, &value);
+        }
+    }
+    Ok(())
+}
+
+fn parse_env(text: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let key = k.trim();
+            if !key.is_empty() {
+                map.insert(key.to_string(), v.trim().to_string());
+            }
+        }
+    }
+    map
+}
+
+fn write_env_file(path: &Path, vars: &BTreeMap<String, String>) -> Result<()> {
+    let mut content = String::from("# Managed by `tangent up`. Mode 0600.\n");
+    for (k, v) in vars {
+        content.push_str(&format!("{k}={v}\n"));
+    }
+    let tmp = path.with_extension("tmp");
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let mut file = opts
+        .open(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    file.write_all(content.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+    }
+    fs::rename(&tmp, path).with_context(|| format!("installing {}", path.display()))
+}
+
+/// `tangent up [--hosted | --local]`: installs the privileged sensor daemon if
+/// needed (one sudo prompt) and starts the unprivileged Mac watcher + native
+/// menu bar in the background.
+pub async fn up(hosted_flag: bool, local_flag: bool) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        bail!("`tangent up` manages the macOS background watcher and menu bar, and this machine is not a Mac");
+    }
+
+    let dir = watch::data_dir("mac")?;
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+
+    let mode = if hosted_flag {
+        Mode::Hosted
+    } else if local_flag {
+        Mode::Local
+    } else {
+        read_mode(&dir).unwrap_or(Mode::Local)
+    };
+    let hosted = mode == Mode::Hosted;
+
+    // Validate host eligibility (Apple Silicon + 32 GB for local).
+    let mac = Mac::new(hosted).watched();
+    mac::runs_here(&mac)?;
+
+    // Gather required hosted API keys (from current env or existing 0600 env file).
+    let env_path = dir.join(ENV_FILE);
+    let mut saved_env = fs::read_to_string(&env_path)
+        .map(|t| parse_env(&t))
+        .unwrap_or_default();
+    if hosted {
+        let mut missing = Vec::new();
+        for (var, desc) in mac.needs() {
+            if let Some(val) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) {
+                saved_env.insert(var.to_string(), val);
+            } else if !saved_env.get(var).is_some_and(|v| !v.trim().is_empty()) {
+                missing.push((var, desc));
+            }
+        }
+        if !missing.is_empty() {
+            let lines: Vec<String> = missing
+                .iter()
+                .map(|(v, d)| format!("  {v}  ({d})"))
+                .collect();
+            bail!(
+                "hosted mode reads these from the environment, and they are not set:\n{}",
+                lines.join("\n")
+            );
+        }
+        write_env_file(&env_path, &saved_env)?;
+    }
+
+    // Write pipeline config & fetch plugins + sensor + local model if needed.
+    crate::init::place(&dir, &mac.files())?;
+    let config = dir.join("tangent.yaml");
+    fetch::missing(&config).await?;
+
+    if mac.server() == Server::Ollama {
+        let root = local::root()?;
+        let missing = local::missing(&root);
+        if !missing.nothing() {
+            if !crate::init::ask_to_fetch(&missing, &root) {
+                bail!(
+                    "the model is not on this Mac, so there is nothing to judge with: `tangent model fetch` downloads it"
+                );
+            }
+            local::fetch(&root).await?;
+        }
+    }
+
+    write_mode(&dir, mode)?;
+
+    // 1. Ensure `/Applications/Tangent.app` + root LaunchDaemon are installed and running.
+    let uid = current_uid()?;
+    ensure_sensor_daemon(uid).await?;
+
+    // 2. Install & bootstrap the unprivileged user LaunchAgents (watcher + menu bar).
+    let agents_dir = launch_agents_dir()?;
+    fs::create_dir_all(&agents_dir)
+        .with_context(|| format!("creating {}", agents_dir.display()))?;
+
+    let tangent_bin = std::env::current_exe()
+        .context("finding current tangent executable")?
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::current_exe().unwrap());
+
+    let watch_plist_path = agents_dir.join(format!("{WATCH_LABEL}.plist"));
+    let watch_xml = watch_agent_plist(&tangent_bin, &dir, hosted, hosted.then_some(&env_path));
+    fs::write(&watch_plist_path, watch_xml)
+        .with_context(|| format!("writing {}", watch_plist_path.display()))?;
+
+    let app_plist_path = agents_dir.join(format!("{APP_LABEL}.plist"));
+    let app_xml = app_agent_plist(&tangent_shared::sensor::installed_binary(), &dir, &tangent_bin);
+    fs::write(&app_plist_path, app_xml)
+        .with_context(|| format!("writing {}", app_plist_path.display()))?;
+
+    let gui_domain = format!("gui/{uid}");
+    reload_launchd(&gui_domain, WATCH_LABEL, &watch_plist_path)?;
+    reload_launchd(&gui_domain, APP_LABEL, &app_plist_path)?;
+
+    // 3. Wait briefly for watcher startup to confirm watching vs missing FDA.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut final_snap = None;
+    while Instant::now() < deadline {
+        if let Some(snap) = status::read(&dir) {
+            if snap.state == "watching" || snap.needs_fda || snap.state == "error" {
+                final_snap = Some(snap);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let model_label = if hosted {
+        "Claude Haiku 5.5 + Sonnet 5.5 (hosted)"
+    } else {
+        "Inkling 2 Mini (local)"
+    };
+
+    if let Some(snap) = &final_snap {
+        if snap.needs_fda {
+            open_fda_settings();
+            println!("Tangent is installed, and needs Full Disk Access for Tangent.app.");
+            println!("  System Settings -> Privacy & Security -> Full Disk Access is open.");
+            println!("  Toggle Tangent on — watching starts automatically within seconds.");
+            println!("  Check anytime with `tangent status`.");
+            return Ok(());
+        }
+        if snap.state == "error" {
+            if let Some(err) = &snap.error {
+                println!("Tangent background service started with an error:\n  {err}");
+                println!("  Logs: {}", dir.join("watch.log").display());
+                return Ok(());
+            }
+        }
+    }
+
+    println!("Tangent is watching this Mac in the background.");
+    println!("  Menu bar   Tangent icon in your top bar");
+    println!("  Models     {model_label}");
+    println!("  Logs       {}", dir.join("watch.log").display());
+    println!("\nTry `tangent simulate agent` to see it catch an attack, or `tangent status` anytime.");
+    Ok(())
+}
+
+/// `tangent down [--all]`: stops the background Mac watcher (zero sudo; sensor
+/// daemon automatically drops to 0% CPU). Keeps the menu bar running showing
+/// "Paused" unless `--all` is passed.
+pub async fn down(all: bool) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        bail!("`tangent down` manages the macOS background watcher, and this machine is not a Mac");
+    }
+    let uid = current_uid()?;
+    let gui_domain = format!("gui/{uid}");
+    let _ = bootout(&gui_domain, WATCH_LABEL);
+    if all {
+        let _ = bootout(&gui_domain, APP_LABEL);
+    }
+
+    if let Ok(dir) = watch::data_dir("mac") {
+        if let Some(mut snap) = status::read(&dir) {
+            if snap.state != "stopped" {
+                snap.state = "stopped".to_string();
+                snap.pid = None;
+                snap.pending = 0;
+                snap.updated_at = status::now_rfc3339();
+                if let Ok(bytes) = serde_json::to_vec_pretty(&snap.to_json()) {
+                    let _ = fs::write(dir.join(status::FILE), bytes);
+                }
+            }
+        }
+    }
+
+    if all {
+        println!("Tangent watching and menu bar stopped. Run `tangent up` to resume.");
+    } else {
+        println!("Tangent watching paused (sensor idle). Run `tangent up` or click Resume in the menu bar.");
+    }
+    Ok(())
+}
+
+/// `tangent status [--json]`: instant, zero-sudo view of the background Mac
+/// watcher, sensor daemon, menu bar, and recent alerts.
+pub async fn show_status(as_json: bool) -> Result<()> {
+    let dir = watch::data_dir("mac")?;
+    let snap = status::read(&dir);
+    let sock_dir = tangent_shared::sensor::daemon_dir();
+    let es_sock = tangent_shared::sensor::es_socket(&sock_dir);
+    let daemon_socket = es_sock.exists();
+    let app_installed = tangent_shared::sensor::installed_binary().is_file();
+    let alive = snap
+        .as_ref()
+        .and_then(|s| s.pid)
+        .is_some_and(|pid| pid_alive(pid));
+    let menubar_running = cfg!(target_os = "macos") && is_agent_loaded(APP_LABEL);
+
+    let effective_state = match &snap {
+        Some(s) if (s.state == "watching" || s.state == "starting") && alive => s.state.as_str(),
+        Some(s) if s.needs_fda => "needs_fda",
+        Some(s) if s.state == "error" => "error",
+        _ => "stopped",
+    };
+
+    if as_json {
+        let out = json!({
+            "state": effective_state,
+            "alive": alive,
+            "daemon_socket": daemon_socket,
+            "daemon_socket_path": es_sock.display().to_string(),
+            "app_installed": app_installed,
+            "menubar_running": menubar_running,
+            "data_dir": dir.display().to_string(),
+            "status": snap.as_ref().map(status::Snapshot::to_json),
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    let state_line = match effective_state {
+        "watching" => {
+            let pid = snap.as_ref().and_then(|s| s.pid).unwrap_or(0);
+            format!("watching this Mac (pid {pid})")
+        }
+        "starting" => "starting...".to_string(),
+        "needs_fda" => "needs Full Disk Access (System Settings -> Privacy & Security -> Full Disk Access -> Tangent)".to_string(),
+        "error" => {
+            let msg = snap
+                .as_ref()
+                .and_then(|s| s.error.as_deref())
+                .unwrap_or("unknown error");
+            format!("error: {msg}")
+        }
+        _ => "paused / not running (run `tangent up` to start)".to_string(),
+    };
+
+    println!("Tangent    {state_line}");
+    let sensor_line = if daemon_socket && alive {
+        format!("connected ({})", es_sock.display())
+    } else if daemon_socket {
+        format!("idle ({})", es_sock.display())
+    } else if app_installed {
+        "installed, daemon not running".to_string()
+    } else {
+        "not installed".to_string()
+    };
+    println!("  Sensor   {sensor_line}");
+    if let Some(s) = &snap {
+        if !s.models.is_empty() {
+            println!("  Models   {}", s.models);
+        }
+        if alive {
+            let mut line = format!("{} sessions checked · {} flagged", s.checked, s.flagged);
+            if s.pending > 0 {
+                line.push_str(&format!(" · {} reviewing", s.pending));
+            }
+            println!("  Checked  {line}");
+        }
+        if !s.recent_alerts.is_empty() {
+            println!("  Alerts   {} recent:", s.recent_alerts.len());
+            for a in &s.recent_alerts {
+                println!("           [{}] {} — {}", a.verdict, a.subject, a.summary);
+            }
+        }
+    }
+    println!(
+        "  Menu bar {}",
+        if menubar_running { "running" } else { "stopped" }
+    );
+    println!("  Logs     {}", dir.join("watch.log").display());
+    Ok(())
+}
+
+/// `tangent uninstall [--purge]`: cleanly stops and removes the user
+/// LaunchAgents, root LaunchDaemon, `/var/run/tangent`, and
+/// `/Applications/Tangent.app`. Keeps `~/.local/share/tangent/mac` unless
+/// `--purge` is passed.
+pub async fn uninstall(purge: bool) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        bail!("`tangent uninstall` removes the macOS background service, and this machine is not a Mac");
+    }
+
+    let uid = current_uid()?;
+    let gui_domain = format!("gui/{uid}");
+    let agents_dir = launch_agents_dir()?;
+
+    for label in [WATCH_LABEL, APP_LABEL] {
+        let _ = bootout(&gui_domain, label);
+        let plist = agents_dir.join(format!("{label}.plist"));
+        let _ = fs::remove_file(&plist);
+    }
+
+    let needs_root = Path::new(DAEMON_PLIST).exists()
+        || tangent_shared::sensor::installed_app().exists()
+        || Path::new(tangent_shared::sensor::DAEMON_DIR).exists();
+
+    if needs_root {
+        println!("Removing root sensor daemon and /Applications/Tangent.app (requires sudo)...");
+        let script = format!(
+            "launchctl bootout system/{SENSOR_LABEL} 2>/dev/null || true; \
+             rm -f '{DAEMON_PLIST}'; \
+             rm -rf '{}' '{}'",
+            tangent_shared::sensor::DAEMON_DIR,
+            tangent_shared::sensor::installed_app().display()
+        );
+        let status = Command::new("sudo")
+            .args(["-p", "tangent uninstall password: ", "--", "/bin/sh", "-c", &script])
+            .status()
+            .context("running sudo for uninstall")?;
+        if !status.success() {
+            bail!("sudo uninstall failed ({status})");
+        }
+    }
+
+    if let Ok(dir) = watch::data_dir("mac") {
+        if purge {
+            if dir.exists() {
+                fs::remove_dir_all(&dir)
+                    .with_context(|| format!("removing {}", dir.display()))?;
+                println!("Removed data directory {}.", dir.display());
+            }
+        } else if dir.exists() {
+            println!("Your logs and Parquet lake were kept in {} (pass --purge to delete).", dir.display());
+        }
+    }
+
+    println!("Tangent background service and menu bar removed.");
+    Ok(())
+}
+
+// MARK: root LaunchDaemon installation
+
+/// Installs or updates `/Applications/Tangent.app` and the root LaunchDaemon
+/// if not already present, signed, and listening. Needs zero `sudo` when
+/// already up to date.
+async fn ensure_sensor_daemon(uid: u32) -> Result<()> {
+    let installed_dir = Path::new(tangent_shared::sensor::INSTALLED_DIR);
+    let installed_app = tangent_shared::sensor::installed_app();
+    let sock_dir = tangent_shared::sensor::daemon_dir();
+    let es_sock = tangent_shared::sensor::es_socket(&sock_dir);
+
+    let custom_app = std::env::var_os("TANGENT_SENSOR_APP")
+        .map(PathBuf::from)
+        .filter(|p| p.exists());
+
+    let daemon_plist_exists = Path::new(DAEMON_PLIST).is_file();
+    let app_ok = installed_app.exists()
+        && (custom_app.is_some() || tangent_shared::sensor::check(installed_dir).is_ok());
+
+    // Fast path: installed, verified, plist present, and socket already listening.
+    if app_ok && daemon_plist_exists && es_sock.exists() {
+        return Ok(());
+    }
+
+    // Source app bundle to copy into `/Applications/Tangent.app`.
+    let source_app = if let Some(custom) = custom_app {
+        custom
+    } else {
+        let cache_dir = tangent_shared::sensor::dir()?;
+        if !tangent_shared::sensor::binary(&cache_dir).is_file() {
+            fetch::sensor(&cache_dir).await?;
+        }
+        tangent_shared::sensor::check(&cache_dir)?;
+        cache_dir.join(tangent_shared::sensor::APP)
+    };
+
+    let plist_xml = sensor_daemon_plist(&tangent_shared::sensor::installed_binary(), &sock_dir, uid);
+    let tmp_plist = tempfile::NamedTempFile::new().context("creating temporary daemon plist")?;
+    fs::write(tmp_plist.path(), plist_xml)?;
+
+    println!("Installing Tangent.app and root sensor daemon (asks for your password once)...");
+    let install_script = format!(
+        "set -eu; \
+         launchctl bootout system/{SENSOR_LABEL} 2>/dev/null || true; \
+         rm -rf '{dest_app}'; \
+         /usr/bin/ditto '{src_app}' '{dest_app}'; \
+         chown -R root:wheel '{dest_app}'; \
+         cp '{tmp_plist}' '{DAEMON_PLIST}'; \
+         chown root:wheel '{DAEMON_PLIST}'; \
+         chmod 644 '{DAEMON_PLIST}'; \
+         launchctl bootstrap system '{DAEMON_PLIST}'",
+        src_app = shell_escape(&source_app),
+        dest_app = shell_escape(&installed_app),
+        tmp_plist = shell_escape(tmp_plist.path()),
+    );
+
+    let status = Command::new("sudo")
+        .args([
+            "-p",
+            "tangent installs the Mac sensor daemon once. Password: ",
+            "--",
+            "/bin/sh",
+            "-c",
+            &install_script,
+        ])
+        .status()
+        .context("running sudo to install sensor daemon")?;
+    if !status.success() {
+        bail!("installing the sensor daemon failed ({status})");
+    }
+
+    // Wait briefly for the LaunchDaemon to bind `/var/run/tangent/es.sock`.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if es_sock.exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(())
+}
+
+// MARK: launchd helpers & plist generators
+
+fn launch_agents_dir() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .context("HOME is not set to an absolute path")?;
+    Ok(home.join("Library").join("LaunchAgents"))
+}
+
+fn current_uid() -> Result<u32> {
+    let out = Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .context("running /usr/bin/id -u")?;
+    if !out.status.success() {
+        bail!("id -u failed ({})", out.status);
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u32>()
+        .context("parsing uid from id -u")
+}
+
+fn pid_alive(pid: u32) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn is_agent_loaded(label: &str) -> bool {
+    let Ok(uid) = current_uid() else {
+        return false;
+    };
+    Command::new(LAUNCHCTL)
+        .args(["print", &format!("gui/{uid}/{label}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn bootout(domain: &str, label: &str) -> Result<()> {
+    let _ = Command::new(LAUNCHCTL)
+        .args(["bootout", &format!("{domain}/{label}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    Ok(())
+}
+
+fn reload_launchd(domain: &str, label: &str, plist: &Path) -> Result<()> {
+    let _ = bootout(domain, label);
+    let out = Command::new(LAUNCHCTL)
+        .args(["bootstrap", domain])
+        .arg(plist)
+        .output()
+        .with_context(|| format!("running launchctl bootstrap for {label}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // If launchctl reports already bootstrapped, kick-start it cleanly.
+        let _ = Command::new(LAUNCHCTL)
+            .args(["kickstart", "-k", &format!("{domain}/{label}")])
+            .status();
+        if !is_agent_loaded(label) {
+            bail!("launchctl bootstrap {label} failed: {stderr}");
+        }
+    }
+    Ok(())
+}
+
+fn open_fda_settings() {
+    let _ = Command::new("/usr/bin/open")
+        .arg(FDA_SETTINGS_URL)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn shell_escape(path: &Path) -> String {
+    path.display().to_string().replace('\'', "'\\''")
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn plist_string_array(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| format!("        <string>{}</string>", xml_escape(item)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Root LaunchDaemon plist for `tangent-sensor daemon`.
+pub fn sensor_daemon_plist(sensor_bin: &Path, socket_dir: &Path, uid: u32) -> String {
+    let args = vec![
+        sensor_bin.display().to_string(),
+        "daemon".to_string(),
+        "--socket-dir".to_string(),
+        socket_dir.display().to_string(),
+        "--uid".to_string(),
+        uid.to_string(),
+    ];
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{SENSOR_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+{args}
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardErrorPath</key>
+    <string>/var/log/tangent-sensor.log</string>
+</dict>
+</plist>
+"#,
+        args = plist_string_array(&args),
+    )
+}
+
+/// User LaunchAgent plist for `tangent watch mac`.
+pub fn watch_agent_plist(
+    tangent_bin: &Path,
+    data_dir: &Path,
+    hosted: bool,
+    env_file: Option<&Path>,
+) -> String {
+    let mut args = vec![
+        tangent_bin.display().to_string(),
+        "watch".to_string(),
+        "mac".to_string(),
+    ];
+    if hosted {
+        args.push("--hosted".to_string());
+    }
+    if let Some(env_file) = env_file {
+        args.push("--env-file".to_string());
+        args.push(env_file.display().to_string());
+    }
+    let daemon_log = xml_escape(&data_dir.join("daemon.log").display().to_string());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{WATCH_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+{args}
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>{daemon_log}</string>
+    <key>StandardErrorPath</key>
+    <string>{daemon_log}</string>
+</dict>
+</plist>
+"#,
+        args = plist_string_array(&args),
+    )
+}
+
+/// User Aqua LaunchAgent plist for the native menu bar (`tangent-sensor menubar`).
+pub fn app_agent_plist(sensor_bin: &Path, data_dir: &Path, tangent_bin: &Path) -> String {
+    let args = vec![
+        sensor_bin.display().to_string(),
+        "menubar".to_string(),
+        "--dir".to_string(),
+        data_dir.display().to_string(),
+        "--tangent".to_string(),
+        tangent_bin.display().to_string(),
+    ];
+    let log = xml_escape(&data_dir.join("menubar.log").display().to_string());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{APP_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+{args}
+    </array>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardErrorPath</key>
+    <string>{log}</string>
+</dict>
+</plist>
+"#,
+        args = plist_string_array(&args),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plists_escape_xml_and_include_expected_arguments() {
+        let daemon = sensor_daemon_plist(
+            Path::new("/Applications/Tangent.app/Contents/MacOS/tangent-sensor"),
+            Path::new("/var/run/tangent"),
+            501,
+        );
+        assert!(daemon.contains("<string>com.ethanblackburn.tangent.sensor</string>"));
+        assert!(daemon.contains("<string>daemon</string>"));
+        assert!(daemon.contains("<string>501</string>"));
+
+        let watch = watch_agent_plist(
+            Path::new("/opt/homebrew/bin/tangent"),
+            Path::new("/Users/a&b/.local/share/tangent/mac"),
+            true,
+            Some(Path::new("/Users/a&b/.local/share/tangent/mac/env")),
+        );
+        assert!(watch.contains("<string>--hosted</string>"));
+        assert!(watch.contains("<string>--env-file</string>"));
+        assert!(watch.contains("/Users/a&amp;b/.local/share/tangent/mac/env"));
+
+        let app = app_agent_plist(
+            Path::new("/Applications/Tangent.app/Contents/MacOS/tangent-sensor"),
+            Path::new("/Users/dev/.local/share/tangent/mac"),
+            Path::new("/opt/homebrew/bin/tangent"),
+        );
+        assert!(app.contains("<string>menubar</string>"));
+        assert!(app.contains("<string>Aqua</string>"));
+    }
+
+    #[test]
+    fn env_file_roundtrips_with_0600_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("env");
+        let mut vars = BTreeMap::new();
+        vars.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant-test-123".to_string());
+        write_env_file(&path, &vars).unwrap();
+
+        let parsed = parse_env(&fs::read_to_string(&path).unwrap());
+        assert_eq!(parsed.get("ANTHROPIC_API_KEY").map(String::as_str), Some("sk-ant-test-123"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn mode_persists_in_service_json() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_mode(dir.path()), None);
+        write_mode(dir.path(), Mode::Hosted).unwrap();
+        assert_eq!(read_mode(dir.path()), Some(Mode::Hosted));
+        write_mode(dir.path(), Mode::Local).unwrap();
+        assert_eq!(read_mode(dir.path()), Some(Mode::Local));
+    }
+}
