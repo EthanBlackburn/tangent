@@ -306,7 +306,7 @@ groups above, a connection or a child is another record, and the session is
 summed up whole. None of these is a name a program chooses for itself. On a
 Mac these starts are most sessions, and a model on the same Mac cannot read
 them as fast as they come: over the fourteen recorded cases this leaves out
-693 of the judge's 980 requests, every one of which it had passed, and with
+627 of the judge's 980 requests, every one of which it had passed, and with
 it the same seven attacks stand and the same seven look-alikes are left
 alone. The records are in the lake like any other, for the reviewer and for
 `tangent query`. What it gives up is the judge's reading of one thing: an
