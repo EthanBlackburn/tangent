@@ -219,18 +219,27 @@ func event(_ m: UnsafePointer<es_message_t>) -> (String, [String: Any])? {
 
 // MARK: out
 
-/// One line to stdout, whole. When the reader has gone the capture is over.
-func write(line: Data) {
+/// Writes `line` whole to `fd`. Returns false if the peer closed or errored.
+func writeAll(_ line: Data, to fd: Int32) -> Bool {
     line.withUnsafeBytes { buf in
+        guard let base = buf.baseAddress else { return true }
         var done = 0
         while done < buf.count {
-            let n = Darwin.write(STDOUT_FILENO, buf.baseAddress! + done, buf.count - done)
+            let n = Darwin.write(fd, base + done, buf.count - done)
             if n < 0 {
                 if errno == EINTR { continue }
-                exit(errno == EPIPE ? 0 : 1)
+                return false
             }
             done += n
         }
+        return true
+    }
+}
+
+/// One line to stdout, whole. When the reader has gone the capture is over.
+func write(line: Data) {
+    if !writeAll(line, to: STDOUT_FILENO) {
+        exit(errno == EPIPE ? 0 : 1)
     }
 }
 
@@ -245,31 +254,33 @@ func warn(_ what: String) {
 // the kernel drops events. It numbers the ones of each type as it queues
 // them, so a gap in a type's numbers is what was dropped. The handler is
 // called for one message at a time, and these are only touched from it.
-var last: [UInt32: UInt64] = [:]  // by event type, the last seq_num seen
-var dropped: [String: UInt64] = [:]  // by event name, not yet reported
-var reported = 0  // the second of the last report
+final class DropTracker {
+    var last: [UInt32: UInt64] = [:]  // by event type, the last seq_num seen
+    var dropped: [String: UInt64] = [:]  // by event name, not yet reported
+    var reported = 0  // the second of the last report
 
-/// Counts what went missing before this message, and says so on stderr, at
-/// most once a second.
-func account(_ m: UnsafePointer<es_message_t>, _ kind: String) {
-    let type = m.pointee.event_type.rawValue
-    let seq = m.pointee.seq_num
-    if let before = last[type], seq > before + 1 {
-        dropped[kind, default: 0] += seq - before - 1
+    /// Counts what went missing before this message, and says so on stderr, at
+    /// most once a second.
+    func account(_ m: UnsafePointer<es_message_t>, _ kind: String) {
+        let type = m.pointee.event_type.rawValue
+        let seq = m.pointee.seq_num
+        if let before = last[type], seq > before + 1 {
+            dropped[kind, default: 0] += seq - before - 1
+        }
+        last[type] = seq
+        let now = m.pointee.time.tv_sec
+        guard !dropped.isEmpty, now > reported else { return }
+        let each = dropped.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
+        warn("the kernel dropped events the reader was too slow to take, and they are not in the capture: \(each)")
+        dropped = [:]
+        reported = now
     }
-    last[type] = seq
-    let now = m.pointee.time.tv_sec
-    guard !dropped.isEmpty, now > reported else { return }
-    let each = dropped.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
-    warn("the kernel dropped events the reader was too slow to take, and they are not in the capture: \(each)")
-    dropped = [:]
-    reported = now
 }
 
-func emit(_ m: UnsafePointer<es_message_t>) {
-    guard let (kind, body) = event(m) else { return }
+func encodeEvent(_ m: UnsafePointer<es_message_t>, tracker: DropTracker) -> Data? {
+    guard let (kind, body) = event(m) else { return nil }
     let v = m.pointee.version
-    if v >= 2 { account(m, kind) }
+    if v >= 2 { tracker.account(m, kind) }
     var record: [String: Any] = [
         "time": stamp(m.pointee.time.tv_sec, m.pointee.time.tv_nsec),
         "mach_time": m.pointee.mach_time,
@@ -281,9 +292,61 @@ func emit(_ m: UnsafePointer<es_message_t>) {
     if v >= 2 { record["seq_num"] = m.pointee.seq_num }
     if v >= 4 { record["global_seq_num"] = m.pointee.global_seq_num }
     guard var line = try? JSONSerialization.data(withJSONObject: record, options: [.withoutEscapingSlashes])
-    else { return }
+    else { return nil }
     line.append(0x0A)
-    write(line: line)
+    return line
+}
+
+struct ESStartError: Error {
+    let code: String
+    let message: String
+}
+
+/// Opens an Endpoint Security client and subscribes to every event Tangent
+/// reads, calling `onLine` for each serialized NDJSON line.
+func openESClient(forApp: Bool, onLine: @escaping (Data) -> Void) -> Result<OpaquePointer, ESStartError> {
+    let tracker = DropTracker()
+    var client: OpaquePointer?
+    let made = es_new_client(&client) { _, m in
+        if let line = encodeEvent(m, tracker: tracker) {
+            onLine(line)
+        }
+    }
+    switch made {
+    case ES_NEW_CLIENT_RESULT_SUCCESS: break
+    case ES_NEW_CLIENT_RESULT_ERR_NOT_PRIVILEGED:
+        return .failure(ESStartError(code: "not_privileged", message: "not root: run it with sudo"))
+    case ES_NEW_CLIENT_RESULT_ERR_NOT_ENTITLED:
+        return .failure(ESStartError(
+            code: "not_entitled",
+            message: "not entitled: the binary is not signed with the Endpoint Security entitlement and a profile that grants it"
+        ))
+    case ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED:
+        let grant = forApp
+            ? "not permitted: grant Tangent Full Disk Access (System Settings -> Privacy & Security -> Full Disk Access)"
+            : "not permitted: give the terminal Full Disk Access (System Settings, Privacy & Security) and restart it"
+        return .failure(ESStartError(code: "not_permitted", message: grant))
+    case ES_NEW_CLIENT_RESULT_ERR_TOO_MANY_CLIENTS:
+        return .failure(ESStartError(code: "too_many_clients", message: "too many Endpoint Security clients are running"))
+    default:
+        return .failure(ESStartError(code: "es_failed", message: "es_new_client failed (\(made.rawValue))"))
+    }
+    guard let client else {
+        return .failure(ESStartError(code: "es_failed", message: "es_new_client gave no client"))
+    }
+    // one at a time, so a refusal names its event. Only an event newer than the
+    // oldest macOS this runs on may be refused, and only by a macOS older than
+    // the event: without exec or fork there is no process tree, and a capture
+    // that looks whole and is not is worse than none.
+    for (kind, name, since) in subscribed {
+        if es_subscribe(client, [kind], 1) == ES_RETURN_SUCCESS { continue }
+        guard let since, !ProcessInfo.processInfo.isOperatingSystemAtLeast(version(since)) else {
+            es_delete_client(client)
+            return .failure(ESStartError(code: "subscribe_failed", message: "es_subscribe refused \(name)"))
+        }
+        warn("\(name) came with macOS \(since), and this is \(ProcessInfo.processInfo.operatingSystemVersionString): going on without it")
+    }
+    return .success(client)
 }
 
 // MARK: main
@@ -298,35 +361,19 @@ func version(_ dotted: String) -> OperatingSystemVersion {
     return OperatingSystemVersion(majorVersion: n[0], minorVersion: n[1], patchVersion: n[2])
 }
 
-// Not the sensor (notify.swift): `notify` shows notifications, and macOS
-// starts this as an app when one of them is clicked.
-if CommandLine.arguments.dropFirst().first == "notify" { notify() }
+// Modes other than the foreground stdout sensor.
+switch CommandLine.arguments.dropFirst().first {
+case "notify": notify()
+case "daemon": runDaemon()
+default: break
+}
 if openedByMacOS() { opened() }
 
 signal(SIGPIPE, SIG_IGN)  // a closed pipe is an error from write, handled there
 
-var client: OpaquePointer?
-let made = es_new_client(&client) { _, m in emit(m) }
-switch made {
-case ES_NEW_CLIENT_RESULT_SUCCESS: break
-case ES_NEW_CLIENT_RESULT_ERR_NOT_PRIVILEGED: fail("not root: run it with sudo")
-case ES_NEW_CLIENT_RESULT_ERR_NOT_ENTITLED:
-    fail("not entitled: the binary is not signed with the Endpoint Security entitlement and a profile that grants it")
-case ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED:
-    fail("not permitted: give the terminal Full Disk Access (System Settings, Privacy & Security) and restart it")
-case ES_NEW_CLIENT_RESULT_ERR_TOO_MANY_CLIENTS: fail("too many Endpoint Security clients are running")
-default: fail("es_new_client failed (\(made.rawValue))")
+switch openESClient(forApp: false, onLine: { write(line: $0) }) {
+case .success:
+    dispatchMain()
+case .failure(let err):
+    fail(err.message)
 }
-guard let client else { fail("es_new_client gave no client") }
-// one at a time, so a refusal names its event. Only an event newer than the
-// oldest macOS this runs on may be refused, and only by a macOS older than
-// the event: without exec or fork there is no process tree, and a capture
-// that looks whole and is not is worse than none.
-for (kind, name, since) in subscribed {
-    if es_subscribe(client, [kind], 1) == ES_RETURN_SUCCESS { continue }
-    guard let since, !ProcessInfo.processInfo.isOperatingSystemAtLeast(version(since)) else {
-        fail("es_subscribe refused \(name)")
-    }
-    warn("\(name) came with macOS \(since), and this is \(ProcessInfo.processInfo.operatingSystemVersionString): going on without it")
-}
-dispatchMain()

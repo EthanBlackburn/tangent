@@ -21,11 +21,14 @@
 //!   run headless (`claude -p`), sent
 //!   ([`transcripts`]).
 //!
-//! The sensor and tcpdump need root and tangent does not, so they are
-//! started through `sudo`, which asks for the password once, on the
-//! terminal, before anything is read. Root's process is not tangent's to
-//! signal: each ends when the pipe it writes to closes, which is when this
-//! source stops.
+//! The sensor and tcpdump need root and tangent does not. When the root
+//! sensor daemon (`tangent-sensor daemon`, installed by `tangent up`) is
+//! listening on its Unix sockets (`/var/run/tangent/es.sock` and `net.sock`)
+//! and no custom `sensor` path is configured, this source connects to those
+//! sockets directly with no `sudo` prompt. Otherwise they are started through
+//! `sudo`, which asks for the password once, on the terminal, before anything
+//! is read. Root's process is not tangent's to signal: each ends when the pipe
+//! or socket it writes to closes, which is when this source stops.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -36,10 +39,10 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use serde_json::json;
+use serde_json::{json, Value};
 use tangent_shared::dag::NodeRef;
 use tangent_shared::sources::macos::MacosConfig;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 
@@ -53,6 +56,8 @@ use crate::sources::socket::drain_ndjson_lines;
 const SECOND_SNAPSHOT: Duration = Duration::from_secs(1);
 /// How long after the sensor ends a stop of tangent's may still explain it.
 const STOP_KNOWN: Duration = Duration::from_millis(500);
+/// How long to wait for the daemon's initial ready/error handshake line.
+const DAEMON_HANDSHAKE: Duration = Duration::from_secs(10);
 
 pub async fn run_consumer(
     name: Arc<str>,
@@ -63,6 +68,18 @@ pub async fn run_consumer(
     if !cfg!(target_os = "macos") {
         bail!("source {name}: a macos source reads the Mac it runs on, and this is not one");
     }
+
+    // Prefer the root sensor daemon's Unix sockets when no custom sensor path
+    // is configured and the daemon is listening.
+    #[cfg(unix)]
+    if cfg.sensor.is_none() {
+        let sock_dir = tangent_shared::sensor::daemon_dir();
+        let es_sock = tangent_shared::sensor::es_socket(&sock_dir);
+        if let Ok(stream) = tokio::net::UnixStream::connect(&es_sock).await {
+            return run_daemon_consumer(name, sock_dir, stream, router, shutdown).await;
+        }
+    }
+
     let (path, release) = sensor(&name, &cfg)?;
     // The release's sensor is checked before the password is asked for.
     if let Some(dir) = &release {
@@ -93,42 +110,160 @@ pub async fn run_consumer(
     // this returns.
     let stop = shutdown.child_token();
     let _stops_with_the_sensor = stop.clone().drop_guard();
-    let network = tokio::spawn(connections(name.clone(), router.clone(), stop.clone()));
+    let network = tokio::spawn(connections(name.clone(), None, router.clone(), stop.clone()));
     let asked = tokio::spawn(prompts(name.clone(), router.clone(), stop));
 
+    let eof = stream_es(
+        &name,
+        &from,
+        &mut out,
+        BytesMut::with_capacity(512 * 1024),
+        &router,
+        &shutdown,
+    )
+    .await?;
+    // The pipe closes here, and the sensor ends at its next line.
+    drop(out);
+    if eof {
+        let status = sensor.wait().await?;
+        let last = said.await.unwrap_or_default();
+        let _ = tokio::join!(network, asked);
+        bail!("source {name}: the sensor stopped ({status}){}", why(&last));
+    }
+    let _ = tokio::join!(network, asked);
+    Ok(())
+}
+
+/// Runs the macOS source against the privileged sensor daemon's Unix sockets.
+#[cfg(unix)]
+async fn run_daemon_consumer(
+    name: Arc<str>,
+    sock_dir: PathBuf,
+    mut stream: tokio::net::UnixStream,
+    router: Arc<Router>,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    let mut buf = BytesMut::with_capacity(512 * 1024);
+    daemon_handshake(&name, &mut stream, &mut buf).await?;
+
+    let from = NodeRef::Source { name: name.clone() };
+    let mut first = snapshot(Utc::now()).await?;
+    first.push(monitor(std::process::id(), Utc::now()));
+    router.forward(&from, first, Vec::new()).await?;
+
+    let es_sock = tangent_shared::sensor::es_socket(&sock_dir);
+    tracing::info!(source = %name, sensor = %es_sock.display(), "the sensor is started");
+
+    let stop = shutdown.child_token();
+    let _stops_with_the_sensor = stop.clone().drop_guard();
+    let net_sock = tangent_shared::sensor::net_socket(&sock_dir);
+    let network = tokio::spawn(connections(
+        name.clone(),
+        Some(net_sock),
+        router.clone(),
+        stop.clone(),
+    ));
+    let asked = tokio::spawn(prompts(name.clone(), router.clone(), stop));
+
+    let eof = stream_es(&name, &from, &mut stream, buf, &router, &shutdown).await?;
+    drop(stream);
+    let _ = tokio::join!(network, asked);
+    if eof {
+        bail!(
+            "source {name}: the sensor daemon closed {} unexpectedly",
+            es_sock.display()
+        );
+    }
+    Ok(())
+}
+
+/// Reads the daemon's initial control line (`daemon_ready` or `daemon_error`)
+/// from `stream`, leaving any subsequent ES frames untouched in `buf`.
+#[cfg(unix)]
+async fn daemon_handshake<R: AsyncRead + Unpin>(
+    name: &str,
+    stream: &mut R,
+    buf: &mut BytesMut,
+) -> Result<()> {
+    let first_line = tokio::time::timeout(DAEMON_HANDSHAKE, async {
+        loop {
+            if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                return Ok::<_, anyhow::Error>(buf.split_to(pos + 1));
+            }
+            let n = stream
+                .read_buf(buf)
+                .await
+                .with_context(|| format!("source {name}: reading sensor daemon handshake"))?;
+            if n == 0 {
+                bail!("source {name}: sensor daemon closed the socket before becoming ready");
+            }
+        }
+    })
+    .await
+    .with_context(|| format!("source {name}: timed out waiting for sensor daemon handshake"))??;
+
+    let parsed: Value = serde_json::from_slice(&first_line)
+        .with_context(|| format!("source {name}: invalid sensor daemon handshake"))?;
+    if let Some(code) = parsed.get("daemon_error").and_then(Value::as_str) {
+        let msg = parsed
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or(code);
+        bail!("source {name}: {msg}");
+    }
+    if parsed.get("daemon_ready").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    // If a test or future daemon sends an ES line directly with no handshake,
+    // put it back at the front of `buf` so it is forwarded normally.
+    let rest = buf.split();
+    buf.extend_from_slice(&first_line);
+    buf.extend_from_slice(&rest);
+    Ok(())
+}
+
+/// Streams NDJSON Endpoint Security frames from `out` until `shutdown`
+/// (returning `Ok(false)`) or unexpected EOF (returning `Ok(true)`).
+async fn stream_es<R: AsyncRead + Unpin>(
+    name: &str,
+    from: &NodeRef,
+    out: &mut R,
+    mut buf: BytesMut,
+    router: &Router,
+    shutdown: &CancellationToken,
+) -> Result<bool> {
+    if !buf.is_empty() {
+        let frames = drain_ndjson_lines(&mut buf);
+        if !frames.is_empty() {
+            router.forward(from, frames, Vec::new()).await?;
+        }
+    }
     let again = tokio::time::sleep(SECOND_SNAPSHOT);
     tokio::pin!(again);
     let mut snapshots_left = true;
-    let mut buf = BytesMut::with_capacity(512 * 1024);
     loop {
         tokio::select! {
-            () = shutdown.cancelled() => break,
+            () = shutdown.cancelled() => return Ok(false),
             () = &mut again, if snapshots_left => {
                 snapshots_left = false;
-                router.forward(&from, snapshot(Utc::now()).await?, Vec::new()).await?;
+                router.forward(from, snapshot(Utc::now()).await?, Vec::new()).await?;
             }
             read = out.read_buf(&mut buf) => {
                 if read.with_context(|| format!("source {name}: reading the sensor"))? == 0 {
                     // Ctrl-C at a terminal reaches the sensor as it reaches
                     // tangent, and the sensor may be first to end.
                     if tokio::time::timeout(STOP_KNOWN, shutdown.cancelled()).await.is_ok() {
-                        break;
+                        return Ok(false);
                     }
-                    let status = sensor.wait().await?;
-                    let last = said.await.unwrap_or_default();
-                    bail!("source {name}: the sensor stopped ({status}){}", why(&last));
+                    return Ok(true);
                 }
                 let frames = drain_ndjson_lines(&mut buf);
                 if !frames.is_empty() {
-                    router.forward(&from, frames, Vec::new()).await?;
+                    router.forward(from, frames, Vec::new()).await?;
                 }
             }
         }
     }
-    // The pipe closes here, and the sensor ends at its next line.
-    drop(out);
-    let _ = tokio::join!(network, asked);
-    Ok(())
 }
 
 /// The sensor to start, and for this release's the directory it is kept
@@ -188,19 +323,37 @@ fn as_root(program: &OsStr, arguments: &[String]) -> std::io::Result<Child> {
         .spawn()
 }
 
-/// New connections until `stop`, from tcpdump. An error here is logged and
-/// ends the connections only.
-async fn connections(name: Arc<str>, router: Arc<Router>, stop: CancellationToken) {
-    if let Err(e) = read_connections(&name, &router, &stop).await {
+/// New connections until `stop`, from the daemon's `net.sock` when present or
+/// from `sudo tcpdump`. An error here is logged and ends the connections only.
+async fn connections(
+    name: Arc<str>,
+    net_sock: Option<PathBuf>,
+    router: Arc<Router>,
+    stop: CancellationToken,
+) {
+    if let Err(e) = read_connections(&name, net_sock.as_deref(), &router, &stop).await {
         tracing::error!(source = %name, "connections are not read from here on: {e:#}");
     }
 }
 
 async fn read_connections(
     name: &Arc<str>,
+    net_sock: Option<&Path>,
     router: &Router,
     stop: &CancellationToken,
 ) -> Result<()> {
+    #[cfg(unix)]
+    if let Some(sock) = net_sock {
+        let mut stream = tokio::net::UnixStream::connect(sock)
+            .await
+            .with_context(|| format!("connecting to {}", sock.display()))?;
+        let eof = stream_tcpdump(name, &mut stream, router, stop).await?;
+        if eof {
+            bail!("sensor daemon closed {} unexpectedly", sock.display());
+        }
+        return Ok(());
+    }
+
     let mut tcpdump = as_root(OsStr::new(net::TCPDUMP), &net::arguments())
         .with_context(|| format!("starting {}", net::TCPDUMP))?;
     let mut out = tcpdump.stdout.take().expect("tcpdump's stdout is piped");
@@ -208,6 +361,23 @@ async fn read_connections(
     // tcpdump says what it listens on as it starts, which is no warning.
     let said = tokio::spawn(said(name.clone(), None, err));
 
+    let eof = stream_tcpdump(name, &mut out, router, stop).await?;
+    if eof {
+        let status = tcpdump.wait().await?;
+        let last = said.await.unwrap_or_default();
+        bail!("tcpdump stopped ({status}): {}", last.join("; "));
+    }
+    Ok(())
+}
+
+/// Parses tcpdump lines from `out` into connection events until `stop`
+/// (returning `Ok(false)`) or unexpected EOF (returning `Ok(true)`).
+async fn stream_tcpdump<R: AsyncRead + Unpin>(
+    name: &Arc<str>,
+    out: &mut R,
+    router: &Router,
+    stop: &CancellationToken,
+) -> Result<bool> {
     let from = NodeRef::Source { name: name.clone() };
     let mut reader = net::Connections::new();
     let mut buf = BytesMut::with_capacity(64 * 1024);
@@ -220,16 +390,14 @@ async fn read_connections(
                 if !lines.is_empty() {
                     router.forward(&from, lines, Vec::new()).await?;
                 }
-                return Ok(());
+                return Ok(false);
             }
             read = out.read_buf(&mut buf) => {
                 if read.context("reading tcpdump")? == 0 {
                     if tokio::time::timeout(STOP_KNOWN, stop.cancelled()).await.is_ok() {
                         continue;
                     }
-                    let status = tcpdump.wait().await?;
-                    let last = said.await.unwrap_or_default();
-                    bail!("tcpdump stopped ({status}): {}", last.join("; "));
+                    return Ok(true);
                 }
                 for line in drain_ndjson_lines(&mut buf) {
                     reader.line(String::from_utf8_lossy(&line).trim_end(), &mut lines);
@@ -549,5 +717,53 @@ PID PPID STARTED COMMAND
     fn a_silent_sensor_is_most_often_without_full_disk_access() {
         assert!(why(&[]).contains("Full Disk Access"));
         assert_eq!(why(&["a".into(), "b".into()]), ": a; b");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn daemon_handshake_accepts_ready_and_preserves_trailing_events() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (mut server, mut client) = tokio::net::UnixStream::pair().unwrap();
+        let writer = tokio::spawn(async move {
+            server
+                .write_all(b"{\"daemon_ready\":true}\n{\"event\":{\"exec\":{}}}\n")
+                .await
+                .unwrap();
+        });
+        let mut buf = BytesMut::new();
+        daemon_handshake("mac", &mut client, &mut buf)
+            .await
+            .unwrap();
+        writer.await.unwrap();
+        // Ensure any bytes read past the handshake line remain buffered for stream_es.
+        let mut rest = buf;
+        let _ = client.read_buf(&mut rest).await.unwrap();
+        let frames = drain_ndjson_lines(&mut rest);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&frames[0]).unwrap(),
+            json!({"event": {"exec": {}}})
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn daemon_handshake_surfaces_daemon_error() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (mut server, mut client) = tokio::net::UnixStream::pair().unwrap();
+        server
+            .write_all(
+                b"{\"daemon_error\":\"not_permitted\",\"message\":\"not permitted: grant Tangent Full Disk Access\"}\n",
+            )
+            .await
+            .unwrap();
+        let mut buf = BytesMut::new();
+        let err = daemon_handshake("mac", &mut client, &mut buf)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Full Disk Access"), "{err}");
     }
 }
