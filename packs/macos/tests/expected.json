@@ -963,6 +963,7 @@
    "/sbin/launchd"
   ],
   "process": {
+   "command": "--cmd set noswapfile notes/todo.md ghp_[secret: 34 bytes]",
    "path": "/usr/bin/vim",
    "pid": 400,
    "platform": true,

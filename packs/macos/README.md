@@ -156,11 +156,15 @@ subscribes to. The terminal, the apps and an agent left open were started
 before the capture, so the programs they run have no one above them and
 `responsible` has a pid and no name: in a ten-minute run 68 of 249 programs'
 chains ended in `(unknown)`, and the judge read one as "no known launcher".
-The source lists what is running (`ps -axo pid=,ppid=,lstart=,comm=`) as
+The source lists what is running (`ps -axo pid=,ppid=,lstart=,comm=`, and
+`ps -axww -o pid=,args=` for each one's command line) as
 one line each, ahead of the sensor's first line and again a second after it
-starts, which gives the tree each process's parent, path and start. The plugin takes a line only for a process
+starts, which gives the tree each process's parent, path, start and what it
+was started to do: a server or an agent left running is `node ~/srv/server.js
+--port 8080` and not a bare `node`. `ps` joins a command line's arguments with spaces, so one that held a
+space is read as two, and the keys on it are taken out as an exec's are. The plugin takes a line only for a process
 it does not know, or knows by another start, and a process's first event replaces what the snapshot said (its
-signature, and its parent unless launchd has taken it since), so a late or
+signature, and its parent unless launchd has taken it since) and keeps its command line, so a late or
 repeated snapshot does no harm.
 
 ## The capture's own processes
@@ -289,7 +293,10 @@ environment or did something rarer first, then the busiest; one program under tw
 different parents is two), what it is (path, signing
 identity, team, platform, tty), what started it (`parents`, the whole chain,
 and `responsible`), the commands it
-ran with how often (each as the record holds it), what it did to the files in the groups above (created,
+ran with how often (each as the record holds it; a program whose start is in
+an earlier summary, or before the log, has `ran_earlier`, the start of its
+command line as the tree kept it and each of its later records carries it,
+`process.command`), what it did to the files in the groups above (created,
 written, read, deleted, replaced, renamed into place; each file named, or for
 many under one directory the directory with a count and a few names), the
 agent-steering variables it set, and its rarer events. The files are listed
@@ -541,7 +548,7 @@ sent, and the package's contents, are not in these records.
 ## Tests
 
 `tests/input.json` is forty-three synthetic records as eslogger writes them, two
-connections' lines, three of the snapshot's, tangent's declaration of itself and three prompts', as the source sends them (version 10,
+connections' lines, four of the snapshot's, tangent's declaration of itself and three prompts', as the source sends them (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
 started from it with `ANTHROPIC_BASE_URL` set, the person's prompts to it and one sent headless, the agent saving its config and
 reading the keychain, a package install under it whose `node` reads

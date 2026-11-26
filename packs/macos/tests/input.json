@@ -16,6 +16,16 @@
   }
  },
  {
+  "time": "2026-11-03T20:00:00.000000000Z",
+  "ps": {
+   "pid": 400,
+   "ppid": 200,
+   "path": "/usr/bin/vim",
+   "start": "2026-11-03T19:58:00Z",
+   "command": "vim --cmd set noswapfile notes/todo.md ghp_examplesecretvalue0000000000000000"
+  }
+ },
+ {
   "action": {
    "result": {
     "result": {
