@@ -3,8 +3,9 @@
 //   tangent-sensor menubar [--dir ~/.local/share/tangent/mac] [--tangent /path/to/tangent]
 //
 // Runs unprivileged in the user's Aqua GUI session (`LSUIElement = true`,
-// zero Dock icon). Watches `status.json` and `feedback.ndjson` via kqueue
-// (no busy polling), renders a crisp monochrome template icon with an optional
+// zero Dock icon). Watches `status.json` and `feedback.ndjson` via kqueue,
+// with a look every five seconds for a watcher that ended without saying so
+// and for the alerts' ages, renders a crisp monochrome template icon with an optional
 // status dot only when action is needed, and opens a native Alert Inspector
 // panel for any recent alert or clicked notification.
 
@@ -351,6 +352,8 @@ private final class AlertPanelController: NSWindowController {
         let chosen = answers[sender.tag]
         keep(chosen.written, for: ["file": file, "line": lineStr])
         statusLabel.stringValue = answerCaption(chosen.written)
+        // one answer is one line in the file
+        for button in answerButtons { button.isEnabled = false }
         onAnswered()
     }
 
@@ -748,13 +751,36 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             proc.standardInput = FileHandle.nullDevice
             proc.standardOutput = FileHandle.nullDevice
             proc.standardError = FileHandle.nullDevice
-            try? proc.run()
-            proc.waitUntilExit()
+            // A Process that was never started must not be waited for: that
+            // is an exception, and the end of the menu bar.
+            var failure: String?
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus != 0 {
+                    failure = "`tangent \(args.joined(separator: " "))` did not finish (exit \(proc.terminationStatus))."
+                }
+            } catch {
+                failure = "\(bin) could not be started: \(error.localizedDescription)"
+            }
             DispatchQueue.main.async {
                 self?.busyAction = nil
                 self?.reload()
+                if let failure { self?.sayFailed(failure, args: args) }
             }
         }
+    }
+
+    /// `tangent up` asks for a password the first time, and for the model
+    /// when it is not on this Mac, and from here there is nobody to ask: the
+    /// way on is the same command in a terminal.
+    private func sayFailed(_ what: String, args: [String]) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Tangent could not do that"
+        alert.informativeText = "\(what)\n\nRun `tangent \(args.joined(separator: " "))` in a terminal to see why."
+        alert.runModal()
     }
 
     @objc private func simulateAgent() {
@@ -858,10 +884,11 @@ private var retainedMenuController: MenuBarController?
 
 /// Attaches the menu bar controller to an already-running `NSApplication`
 /// (used when the user opens `Tangent.app` directly from Finder/Spotlight).
-func startMenuBarInRunningApp() {
+/// False, and nothing done, when a menu bar is running already.
+func startMenuBarInRunningApp() -> Bool {
     let watchDir = defaultWatchDir()
     guard acquireMenuBarLock(in: watchDir) else {
-        exit(0)
+        return false
     }
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
@@ -869,6 +896,7 @@ func startMenuBarInRunningApp() {
     retainedMenuController = controller
     app.delegate = controller
     controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+    return true
 }
 
 /// Entrypoint for `tangent-sensor menubar`.

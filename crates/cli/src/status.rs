@@ -291,6 +291,10 @@ impl Tracker {
         g.snapshot.state = "stopped".to_string();
         g.snapshot.pid = None;
         g.snapshot.pending = 0;
+        // A watch that was stopped has no error: one left here from before
+        // is what `tangent up` and the menu bar would take for today's.
+        g.snapshot.error = None;
+        g.snapshot.needs_fda = false;
         g.snapshot.updated_at = now_rfc3339();
         write_atomic(&g.dir, &g.snapshot);
     }
@@ -323,9 +327,11 @@ pub fn read(dir: &Path) -> Option<Snapshot> {
 }
 
 /// Whether `err` indicates macOS Full Disk Access has not been granted yet.
+/// The sensor names it when that is what it lacks, as the daemon or under
+/// sudo. "Operation not permitted" alone is any refusal by macOS, of a file
+/// or a socket as much as of this.
 pub fn looks_like_fda(err: &str) -> bool {
-    let lower = err.to_ascii_lowercase();
-    lower.contains("full disk access") || lower.contains("not permitted")
+    err.to_ascii_lowercase().contains("full disk access")
 }
 
 /// Seeds up to [`MAX_RECENT`] upheld alerts from the tail of `reviews.ndjson`.
@@ -480,5 +486,13 @@ mod tests {
         let snap = read(dir.path()).unwrap();
         assert_eq!(snap.state, "stopped");
         assert_eq!(snap.pid, None);
+        assert!(!snap.needs_fda, "a stop leaves no error behind");
+        assert_eq!(snap.error, None);
+    }
+
+    #[test]
+    fn only_an_error_that_names_full_disk_access_asks_for_it() {
+        assert!(looks_like_fda("source mac: not permitted: grant Tangent Full Disk Access"));
+        assert!(!looks_like_fda("opening lake/x.parquet: Operation not permitted (os error 1)"));
     }
 }
