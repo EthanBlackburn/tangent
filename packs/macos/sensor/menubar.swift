@@ -101,7 +101,9 @@ struct WatchStatus {
 /// One way to judge this Mac, from `tangent status --json`'s `choices`: the
 /// model on this Mac, or a provider's pair.
 struct ModelChoice {
-    let label: String
+    /// Who serves the models, and the models, each in a few words.
+    let name: String
+    let models: String
     /// What `tangent` is run with to start it.
     let args: [String]
     let current: Bool
@@ -111,10 +113,11 @@ struct ModelChoice {
     let note: String?
 
     static func parse(_ dict: [String: Any]) -> ModelChoice? {
-        guard let label = dict["label"] as? String, let args = dict["args"] as? [String], !args.isEmpty
+        guard let name = dict["name"] as? String, let args = dict["args"] as? [String], !args.isEmpty
         else { return nil }
         return ModelChoice(
-            label: label,
+            name: name,
+            models: dict["models"] as? String ?? "",
             args: args,
             current: dict["current"] as? Bool ?? false,
             ready: dict["ready"] as? Bool ?? false,
@@ -636,26 +639,19 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             let pickItem = NSMenuItem(title: "Models", action: nil, keyEquivalent: "")
             let pickMenu = NSMenu()
             pickMenu.autoenablesItems = false
+            // One short line each: who serves them, and the models. Why one
+            // is greyed is its tooltip, and nothing else is said here.
             for (index, choice) in modelChoices.enumerated() {
-                let item = NSMenuItem(title: choice.label, action: #selector(chooseModels(_:)), keyEquivalent: "")
+                let item = NSMenuItem(
+                    title: "\(choice.name)  ·  \(choice.models)",
+                    action: #selector(chooseModels(_:)), keyEquivalent: "")
                 item.target = self
                 item.tag = index
                 item.state = choice.current ? .on : .off
                 item.isEnabled = choice.ready && busyAction == nil
                 item.toolTip = choice.note
                 pickMenu.addItem(item)
-                if let note = choice.note, !choice.ready {
-                    let why = NSMenuItem(title: "    \(note)", action: nil, keyEquivalent: "")
-                    why.isEnabled = false
-                    pickMenu.addItem(why)
-                }
             }
-            pickMenu.addItem(.separator())
-            let sent = NSMenuItem(
-                title: "A provider is sent each session's summary: its command lines, its paths and your prompts.",
-                action: nil, keyEquivalent: "")
-            sent.isEnabled = false
-            pickMenu.addItem(sent)
             pickItem.submenu = pickMenu
             menu.addItem(pickItem)
         }

@@ -271,10 +271,8 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let model_label = match provider {
-        Some(_) => mac.models(),
-        None => "Inkling 2 Mini (local)".to_string(),
-    };
+    let (who, pair) = mac::brief(provider);
+    let model_label = format!("{pair} · {who}");
 
     if let Some(snap) = &final_snap {
         if snap.needs_fda {
@@ -446,12 +444,14 @@ pub async fn show_status(as_json: bool) -> Result<()> {
 /// kept by an earlier `up`.
 fn choices(current: Option<Provider>, no_inkling: Option<String>, set: impl Fn(&str) -> bool) -> Vec<Value> {
     use clap::ValueEnum as _;
+    let (name, models) = mac::brief(None);
     let mut choices = vec![json!({
-        "label": "Inkling 2 Mini, on this Mac: nothing leaves it",
+        "name": name,
+        "models": models,
         "args": ["up", "--local"],
         "current": current.is_none(),
         "ready": no_inkling.is_none(),
-        "note": no_inkling,
+        "note": no_inkling.map(|_| "Needs an Apple Silicon Mac with 32 GB of memory"),
     })];
     for provider in Provider::value_variants() {
         let mac = Mac::new(Some(*provider)).watched();
@@ -460,14 +460,12 @@ fn choices(current: Option<Provider>, no_inkling: Option<String>, set: impl Fn(&
         });
         let note = (!missing.is_empty()).then(|| {
             let vars: Vec<&str> = missing.iter().map(|(var, _)| *var).collect();
-            format!(
-                "needs {}: run `tangent up --provider {}` in a terminal that has it",
-                vars.join(", "),
-                provider_name(*provider)
-            )
+            format!("Needs {}", vars.join(", "))
         });
+        let (name, models) = mac::brief(Some(*provider));
         choices.push(json!({
-            "label": mac.models(),
+            "name": name,
+            "models": models,
             "args": ["up", "--provider", provider_name(*provider)],
             "current": current == Some(*provider),
             "ready": missing.is_empty(),
@@ -1060,7 +1058,8 @@ mod tests {
         assert_eq!(said.len(), 5, "this Mac, and four providers");
         assert_eq!(said[0]["args"], json!(["up", "--local"]));
         assert_eq!(said[0]["ready"], false);
-        assert_eq!(said[0]["note"], "this Mac has 16 GB of memory");
+        assert_eq!(said[0]["name"], "This Mac");
+        assert_eq!(said[0]["note"], "Needs an Apple Silicon Mac with 32 GB of memory");
         let by = |name: &str| {
             said.iter()
                 .find(|c| c["args"] == json!(["up", "--provider", name]))
@@ -1070,11 +1069,13 @@ mod tests {
         // Bedrock's profile has `default` to fall back on
         assert_eq!(by("bedrock")["current"], true);
         assert_eq!(by("bedrock")["ready"], true);
-        assert!(by("bedrock")["label"].as_str().unwrap().contains("Amazon Bedrock"));
+        assert_eq!(by("bedrock")["name"], "Bedrock");
+        assert_eq!(by("bedrock")["models"], "Claude Haiku 5.5 + Sonnet 5.5");
+        assert_eq!(by("bedrock")["note"], Value::Null);
         assert_eq!(by("openai")["ready"], true);
         assert_eq!(by("anthropic")["current"], false);
         assert_eq!(by("anthropic")["ready"], false);
-        assert!(by("anthropic")["note"].as_str().unwrap().contains("ANTHROPIC_API_KEY"));
+        assert_eq!(by("anthropic")["note"], "Needs ANTHROPIC_API_KEY");
     }
 
     #[test]
