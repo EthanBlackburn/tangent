@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::init::Server;
+use crate::init::{self, Provider, Server};
 use crate::mac::{self, Mac};
 use crate::{fetch, local, status, watch};
 
@@ -44,39 +44,30 @@ const LAUNCHCTL: &str = "/bin/launchctl";
 const FDA_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
 
-/// Saved preference in `<data_dir>/service.json` so plain `tangent up` (and
-/// the menu bar's "Resume Watching" button) remembers local vs hosted mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Local,
-    Hosted,
+/// A provider as `--provider` and service.json name it.
+fn provider_name(provider: Provider) -> String {
+    use clap::ValueEnum as _;
+    let value = provider.to_possible_value().expect("no provider is hidden");
+    value.get_name().to_string()
 }
 
-impl Mode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Mode::Local => "local",
-            Mode::Hosted => "hosted",
-        }
-    }
-
-    fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "local" => Some(Mode::Local),
-            "hosted" => Some(Mode::Hosted),
-            _ => None,
-        }
-    }
-}
-
-fn read_mode(dir: &Path) -> Option<Mode> {
+/// Who judged for the last `tangent up`, from `<data_dir>/service.json`, so
+/// plain `tangent up` (and the menu bar's "Resume Watching" button) starts
+/// the same again: a provider, or `None` for the model on this Mac. Nothing
+/// when no `up` has said.
+fn read_choice(dir: &Path) -> Option<Option<Provider>> {
+    use clap::ValueEnum as _;
     let text = fs::read_to_string(dir.join(SERVICE_FILE)).ok()?;
     let val: Value = serde_json::from_str(&text).ok()?;
-    val.get("mode").and_then(Value::as_str).and_then(Mode::from_str)
+    match val.get("provider")? {
+        Value::Null => Some(None),
+        Value::String(name) => Provider::from_str(name, false).ok().map(Some),
+        _ => None,
+    }
 }
 
-fn write_mode(dir: &Path, mode: Mode) -> Result<()> {
-    let body = serde_json::to_string_pretty(&json!({ "mode": mode.as_str() }))?;
+fn write_choice(dir: &Path, provider: Option<Provider>) -> Result<()> {
+    let body = serde_json::to_string_pretty(&json!({ "provider": provider.map(provider_name) }))?;
     fs::write(dir.join(SERVICE_FILE), format!("{body}\n"))
         .with_context(|| format!("writing {}", dir.join(SERVICE_FILE).display()))
 }
@@ -139,10 +130,10 @@ fn write_env_file(path: &Path, vars: &BTreeMap<String, String>) -> Result<()> {
     fs::rename(&tmp, path).with_context(|| format!("installing {}", path.display()))
 }
 
-/// `tangent up [--hosted | --local]`: installs the privileged sensor daemon if
-/// needed (one sudo prompt) and starts the unprivileged Mac watcher + native
-/// menu bar in the background.
-pub async fn up(hosted_flag: bool, local_flag: bool) -> Result<()> {
+/// `tangent up [--provider <name> | --local]`: installs the privileged
+/// sensor daemon if needed (one sudo prompt) and starts the unprivileged Mac
+/// watcher + native menu bar in the background.
+pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("`tangent up` manages the macOS background watcher and menu bar, and this machine is not a Mac");
     }
@@ -150,41 +141,52 @@ pub async fn up(hosted_flag: bool, local_flag: bool) -> Result<()> {
     let dir = watch::data_dir("mac")?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
-    let mode = if hosted_flag {
-        Mode::Hosted
-    } else if local_flag {
-        Mode::Local
-    } else {
-        read_mode(&dir).unwrap_or(Mode::Local)
+    // What this one says, or what the last one did. Nothing is picked for
+    // whoever has named none: that is the model on this Mac.
+    let provider = match (provider_flag, local_flag) {
+        (Some(provider), _) => Some(provider),
+        (None, true) => None,
+        (None, false) => read_choice(&dir).unwrap_or(None),
     };
-    let hosted = mode == Mode::Hosted;
 
     // Validate host eligibility (Apple Silicon + 32 GB for local).
-    let mac = Mac::new(hosted).watched();
-    mac::runs_here(&mac)?;
+    let mac = Mac::new(provider).watched();
+    mac::runs_here_as(&mac, "tangent up")?;
 
-    // Gather required hosted API keys (from current env or existing 0600 env file).
+    // What a provider's models read is kept for the watcher, which launchd
+    // starts with none of this shell's environment: from here, or from the
+    // 0600 file the last `up` kept.
     let env_path = dir.join(ENV_FILE);
     let mut saved_env = fs::read_to_string(&env_path)
         .map(|t| parse_env(&t))
         .unwrap_or_default();
-    if hosted {
-        let mut missing = Vec::new();
-        for (var, desc) in mac.needs() {
+    if provider.is_some() {
+        for (var, _) in mac.needs() {
             if let Some(val) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) {
                 saved_env.insert(var.to_string(), val);
-            } else if !saved_env.get(var).is_some_and(|v| !v.trim().is_empty()) {
-                missing.push((var, desc));
             }
         }
+        // As `tangent watch mac` asks it: a variable the file has a fallback
+        // for, as Bedrock's profile has `default`, is not missing.
+        let missing = watch::unset(&mac.config(), &mac.needs(), |name| {
+            saved_env.get(name).map(std::ffi::OsString::from)
+        });
         if !missing.is_empty() {
             let lines: Vec<String> = missing
                 .iter()
                 .map(|(v, d)| format!("  {v}  ({d})"))
                 .collect();
             bail!(
-                "hosted mode reads these from the environment, and they are not set:\n{}",
+                "it reads these from the environment, and they are not set:\n{}",
                 lines.join("\n")
+            );
+        }
+        if provider == Some(Provider::Bedrock)
+            && init::set("AWS_ACCESS_KEY_ID")
+            && !saved_env.contains_key("AWS_PROFILE")
+        {
+            println!(
+                "This shell's AWS keys are not kept: the background watcher signs in with the profile `default` in ~/.aws. Set AWS_PROFILE to name another."
             );
         }
         write_env_file(&env_path, &saved_env)?;
@@ -208,7 +210,7 @@ pub async fn up(hosted_flag: bool, local_flag: bool) -> Result<()> {
         }
     }
 
-    write_mode(&dir, mode)?;
+    write_choice(&dir, provider)?;
 
     // 1. Ensure `/Applications/Tangent.app` + root LaunchDaemon are installed and running.
     let uid = current_uid()?;
@@ -226,7 +228,12 @@ pub async fn up(hosted_flag: bool, local_flag: bool) -> Result<()> {
     let tangent_bin = std::path::absolute(&tangent_bin).unwrap_or(tangent_bin);
 
     let watch_plist_path = agents_dir.join(format!("{WATCH_LABEL}.plist"));
-    let watch_xml = watch_agent_plist(&tangent_bin, &dir, hosted, hosted.then_some(&env_path));
+    let watch_xml = watch_agent_plist(
+        &tangent_bin,
+        &dir,
+        provider,
+        provider.is_some().then_some(env_path.as_path()),
+    );
     let app_plist_path = agents_dir.join(format!("{APP_LABEL}.plist"));
     let app_xml = app_agent_plist(&tangent_shared::sensor::installed_binary(), &dir, &tangent_bin);
 
@@ -264,10 +271,9 @@ pub async fn up(hosted_flag: bool, local_flag: bool) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let model_label = if hosted {
-        "Claude Haiku 5.5 + Sonnet 5.5 (hosted)"
-    } else {
-        "Inkling 2 Mini (local)"
+    let model_label = match provider {
+        Some(_) => mac.models(),
+        None => "Inkling 2 Mini (local)".to_string(),
     };
 
     if let Some(snap) = &final_snap {
@@ -427,7 +433,7 @@ pub async fn show_status(as_json: bool) -> Result<()> {
 
 /// `tangent uninstall [--purge]`: cleanly stops and removes the user
 /// LaunchAgents, root LaunchDaemon, `/var/run/tangent`, both copies of
-/// `Tangent.app`, and the API keys `tangent up --hosted` kept. Keeps the rest
+/// `Tangent.app`, and the API keys `tangent up --provider` kept. Keeps the rest
 /// of `~/.local/share/tangent/mac` unless `--purge` is passed.
 pub async fn uninstall(purge: bool) -> Result<()> {
     if !cfg!(target_os = "macos") {
@@ -794,7 +800,7 @@ pub fn sensor_daemon_plist(sensor_bin: &Path, socket_dir: &Path, uid: u32) -> St
 pub fn watch_agent_plist(
     tangent_bin: &Path,
     data_dir: &Path,
-    hosted: bool,
+    provider: Option<Provider>,
     env_file: Option<&Path>,
 ) -> String {
     let mut args = vec![
@@ -802,8 +808,9 @@ pub fn watch_agent_plist(
         "watch".to_string(),
         "mac".to_string(),
     ];
-    if hosted {
-        args.push("--hosted".to_string());
+    if let Some(provider) = provider {
+        args.push("--provider".to_string());
+        args.push(provider_name(provider));
     }
     if let Some(env_file) = env_file {
         args.push("--env-file".to_string());
@@ -907,10 +914,10 @@ mod tests {
         let watch = watch_agent_plist(
             Path::new("/opt/homebrew/bin/tangent"),
             Path::new("/Users/a&b/.local/share/tangent/mac"),
-            true,
+            Some(Provider::Bedrock),
             Some(Path::new("/Users/a&b/.local/share/tangent/mac/env")),
         );
-        assert!(watch.contains("<string>--hosted</string>"));
+        assert!(watch.contains("<string>--provider</string>\n        <string>bedrock</string>"));
         assert!(watch.contains("<string>--env-file</string>"));
         assert!(watch.contains("/Users/a&amp;b/.local/share/tangent/mac/env"));
 
@@ -965,12 +972,12 @@ mod tests {
     }
 
     #[test]
-    fn mode_persists_in_service_json() {
+    fn who_judges_persists_in_service_json() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(read_mode(dir.path()), None);
-        write_mode(dir.path(), Mode::Hosted).unwrap();
-        assert_eq!(read_mode(dir.path()), Some(Mode::Hosted));
-        write_mode(dir.path(), Mode::Local).unwrap();
-        assert_eq!(read_mode(dir.path()), Some(Mode::Local));
+        assert_eq!(read_choice(dir.path()), None);
+        write_choice(dir.path(), Some(Provider::Bedrock)).unwrap();
+        assert_eq!(read_choice(dir.path()), Some(Some(Provider::Bedrock)));
+        write_choice(dir.path(), None).unwrap();
+        assert_eq!(read_choice(dir.path()), Some(None));
     }
 }

@@ -206,12 +206,14 @@ enum Commands {
     /// your user so watching survives terminal closes, sleep, and reboots
     /// with no daily sudo prompts.
     Up {
-        /// Judge with Claude Haiku 5.5 + Sonnet 5.5 through Anthropic's API
-        /// (`ANTHROPIC_API_KEY`) instead of local Inkling 2 Mini.
-        #[arg(long, conflicts_with = "local")]
-        hosted: bool,
+        /// Who serves the models, in place of one on this Mac: that
+        /// provider's pair, as `tangent watch mac --provider` has it. Each
+        /// session's summary is sent there. It is remembered: `tangent up`
+        /// alone starts what the last one named.
+        #[arg(long, value_enum, conflicts_with = "local")]
+        provider: Option<init::Provider>,
         /// Switch back to local Inkling 2 Mini on Apple Silicon (32 GB+ RAM).
-        #[arg(long, conflicts_with = "hosted")]
+        #[arg(long)]
         local: bool,
     },
 
@@ -488,7 +490,7 @@ async fn main() -> Result<()> {
             watch::config(config, once, no_notify).await?
         }
 
-        Commands::Up { hosted, local } => service::up(hosted, local).await?,
+        Commands::Up { provider, local } => service::up(provider, local).await?,
         Commands::Down { all } => service::down(all).await?,
         Commands::Status { json } => service::show_status(json).await?,
         Commands::Uninstall { purge } => service::uninstall(purge).await?,
@@ -808,15 +810,16 @@ mod tests {
     fn background_service_verbs_parse() {
         let ok = |args: &[&str]| Cli::try_parse_from([&["tangent"], args].concat()).is_ok();
         assert!(ok(&["up"]));
-        assert!(ok(&["up", "--hosted"]));
+        assert!(ok(&["up", "--provider", "bedrock"]));
         assert!(ok(&["up", "--local"]));
-        assert!(!ok(&["up", "--hosted", "--local"]));
+        assert!(!ok(&["up", "--provider", "bedrock", "--local"]));
+        assert!(!ok(&["up", "--hosted"]), "a provider is named");
         assert!(ok(&["down"]));
         assert!(ok(&["down", "--all"]));
         assert!(ok(&["status"]));
         assert!(ok(&["status", "--json"]));
         assert!(ok(&["uninstall"]));
         assert!(ok(&["uninstall", "--purge"]));
-        assert!(ok(&["watch", "mac", "--hosted", "--env-file", "/tmp/env"]));
+        assert!(ok(&["watch", "mac", "--provider", "anthropic", "--env-file", "/tmp/env"]));
     }
 }

@@ -290,12 +290,20 @@ pub fn brief(provider: Option<Provider>) -> (&'static str, &'static str) {
 /// key in the environment already: where the records go is the person's to
 /// say, so none is picked for them.
 pub fn runs_here(mac: &Mac) -> Result<()> {
+    let verb = if mac.watched { "watch" } else { "init" };
+    runs_here_as(mac, &format!("tangent {verb} mac"))
+}
+
+/// [`runs_here`] for a command of another name, which is the one each
+/// provider's line gives: `tangent up` is not told to run `tangent watch
+/// mac`, which would watch in its terminal.
+pub fn runs_here_as(mac: &Mac, command: &str) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("this watches a Mac, with macOS's Endpoint Security, and this machine is not one");
     }
     if mac.server == Server::Ollama {
         if let Some(why) = init::no_inkling() {
-            bail!("{}", pick(&why, mac.watched, init::set));
+            bail!("{}", pick(&why, command, init::set));
         }
     }
     Ok(())
@@ -303,9 +311,8 @@ pub fn runs_here(mac: &Mac) -> Result<()> {
 
 /// What is said where Inkling is not started, for `why`: each provider's
 /// command, what is sent to the one picked, and which pair was measured.
-fn pick(why: &str, watched: bool, set: impl Fn(&str) -> bool) -> String {
-    let verb = if watched { "watch" } else { "init" };
-    let ways = init::providers(&format!("tangent {verb} mac"), set);
+fn pick(why: &str, command: &str, set: impl Fn(&str) -> bool) -> String {
+    let ways = init::providers(command, set);
     format!(
         "{why}.\nPick a hosted provider to watch this Mac:\n\n{}\n\n\
          Each session's summary is sent to the one you pick, with its command lines, its paths and what you asked Claude Code.\n\
@@ -511,7 +518,7 @@ mod tests {
     #[test]
     fn a_mac_too_small_for_inkling_is_given_each_provider_s_command() {
         let why = "this Mac has 16 GB of memory, and Inkling 2 Mini needs 32";
-        let said = pick(why, true, |var| var == "AWS_PROFILE");
+        let said = pick(why, "tangent watch mac", |var| var == "AWS_PROFILE");
         assert!(
             said.starts_with(
                 "this Mac has 16 GB of memory, and Inkling 2 Mini needs 32.\n\
@@ -523,7 +530,8 @@ mod tests {
         );
         assert!(said.contains("Each session's summary is sent to the one you pick"));
         assert!(said.contains("Measured on the recorded Mac attacks"));
-        assert!(pick(why, false, |_| false).contains("  tangent init mac --provider anthropic "));
+        assert!(pick(why, "tangent init mac", |_| false).contains("  tangent init mac --provider anthropic "));
+        assert!(pick(why, "tangent up", |_| false).contains("  tangent up --provider bedrock "));
     }
 
     /// The file is what the packs say: the config it writes loads to the
