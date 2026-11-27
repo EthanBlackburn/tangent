@@ -363,7 +363,14 @@ pub async fn show_status(as_json: bool) -> Result<()> {
     };
 
     if as_json {
+        let saved = fs::read_to_string(dir.join(ENV_FILE))
+            .map(|t| parse_env(&t))
+            .unwrap_or_default();
+        let choices = choices(read_choice(&dir).flatten(), init::no_inkling(), |var| {
+            init::set(var) || saved.get(var).is_some_and(|v| !v.trim().is_empty())
+        });
         let out = json!({
+            "choices": choices,
             "state": effective_state,
             "alive": alive,
             "daemon_socket": daemon_socket,
@@ -429,6 +436,45 @@ pub async fn show_status(as_json: bool) -> Result<()> {
     );
     println!("  Logs     {}", dir.join("watch.log").display());
     Ok(())
+}
+
+/// Who can judge this Mac, for the menu bar's Models menu: the model on this
+/// Mac and each provider's pair, in `--provider`'s order. Each has the
+/// arguments `tangent up` starts it with, whether it is the one `up` last
+/// started, whether it can be started from where there is nobody to ask, and
+/// when it cannot, why. `set` says whether a variable has a value, here or
+/// kept by an earlier `up`.
+fn choices(current: Option<Provider>, no_inkling: Option<String>, set: impl Fn(&str) -> bool) -> Vec<Value> {
+    use clap::ValueEnum as _;
+    let mut choices = vec![json!({
+        "label": "Inkling 2 Mini, on this Mac: nothing leaves it",
+        "args": ["up", "--local"],
+        "current": current.is_none(),
+        "ready": no_inkling.is_none(),
+        "note": no_inkling,
+    })];
+    for provider in Provider::value_variants() {
+        let mac = Mac::new(Some(*provider)).watched();
+        let missing = watch::unset(&mac.config(), &mac.needs(), |name| {
+            set(name).then(|| std::ffi::OsString::from("set"))
+        });
+        let note = (!missing.is_empty()).then(|| {
+            let vars: Vec<&str> = missing.iter().map(|(var, _)| *var).collect();
+            format!(
+                "needs {}: run `tangent up --provider {}` in a terminal that has it",
+                vars.join(", "),
+                provider_name(*provider)
+            )
+        });
+        choices.push(json!({
+            "label": mac.models(),
+            "args": ["up", "--provider", provider_name(*provider)],
+            "current": current == Some(*provider),
+            "ready": missing.is_empty(),
+            "note": note,
+        }));
+    }
+    choices
 }
 
 /// `tangent uninstall [--purge]`: cleanly stops and removes the user
@@ -969,6 +1015,32 @@ mod tests {
     #[test]
     fn a_requirement_is_quoted_whole_for_the_shell() {
         assert_eq!(shell_escape_str("it's \"x\""), "it'\\''s \"x\"");
+    }
+
+    /// The menu bar is given each way to judge this Mac: the one in use,
+    /// and for one that cannot be started from there, why.
+    #[test]
+    fn the_menu_bar_is_told_who_can_judge() {
+        let small = Some("this Mac has 16 GB of memory".to_string());
+        let said = choices(Some(Provider::Bedrock), small, |var| var == "OPENAI_API_KEY");
+        assert_eq!(said.len(), 5, "this Mac, and four providers");
+        assert_eq!(said[0]["args"], json!(["up", "--local"]));
+        assert_eq!(said[0]["ready"], false);
+        assert_eq!(said[0]["note"], "this Mac has 16 GB of memory");
+        let by = |name: &str| {
+            said.iter()
+                .find(|c| c["args"] == json!(["up", "--provider", name]))
+                .unwrap()
+                .clone()
+        };
+        // Bedrock's profile has `default` to fall back on
+        assert_eq!(by("bedrock")["current"], true);
+        assert_eq!(by("bedrock")["ready"], true);
+        assert!(by("bedrock")["label"].as_str().unwrap().contains("Amazon Bedrock"));
+        assert_eq!(by("openai")["ready"], true);
+        assert_eq!(by("anthropic")["current"], false);
+        assert_eq!(by("anthropic")["ready"], false);
+        assert!(by("anthropic")["note"].as_str().unwrap().contains("ANTHROPIC_API_KEY"));
     }
 
     #[test]

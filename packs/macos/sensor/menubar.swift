@@ -98,6 +98,31 @@ struct WatchStatus {
     }
 }
 
+/// One way to judge this Mac, from `tangent status --json`'s `choices`: the
+/// model on this Mac, or a provider's pair.
+struct ModelChoice {
+    let label: String
+    /// What `tangent` is run with to start it.
+    let args: [String]
+    let current: Bool
+    /// Whether it can be started from here, where there is nobody to ask.
+    let ready: Bool
+    /// When it cannot, why.
+    let note: String?
+
+    static func parse(_ dict: [String: Any]) -> ModelChoice? {
+        guard let label = dict["label"] as? String, let args = dict["args"] as? [String], !args.isEmpty
+        else { return nil }
+        return ModelChoice(
+            label: label,
+            args: args,
+            current: dict["current"] as? Bool ?? false,
+            ready: dict["ready"] as? Bool ?? false,
+            note: dict["note"] as? String
+        )
+    }
+}
+
 /// Reads answered alert keys (`session.id|reviewed`) from `feedback.ndjson`.
 private func loadAnsweredAlerts(in dir: String) -> [String: String] {
     let path = (dir as NSString).appendingPathComponent("feedback.ndjson")
@@ -377,6 +402,8 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
     private var answered: [String: String] = [:]
     private var openPanels: [AlertPanelController] = []
     private var busyAction: String?
+    /// Who can judge this Mac, as `tangent status --json` last listed them.
+    private var modelChoices: [ModelChoice] = []
 
     init(watchDir: String, tangentBin: String) {
         self.watchDir = watchDir
@@ -406,6 +433,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
 
         startWatchingDirectory()
         reload()
+        refreshModelChoices()
 
         // Lightweight liveness + relative-time refresh (5s).
         timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
@@ -602,6 +630,36 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             menu.addItem(modelItem)
         }
 
+        // Who judges: the model on this Mac, or a provider's pair. One is
+        // picked whole: a pair's two models were measured together.
+        if !modelChoices.isEmpty {
+            let pickItem = NSMenuItem(title: "Models", action: nil, keyEquivalent: "")
+            let pickMenu = NSMenu()
+            pickMenu.autoenablesItems = false
+            for (index, choice) in modelChoices.enumerated() {
+                let item = NSMenuItem(title: choice.label, action: #selector(chooseModels(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = index
+                item.state = choice.current ? .on : .off
+                item.isEnabled = choice.ready && busyAction == nil
+                item.toolTip = choice.note
+                pickMenu.addItem(item)
+                if let note = choice.note, !choice.ready {
+                    let why = NSMenuItem(title: "    \(note)", action: nil, keyEquivalent: "")
+                    why.isEnabled = false
+                    pickMenu.addItem(why)
+                }
+            }
+            pickMenu.addItem(.separator())
+            let sent = NSMenuItem(
+                title: "A provider is sent each session's summary: its command lines, its paths and your prompts.",
+                action: nil, keyEquivalent: "")
+            sent.isEnabled = false
+            pickMenu.addItem(sent)
+            pickItem.submenu = pickMenu
+            menu.addItem(pickItem)
+        }
+
         if alive, let status {
             let noun = status.checked == 1 ? "session" : "sessions"
             var stats = "  \(status.checked) \(noun) checked"
@@ -748,17 +806,23 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: bin)
             proc.arguments = args
+            let said = Pipe()
             proc.standardInput = FileHandle.nullDevice
             proc.standardOutput = FileHandle.nullDevice
-            proc.standardError = FileHandle.nullDevice
+            proc.standardError = said
             // A Process that was never started must not be waited for: that
             // is an exception, and the end of the menu bar.
             var failure: String?
             do {
                 try proc.run()
+                // read to its end before the wait, so a long error fills no pipe
+                let err = String(decoding: said.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                 proc.waitUntilExit()
                 if proc.terminationStatus != 0 {
-                    failure = "`tangent \(args.joined(separator: " "))` did not finish (exit \(proc.terminationStatus))."
+                    let why = err.trimmingCharacters(in: .whitespacesAndNewlines)
+                    failure = why.isEmpty
+                        ? "`tangent \(args.joined(separator: " "))` did not finish (exit \(proc.terminationStatus))."
+                        : String(why.suffix(700))
                 }
             } catch {
                 failure = "\(bin) could not be started: \(error.localizedDescription)"
@@ -766,8 +830,40 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             DispatchQueue.main.async {
                 self?.busyAction = nil
                 self?.reload()
+                self?.refreshModelChoices()
                 if let failure { self?.sayFailed(failure, args: args) }
             }
+        }
+    }
+
+    @objc private func chooseModels(_ sender: NSMenuItem) {
+        guard sender.tag >= 0, sender.tag < modelChoices.count else { return }
+        let choice = modelChoices[sender.tag]
+        guard choice.ready, !choice.current else { return }
+        runTangentCLI(choice.args, busyLabel: "Switching models…")
+    }
+
+    /// Asks tangent who can judge this Mac, off the main thread: which is in
+    /// use, and which have what they need. It is asked at the start and after
+    /// each command run from here, not each time the menu opens.
+    private func refreshModelChoices() {
+        let bin = tangentBin
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: bin)
+            proc.arguments = ["status", "--json"]
+            let out = Pipe()
+            proc.standardInput = FileHandle.nullDevice
+            proc.standardOutput = out
+            proc.standardError = FileHandle.nullDevice
+            guard (try? proc.run()) != nil else { return }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let listed = dict["choices"] as? [[String: Any]]
+            else { return }
+            let choices = listed.compactMap(ModelChoice.parse)
+            DispatchQueue.main.async { self?.modelChoices = choices }
         }
     }
 
