@@ -556,6 +556,13 @@ fn same_app(source: &Path, installed: &Path) -> bool {
 /// unless they are this tangent's sensor already, with the daemon listening.
 /// Needs zero `sudo` when already up to date. Whether the app was installed
 /// or replaced, which what runs from it has to be started again for.
+/// Whether a daemon answers on the socket. The file alone does not say: a
+/// daemon that was unloaded, or killed, leaves it behind, and the watcher that
+/// then finds nobody there falls back to a sudo it cannot have.
+fn listening(sock: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(sock).is_ok()
+}
+
 async fn ensure_sensor_daemon(uid: u32) -> Result<bool> {
     let installed_app = tangent_shared::sensor::installed_app();
     let daemon_app = tangent_shared::sensor::daemon_app();
@@ -608,12 +615,12 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<bool> {
     };
 
     // Fast path: both copies are this sensor, the plist is there, and the
-    // daemon is listening. An upgrade of tangent brings a new sensor, and is
+    // daemon answers on its socket. An upgrade of tangent brings a new sensor, and is
     // not this.
     if same_app(&source_app, &installed_app)
         && same_app(&source_app, &daemon_app)
         && Path::new(DAEMON_PLIST).is_file()
-        && es_sock.exists()
+        && listening(&es_sock)
     {
         return Ok(false);
     }
@@ -696,7 +703,7 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<bool> {
     // Wait briefly for the LaunchDaemon to bind `/var/run/tangent/es.sock`.
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if es_sock.exists() {
+        if listening(&es_sock) {
             return Ok(true);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
