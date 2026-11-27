@@ -796,11 +796,31 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
         // LAN-address prompt cleanly outside tmux/Claude Code.
         let escapedBin = tangentBin.replacingOccurrences(of: "'", with: "'\\''")
         let cmd = "'\(escapedBin)' simulate \(name)"
+        let quoted = cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        // One window, whatever Terminal was doing. `activate` opens a window
+        // of its own when Terminal has none, and `do script` then opened a
+        // second: so the script goes first when Terminal is running, and
+        // into the window Terminal starts with when it is not.
         let script = """
-        tell application "Terminal"
-            activate
-            do script "\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))"
-        end tell
+        if application "Terminal" is running then
+            tell application "Terminal"
+                do script "\(quoted)"
+                activate
+            end tell
+        else
+            tell application "Terminal"
+                activate
+                repeat 50 times
+                    if (exists window 1) then exit repeat
+                    delay 0.1
+                end repeat
+                if (exists window 1) then
+                    do script "\(quoted)" in window 1
+                else
+                    do script "\(quoted)"
+                end if
+            end tell
+        end if
         """
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
