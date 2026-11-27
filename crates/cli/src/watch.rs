@@ -199,10 +199,10 @@ pub async fn mac(provider: Option<Provider>, no_notify: bool) -> Result<()> {
     let mac = Mac::new(provider).watched();
     mac::runs_here(&mac)?;
     needed(&mac.config(), &mac.needs())?;
-    let (mode, models) = if hosted {
-        ("hosted", "Claude Haiku 5.5 + Sonnet 5.5".to_string())
-    } else {
-        ("local", "Inkling 2 Mini (local)".to_string())
+    // The provider's pair as the file names it, which says who serves it.
+    let (mode, models) = match provider {
+        Some(_) => ("hosted", mac.models()),
+        None => ("local", "Inkling 2 Mini (local)".to_string()),
     };
     start(Pipeline {
         what: "mac",
