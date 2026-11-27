@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use rand::{rng, Rng};
 use std::collections::{BTreeMap, HashMap};
@@ -47,7 +47,31 @@ pub trait Sink: Send + Sync {
     async fn seal(&self) -> Result<()> {
         Ok(())
     }
+
+    /// The records the sink has acknowledged that are in none of its files
+    /// yet, for a reader of those files in the sink's own process: each
+    /// file to come, under the name it will have, as one object or several
+    /// that together hold what it would hold were it made now, each a whole
+    /// file in the sink's encoding. And one more of no records, named
+    /// [`NO_RECORDS`] and the encoding's extension, which gives a reader
+    /// the columns of a table that has no record yet. Nothing is written,
+    /// and no write waits for longer than it takes to note what is open.
+    ///
+    /// A file goes from here to the sink's files and never back, and is
+    /// there, whole, before it is gone from here. So a reader that calls
+    /// this, then lists the files, and passes by each object here whose
+    /// name it found there, reads every record acknowledged before the call
+    /// once, as long as it reads no file that arrives after its listing.
+    ///
+    /// None for a sink whose records are where they go once acknowledged.
+    async fn unsealed(&self) -> Result<Vec<(String, Bytes)>> {
+        Ok(Vec::new())
+    }
 }
+
+/// What [`Sink::unsealed`] names its object of no records, before the
+/// encoding's extension. No file a sink makes has the name.
+pub const NO_RECORDS: &str = "none";
 
 pub struct SinkItem {
     pub acks: Vec<Arc<dyn Ack>>,
@@ -338,6 +362,13 @@ impl SinkManager {
                 INFLIGHT.inc();
             })
             .map_err(|e| anyhow::anyhow!("send to sink '{sink_name}' failed: {e}"))
+    }
+
+    /// A sink by its name, for a reader of what it keeps (a plugin's
+    /// `tables`): the sink itself and not this manager, which shutdown must
+    /// hold alone to join.
+    pub fn sink(&self, name: &str) -> Option<Arc<dyn Sink>> {
+        self.sinks.get(name).map(|entry| Arc::clone(entry.sink()))
     }
 
     /// Every sink's records so far where its readers find them

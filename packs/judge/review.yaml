@@ -36,13 +36,14 @@ plugins:
     inference: [reviewer]
     tables:
       lake: lake                   # table `lake` is what sink `lake` has written
-    # An actor's alerts wait here together until the lake has their records
-    # (the sink seals a file `max_file_age_seconds` after opening it, an hour
-    # in examples/cloud-infra, and up to half a minute more), and are
-    # reviewed as one. A grouped plugin has its own workers, so a review
-    # holds up neither ingest nor the judge.
+    # An actor's alerts a minute apart or less wait here together and are
+    # reviewed as one, five minutes after the first at the latest: alerts
+    # that keep coming do not keep their review waiting. They wait for no file: the lake has a record once the
+    # sink has written it, sealed or not. A grouped plugin has its own
+    # workers, so a review holds up neither ingest nor the judge.
     group_by: [_norm.org, _norm.actor]
-    expire_after_ms: 4000000
+    expire_after_ms: 60000
+    max_age_ms: 300000
     config:
       model: reviewer
       table: lake

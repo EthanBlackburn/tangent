@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 /// whose credentials, and how hard it may be pushed. An inference node names
 /// one (`model: <name>`) and holds what is asked of it. Nodes that name the
 /// same entry share its `concurrency`: a server that answers one request at a
-/// time is asked one at a time, whoever asks.
+/// time is asked one at a time, whoever asks, a conversation's turn before
+/// the request of a node's records.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
@@ -57,6 +58,15 @@ pub struct ModelConfig {
     /// again in halves instead.
     #[serde(default = "default_retries")]
     pub retries: u32,
+
+    /// The model asked what this one declines: an id the same server knows,
+    /// e.g. `claude-sonnet-5`, asked with the same key and limits. A request
+    /// is declined when the reply says the model refused it or the provider
+    /// filtered it (`stop_reason: refusal`, `finish_reason: content_filter`);
+    /// it is then sent once more, as it was, to this model, and that reply
+    /// is the reply. Unset, a declined request is the node's error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
 
     /// Its server, when tangent is to run it; unset when the server is
     /// someone else's to run.

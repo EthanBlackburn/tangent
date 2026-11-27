@@ -104,18 +104,17 @@ tangent watch cloud --sources okta,github --provider anthropic
 
 It takes init's flags, and runs the pipeline init would write for them, leaving no file where you are. The config goes to tangent's own directory, `~/.local/share/tangent/cloud` (under `$XDG_DATA_HOME` when that is set), written again at each start, and tangent runs there: the alerts, their reviews, the lake and each actor's history are kept there too, and the next start goes on from them. It prints where they are.
 
-While it runs, the terminal shows what it finds: each minute what the judge checked (how many, the names judged most, and how many it flagged), each alert as the judge flags it (when, from which log, who, and why), and each review as it is written (the verdict, the finding, what to check first). The runtime's own lines are among them; `RUST_LOG=warn` keeps them to its warnings. A model wrote that text after reading whatever an attacker put in a record, so control characters are taken out of it before it is printed.
+While it runs, the terminal shows what it finds: each alert as the judge marks it (`#1`, `#2`, ... with a short summary while the reviewer works on it), an actor's alerts that wait for one review as one line and one number, with their count, each settled review (`cleared`, `MALICIOUS`, `ALERT`, or `REVIEW FAILED` tied back to `#1`, `#2`, ...), and each minute a quiet `checked` count with how many alerts are still in review. Runtime logs go to `watch.log` in the pipeline's directory (only errors reach stderr; set `RUST_LOG=info` for verbose terminal logs). A model wrote the alert text after reading whatever an attacker put in a record, so control characters are taken out of it before it is printed.
 
 On a Mac, a review that upholds its alert is a notification too: `malicious` with a sound, `unresolved` without one, and a click on it shows the finding and what to check. A Mac's review also asks whether the session was your doing, with three buttons, and keeps the answer in `feedback.ndjson` beside the reviews. A review that clears its alert is not a notification, and neither is the judge's flag before its review. macOS asks once whether Tangent may show notifications, and they come from tangent's signed app, which `watch` fetches once per version. `--no-notify` shows none, and over ssh there are none.
 
 ```
-checked   41 (deploy-bot x30, ana@acme.example x9, 2 more): 1 flagged
-flagged   2026-11-24 03:09Z  okta  ana@acme.example
-          a sign-in from a Tor exit, with no second factor
-          sent to review
-reviewed  ana@acme.example, 3 alerts: malicious
-          ...
-          check: ...
+#1  03:09Z  flagged  okta  ana@acme.example  a sign-in from a Tor exit  (reviewing)
+
+#1  MALICIOUS  ana@acme.example (3 alerts)
+    ...
+    check: ...
+checked 41 activities · 1 flagged
 ```
 
 It starts only with what it needs. A variable from the table above that is not set stops it, with the list, where `tangent watch --config` would leave the source idle. With `--local` it downloads the model first, after asking. One `watch cloud` runs at a time.
@@ -149,16 +148,25 @@ Two things are yours to do:
 
 The sensor, which reads what each program does, is the release's: tangent downloads it once per version, and before each start checks that it is the one tangent's team signed and Apple notarized, since it runs as root.
 
-It keeps its pipeline in `~/.local/share/tangent/mac`, as `watch cloud` keeps its own, and says each alert as the judge marks a session `look` or `flag`, and each review about seven minutes after.
+It keeps its pipeline in `~/.local/share/tangent/mac`, as `watch cloud` keeps its own, and says each alert as the judge marks a session `look` or `flag`, and each review as soon as the reviewer has settled it, a minute or so after its alert.
 
 ### See it catch something: `tangent simulate`
 
 ```bash
-tangent simulate      # in another terminal, while `tangent watch mac` runs
+tangent simulate              # in another terminal, while `tangent watch mac` runs: lists the attacks and asks which
+tangent simulate credentials  # or name one
+tangent simulate agent
 ```
 
-It runs one attack for real, a credential theft of the kind a poisoned package carries, and lists each step as it does: a script piped from curl into bash asks the Mac who it is, finds a project's `.env` files, archives and encrypts them, uploads them and removes its traces. It is safe to run on the Mac you work on. The project is a directory made for the run, its two `.env` files hold made-up keys, and the server it downloads from and uploads to is the command itself, on 127.0.0.1, which keeps nothing: no file of yours is opened, nothing leaves the Mac, and nothing is left behind.
+It runs an attack for real, of the kind a poisoned package carries, and lists each step as it does. Both start with a script piped from curl into bash:
 
-`tangent watch mac` then says what it makes of it, in its own terminal: the session is flagged a minute or two later (up to five in a busy terminal) and reviewed about seven minutes after that. With the hosted pair the judge flagged it and the reviewer then called it benign, rightly: it worked out from the records that the files were made by the command that took them and went no further than this Mac. That is the two passes doing their work, and the alert is the thing to look for.
+- **`credentials`** asks the Mac who it is, finds a project's `.env` files, archives and encrypts them, uploads them and removes its traces.
+- **`agent`** takes over a project's AI coding agent: it gives it a hook that sends every tool call to its server, lets it run curl unasked, points its traffic at that server, adds an MCP server of its own, and writes an instruction to fetch and run a script into the project's `CLAUDE.md`.
+
+It is safe to run on the Mac you work on. The project is a directory made for the run, its `.env` files hold made-up keys and its agent files are its own, and the server it downloads from and reports to is the command itself, which keeps nothing: no file of yours is opened or changed, nothing leaves the Mac, and nothing is left behind.
+
+That server listens on your Mac's own address on its network and not on 127.0.0.1, since an upload to 127.0.0.1 is one that went nowhere. What is sent still goes from your Mac to your Mac, but for the few seconds the attack takes another device on that network could reach the server, to fetch the script or to send it something it throws away. So the command says so and asks before it runs, and runs only from a terminal.
+
+`tangent watch mac` then says what it makes of it, in its own terminal: the session is flagged about half a minute later (up to five minutes in a busy terminal) and reviewed in the half minute or so after that. With the hosted pair the judge flagged both and the reviewer then called them benign, rightly: it worked out from the records that the files were made by the command that took or changed them and went no further than this Mac. That is the two passes doing their work, and the alert is the thing to look for.
 
 `tangent init mac` writes the same pipeline where you are, to edit and to run with `tangent watch --config tangent.yaml`: tangent.yaml, the two briefs, and profiles.yaml, which says what each known program is expected to read, start and connect to. [packs/macos](../packs/macos) describes each part.

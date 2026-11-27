@@ -16,6 +16,16 @@
   }
  },
  {
+  "time": "2026-11-03T20:00:00.000000000Z",
+  "ps": {
+   "pid": 400,
+   "ppid": 200,
+   "path": "/usr/bin/vim",
+   "start": "2026-11-03T19:58:00Z",
+   "command": "vim --cmd set noswapfile notes/todo.md ghp_examplesecretvalue0000000000000000"
+  }
+ },
+ {
   "action": {
    "result": {
     "result": {
@@ -6023,6 +6033,1008 @@
    "thread_id": 7038
   },
   "time": "2026-11-03T20:00:40.000040000Z",
+  "version": 10
+ },
+ {
+  "time": "2026-11-03T20:00:41.000000000Z",
+  "ps": {
+   "pid": 800,
+   "ppid": 100,
+   "path": "/Users/dev/tangent/target/release/tangent"
+  }
+ },
+ {
+  "time": "2026-11-03T20:00:41.000000000Z",
+  "monitor": {
+   "pid": 800
+  }
+ },
+ {
+  "time": "2026-11-03T20:00:45.000045000Z",
+  "prompt": {
+   "agent": "claude-code",
+   "session": "00000000-0000-4000-8000-000000000002",
+   "cwd": "/Users/dev/code/x",
+   "text": "list the keys in ~/.ssh",
+   "headless": true,
+   "pids": [
+    300
+   ]
+  }
+ },
+ {
+  "action": {
+   "result": {
+    "result": {
+     "auth": 0
+    },
+    "result_type": 0
+   }
+  },
+  "action_type": 1,
+  "event": {
+   "fork": {
+    "child": {
+     "audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 810,
+      "pidversion": 1408,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "cdhash": "0000000000000000000000000000007b9b571248",
+     "codesigning_flags": 570506001,
+     "cs_validation_category": 1,
+     "executable": {
+      "path": "/bin/zsh",
+      "path_truncated": false,
+      "stat": {
+       "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+       "st_blksize": 4096,
+       "st_blocks": 8,
+       "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_dev": 16777234,
+       "st_flags": 0,
+       "st_gen": 0,
+       "st_gid": 20,
+       "st_ino": 123456,
+       "st_mode": 33188,
+       "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_nlink": 1,
+       "st_rdev": 0,
+       "st_size": 1024,
+       "st_uid": 501
+      }
+     },
+     "group_id": 810,
+     "is_es_client": false,
+     "is_platform_binary": true,
+     "original_ppid": 200,
+     "parent_audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 200,
+      "pidversion": 1401,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "ppid": 200,
+     "responsible_audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 99,
+      "pidversion": 701,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "session_id": 200,
+     "signing_id": "com.apple.zsh",
+     "start_time": "2026-11-03T20:00:46.000000000Z",
+     "team_id": null,
+     "tty": {
+      "path": "/dev/ttys003",
+      "path_truncated": false,
+      "stat": {
+       "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+       "st_blksize": 4096,
+       "st_blocks": 8,
+       "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_dev": 16777234,
+       "st_flags": 0,
+       "st_gen": 0,
+       "st_gid": 20,
+       "st_ino": 123456,
+       "st_mode": 33188,
+       "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_nlink": 1,
+       "st_rdev": 0,
+       "st_size": 1024,
+       "st_uid": 501
+      }
+     }
+    }
+   }
+  },
+  "event_type": 11,
+  "global_seq_num": 39,
+  "mach_time": 1039000,
+  "process": {
+   "audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 200,
+    "pidversion": 1401,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "cdhash": "0000000000000000000000000000007b9b571248",
+   "codesigning_flags": 570506001,
+   "cs_validation_category": 1,
+   "executable": {
+    "path": "/bin/zsh",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   },
+   "group_id": 200,
+   "is_es_client": false,
+   "is_platform_binary": true,
+   "original_ppid": 100,
+   "parent_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 100,
+    "pidversion": 701,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "ppid": 100,
+   "responsible_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 99,
+    "pidversion": 701,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "session_id": 200,
+   "signing_id": "com.apple.zsh",
+   "start_time": "2026-11-03T19:58:00.000000000Z",
+   "team_id": null,
+   "tty": {
+    "path": "/dev/ttys003",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   }
+  },
+  "schema_version": 1,
+  "seq_num": 39,
+  "thread": {
+   "thread_id": 7001
+  },
+  "time": "2026-11-03T20:00:46.000000000Z",
+  "version": 10
+ },
+ {
+  "action": {
+   "result": {
+    "result": {
+     "auth": 0
+    },
+    "result_type": 0
+   }
+  },
+  "action_type": 1,
+  "event": {
+   "fork": {
+    "child": {
+     "audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 811,
+      "pidversion": 1408,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "cdhash": "0000000000000000000000000000007b9b571248",
+     "codesigning_flags": 570506001,
+     "cs_validation_category": 1,
+     "executable": {
+      "path": "/bin/zsh",
+      "path_truncated": false,
+      "stat": {
+       "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+       "st_blksize": 4096,
+       "st_blocks": 8,
+       "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_dev": 16777234,
+       "st_flags": 0,
+       "st_gen": 0,
+       "st_gid": 20,
+       "st_ino": 123456,
+       "st_mode": 33188,
+       "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_nlink": 1,
+       "st_rdev": 0,
+       "st_size": 1024,
+       "st_uid": 501
+      }
+     },
+     "group_id": 811,
+     "is_es_client": false,
+     "is_platform_binary": true,
+     "original_ppid": 810,
+     "parent_audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 810,
+      "pidversion": 1401,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "ppid": 810,
+     "responsible_audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 99,
+      "pidversion": 701,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "session_id": 200,
+     "signing_id": "com.apple.zsh",
+     "start_time": "2026-11-03T20:00:47.000000000Z",
+     "team_id": null,
+     "tty": {
+      "path": "/dev/ttys003",
+      "path_truncated": false,
+      "stat": {
+       "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+       "st_blksize": 4096,
+       "st_blocks": 8,
+       "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_dev": 16777234,
+       "st_flags": 0,
+       "st_gen": 0,
+       "st_gid": 20,
+       "st_ino": 123456,
+       "st_mode": 33188,
+       "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_nlink": 1,
+       "st_rdev": 0,
+       "st_size": 1024,
+       "st_uid": 501
+      }
+     }
+    }
+   }
+  },
+  "event_type": 11,
+  "global_seq_num": 40,
+  "mach_time": 1040000,
+  "process": {
+   "audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 810,
+    "pidversion": 1401,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "cdhash": "0000000000000000000000000000007b9b571248",
+   "codesigning_flags": 570506001,
+   "cs_validation_category": 1,
+   "executable": {
+    "path": "/bin/zsh",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   },
+   "group_id": 810,
+   "is_es_client": false,
+   "is_platform_binary": true,
+   "original_ppid": 200,
+   "parent_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 200,
+    "pidversion": 701,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "ppid": 200,
+   "responsible_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 99,
+    "pidversion": 701,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "session_id": 200,
+   "signing_id": "com.apple.zsh",
+   "start_time": "2026-11-03T20:00:46.000000000Z",
+   "team_id": null,
+   "tty": {
+    "path": "/dev/ttys003",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   }
+  },
+  "schema_version": 1,
+  "seq_num": 40,
+  "thread": {
+   "thread_id": 7001
+  },
+  "time": "2026-11-03T20:00:47.000000000Z",
+  "version": 10
+ },
+ {
+  "action": {
+   "result": {
+    "result": {
+     "auth": 0
+    },
+    "result_type": 0
+   }
+  },
+  "action_type": 1,
+  "event": {
+   "exit": {
+    "stat": 0
+   }
+  },
+  "event_type": 15,
+  "global_seq_num": 41,
+  "mach_time": 1041000,
+  "process": {
+   "audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 810,
+    "pidversion": 1408,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "cdhash": "0000000000000000000000000000007c398e8bf9",
+   "codesigning_flags": 570506001,
+   "cs_validation_category": 1,
+   "executable": {
+    "path": "/bin/zsh",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   },
+   "group_id": 810,
+   "is_es_client": false,
+   "is_platform_binary": true,
+   "original_ppid": 200,
+   "parent_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 200,
+    "pidversion": 1401,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "ppid": 200,
+   "responsible_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 99,
+    "pidversion": 701,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "session_id": 200,
+   "signing_id": "com.apple.git",
+   "start_time": "2026-11-03T20:00:46.000000000Z",
+   "team_id": null,
+   "tty": {
+    "path": "/dev/ttys003",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   }
+  },
+  "schema_version": 1,
+  "seq_num": 41,
+  "thread": {
+   "thread_id": 7003
+  },
+  "time": "2026-11-03T20:00:48.000000000Z",
+  "version": 10
+ },
+ {
+  "action": {
+   "result": {
+    "result": {
+     "auth": 0
+    },
+    "result_type": 0
+   }
+  },
+  "action_type": 1,
+  "event": {
+   "fork": {
+    "child": {
+     "audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 810,
+      "pidversion": 1408,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "cdhash": "0000000000000000000000000000007b9b571248",
+     "codesigning_flags": 570506001,
+     "cs_validation_category": 1,
+     "executable": {
+      "path": "/bin/zsh",
+      "path_truncated": false,
+      "stat": {
+       "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+       "st_blksize": 4096,
+       "st_blocks": 8,
+       "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_dev": 16777234,
+       "st_flags": 0,
+       "st_gen": 0,
+       "st_gid": 20,
+       "st_ino": 123456,
+       "st_mode": 33188,
+       "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_nlink": 1,
+       "st_rdev": 0,
+       "st_size": 1024,
+       "st_uid": 501
+      }
+     },
+     "group_id": 810,
+     "is_es_client": false,
+     "is_platform_binary": true,
+     "original_ppid": 200,
+     "parent_audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 200,
+      "pidversion": 1401,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "ppid": 200,
+     "responsible_audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 99,
+      "pidversion": 701,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "session_id": 200,
+     "signing_id": "com.apple.zsh",
+     "start_time": "2026-11-03T20:00:50.000000000Z",
+     "team_id": null,
+     "tty": {
+      "path": "/dev/ttys003",
+      "path_truncated": false,
+      "stat": {
+       "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+       "st_blksize": 4096,
+       "st_blocks": 8,
+       "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_dev": 16777234,
+       "st_flags": 0,
+       "st_gen": 0,
+       "st_gid": 20,
+       "st_ino": 123456,
+       "st_mode": 33188,
+       "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_nlink": 1,
+       "st_rdev": 0,
+       "st_size": 1024,
+       "st_uid": 501
+      }
+     }
+    }
+   }
+  },
+  "event_type": 11,
+  "global_seq_num": 42,
+  "mach_time": 1042000,
+  "process": {
+   "audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 200,
+    "pidversion": 1401,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "cdhash": "0000000000000000000000000000007b9b571248",
+   "codesigning_flags": 570506001,
+   "cs_validation_category": 1,
+   "executable": {
+    "path": "/bin/zsh",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   },
+   "group_id": 200,
+   "is_es_client": false,
+   "is_platform_binary": true,
+   "original_ppid": 100,
+   "parent_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 100,
+    "pidversion": 701,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "ppid": 100,
+   "responsible_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 99,
+    "pidversion": 701,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "session_id": 200,
+   "signing_id": "com.apple.zsh",
+   "start_time": "2026-11-03T19:58:00.000000000Z",
+   "team_id": null,
+   "tty": {
+    "path": "/dev/ttys003",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   }
+  },
+  "schema_version": 1,
+  "seq_num": 42,
+  "thread": {
+   "thread_id": 7001
+  },
+  "time": "2026-11-03T20:00:50.000000000Z",
+  "version": 10
+ },
+ {
+  "action": {
+   "result": {
+    "result": {
+     "auth": 0
+    },
+    "result_type": 0
+   }
+  },
+  "action_type": 1,
+  "event": {
+   "exec": {
+    "args": [
+     "ls"
+    ],
+    "cwd": {
+     "path": "/Users/dev/code/x",
+     "path_truncated": false,
+     "stat": {
+      "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+      "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+      "st_blksize": 4096,
+      "st_blocks": 8,
+      "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+      "st_dev": 16777234,
+      "st_flags": 0,
+      "st_gen": 0,
+      "st_gid": 20,
+      "st_ino": 123456,
+      "st_mode": 33188,
+      "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+      "st_nlink": 1,
+      "st_rdev": 0,
+      "st_size": 1024,
+      "st_uid": 501
+     }
+    },
+    "dyld_exec_path": "/bin/ls",
+    "env": [
+     "HOME=/Users/dev",
+     "PATH=/usr/local/bin:/usr/bin:/bin",
+     "SHELL=/bin/zsh",
+     "TERM=xterm-256color",
+     "USER=dev",
+     "LANG=en_US.UTF-8",
+     "GITHUB_TOKEN=ghp_examplesecretvalue0000000000000000",
+     "AWS_SECRET_ACCESS_KEY=exampleSecretKeyValue000000000000000000",
+     "NPM_TOKEN=npm_exampleSecret000000000000",
+     "VAR0=value0",
+     "VAR1=value1",
+     "VAR2=value2"
+    ],
+    "fds": [
+     {
+      "fd": 0,
+      "fdtype": 1
+     },
+     {
+      "fd": 1,
+      "fdtype": 1
+     },
+     {
+      "fd": 2,
+      "fdtype": 1
+     }
+    ],
+    "image_cpusubtype": 0,
+    "image_cputype": 16777228,
+    "last_fd": 2,
+    "target": {
+     "audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 811,
+      "pidversion": 1408,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "cdhash": "0000000000000000000000000000007c398e8bf9",
+     "codesigning_flags": 570506001,
+     "cs_validation_category": 1,
+     "executable": {
+      "path": "/bin/ls",
+      "path_truncated": false,
+      "stat": {
+       "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+       "st_blksize": 4096,
+       "st_blocks": 8,
+       "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_dev": 16777234,
+       "st_flags": 0,
+       "st_gen": 0,
+       "st_gid": 20,
+       "st_ino": 123456,
+       "st_mode": 33188,
+       "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_nlink": 1,
+       "st_rdev": 0,
+       "st_size": 1024,
+       "st_uid": 501
+      }
+     },
+     "group_id": 811,
+     "is_es_client": false,
+     "is_platform_binary": true,
+     "original_ppid": 810,
+     "parent_audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 1,
+      "pidversion": 1401,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "ppid": 1,
+     "responsible_audit_token": {
+      "asid": 100005,
+      "auid": 501,
+      "egid": 20,
+      "euid": 501,
+      "pid": 99,
+      "pidversion": 701,
+      "rgid": 20,
+      "ruid": 501
+     },
+     "session_id": 200,
+     "signing_id": "com.apple.ls",
+     "start_time": "2026-11-03T20:00:47.000000000Z",
+     "team_id": null,
+     "tty": {
+      "path": "/dev/ttys003",
+      "path_truncated": false,
+      "stat": {
+       "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+       "st_blksize": 4096,
+       "st_blocks": 8,
+       "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_dev": 16777234,
+       "st_flags": 0,
+       "st_gen": 0,
+       "st_gid": 20,
+       "st_ino": 123456,
+       "st_mode": 33188,
+       "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+       "st_nlink": 1,
+       "st_rdev": 0,
+       "st_size": 1024,
+       "st_uid": 501
+      }
+     }
+    }
+   }
+  },
+  "event_type": 9,
+  "global_seq_num": 43,
+  "mach_time": 1043000,
+  "process": {
+   "audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 811,
+    "pidversion": 1408,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "cdhash": "0000000000000000000000000000007b9b571248",
+   "codesigning_flags": 570506001,
+   "cs_validation_category": 1,
+   "executable": {
+    "path": "/bin/zsh",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   },
+   "group_id": 811,
+   "is_es_client": false,
+   "is_platform_binary": true,
+   "original_ppid": 810,
+   "parent_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 1,
+    "pidversion": 1401,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "ppid": 1,
+   "responsible_audit_token": {
+    "asid": 100005,
+    "auid": 501,
+    "egid": 20,
+    "euid": 501,
+    "pid": 99,
+    "pidversion": 701,
+    "rgid": 20,
+    "ruid": 501
+   },
+   "session_id": 200,
+   "signing_id": "com.apple.zsh",
+   "start_time": "2026-11-03T20:00:47.000000000Z",
+   "team_id": null,
+   "tty": {
+    "path": "/dev/ttys003",
+    "path_truncated": false,
+    "stat": {
+     "st_atimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_birthtimespec": "2026-10-01T10:00:00.000000000Z",
+     "st_blksize": 4096,
+     "st_blocks": 8,
+     "st_ctimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_dev": 16777234,
+     "st_flags": 0,
+     "st_gen": 0,
+     "st_gid": 20,
+     "st_ino": 123456,
+     "st_mode": 33188,
+     "st_mtimespec": "2026-11-03T19:59:00.000000000Z",
+     "st_nlink": 1,
+     "st_rdev": 0,
+     "st_size": 1024,
+     "st_uid": 501
+    }
+   }
+  },
+  "schema_version": 1,
+  "seq_num": 43,
+  "thread": {
+   "thread_id": 7002
+  },
+  "time": "2026-11-03T20:00:51.000000000Z",
   "version": 10
  }
 ]

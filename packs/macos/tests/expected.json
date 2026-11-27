@@ -963,6 +963,7 @@
    "/sbin/launchd"
   ],
   "process": {
+   "command": "--cmd set noswapfile notes/todo.md ghp_[secret: 34 bytes]",
    "path": "/usr/bin/vim",
    "pid": 400,
    "platform": true,
@@ -1310,6 +1311,118 @@
    "entry": "com.google.Chrome",
    "id": "690",
    "window": "2026-11-03T20:00"
+  }
+ },
+ {
+  "ts": "2026-11-03T20:00:41.000000000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "/Users/dev/tangent/target/release/tangent"
+  },
+  "_facts": {
+   "notes": []
+  },
+  "detail": {
+   "declared": "this process says it is the capture: what it and the programs under it do is left out of the records from here on"
+  },
+  "event": "monitor",
+  "lineage": [
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "parents": [
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "process": {
+   "path": "/Users/dev/tangent/target/release/tangent",
+   "pid": 800,
+   "ppid": 100
+  }
+ },
+ {
+  "ts": "2026-11-03T20:00:45.000045000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "com.example.agent"
+  },
+  "_facts": {
+   "notes": []
+  },
+  "event": "prompt",
+  "lineage": [
+   "/bin/zsh",
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "parents": [
+   "/bin/zsh",
+   "/usr/bin/login",
+   "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+   "/sbin/launchd"
+  ],
+  "process": {
+   "path": "/Users/dev/.local/share/agent/versions/2.0.0/agent",
+   "pid": 300,
+   "ppid": 200
+  },
+  "prompt": {
+   "agent": "claude-code",
+   "cwd": "/Users/dev/code/x",
+   "headless": true,
+   "session": "00000000-0000-4000-8000-000000000002",
+   "text": "list the keys in ~/.ssh"
+  },
+  "session": {
+   "entry": "/bin/zsh",
+   "id": "200",
+   "turn": "2026-11-03T20:00:45",
+   "window": "2026-11-03T20:00:45+000"
+  }
+ },
+ {
+  "ts": "2026-11-03T20:00:51.000000000Z",
+  "source": "macos",
+  "_norm": {
+   "actor": "/bin/ls",
+   "org": "dev"
+  },
+  "_facts": {
+   "notes": []
+  },
+  "event": "exec",
+  "exec": {
+   "args": [
+    "ls"
+   ],
+   "cwd": "/Users/dev/code/x",
+   "env_count": 12
+  },
+  "lineage": [
+   "(unknown)"
+  ],
+  "parents": [
+   "(unknown)"
+  ],
+  "process": {
+   "path": "/bin/ls",
+   "pid": 811,
+   "platform": true,
+   "ppid": 810,
+   "responsible": 99,
+   "signer": "com.apple.ls",
+   "tty": "/dev/ttys003",
+   "uid": 501
+  },
+  "responsible": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+  "session": {
+   "entry": "/bin/zsh",
+   "id": "200",
+   "turn": "2026-11-03T20:00:45",
+   "window": "2026-11-03T20:00:45+000"
   }
  }
 ]

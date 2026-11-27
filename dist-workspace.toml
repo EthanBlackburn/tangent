@@ -29,9 +29,11 @@ github-attestations = true
 
 # The Macs the binaries are built on. dist 0.30.0's own choice is macos-13,
 # which GitHub no longer runs: a job that asks for it waits and never starts.
+# The Intel binary is cross-compiled on the Apple Silicon runner: the
+# macos-15-intel runner took ~100 minutes to build it, against ~40 here.
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
-x86_64-apple-darwin = "macos-15-intel"
+x86_64-apple-darwin = { runner = "macos-15", host = "aarch64-apple-darwin" }
 
 # The packs' plugins, compiled once here and run anywhere: release artifacts
 # beside the binaries (packs/dist.sh builds them; its list and this one agree)

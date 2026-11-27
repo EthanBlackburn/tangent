@@ -337,6 +337,7 @@ mod tests {
             concurrency: 1,
             timeout_ms: 1_000,
             retries: 0,
+            fallback: None,
             serve: Some(ServeConfig {
                 command,
                 env: BTreeMap::from([("WHO".to_string(), "tangent".to_string())]),

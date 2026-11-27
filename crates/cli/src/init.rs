@@ -308,7 +308,7 @@ pub const INKLING: &str = r#"    type: openai                 # Ollama serves th
     model: "{{model}}"   # Ollama's build of it for Apple Silicon
     timeout_ms: 600000           # ten minutes a request: a long prompt, or a review that thinks
     retries: 2
-    concurrency: 1               # one request at a time, the judge's and the reviewer's together
+    concurrency: 1               # one request at a time: a review's turn, then the judge's next
     # `tangent watch` starts this server, waits until it answers and stops it
     # after; one already answering at `url` is used and left running.
     serve:
@@ -342,6 +342,7 @@ impl Server {
                 reviewer_model: r#"    type: anthropic
     api_key: "${ANTHROPIC_API_KEY}"
     model: claude-sonnet-5-5
+    fallback: claude-sonnet-5    # asked what Sonnet 5.5 declines, as it does some reviews of an attack
 "#,
                 reviewer: r#"    extra:
       thinking: { type: adaptive }   # it thinks before each query and its report, briefly
@@ -363,6 +364,7 @@ impl Server {
 "#,
                 reviewer_model: r#"    type: bedrock
     model: us.anthropic.claude-sonnet-5-5
+    fallback: us.anthropic.claude-sonnet-5   # asked what Sonnet 5.5 declines, as it does some reviews of an attack
     aws: { profile: "${AWS_PROFILE:-default}", region: us-west-2 }
 "#,
                 reviewer: r#"    extra:

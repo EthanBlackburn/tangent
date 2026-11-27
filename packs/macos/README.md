@@ -107,12 +107,16 @@ from nowhere, and four in five programs on a Mac are launchd's own children.
 (the app a helper works for, the terminal a command was typed in). All from a process
 tree the plugin keeps in state from `fork`, `exec` and `exit` (the pack
 runs the pipeline on one worker, which keeps the events in order; an entry
-lasts a day, or ten minutes once its process exits, so what it left running
-still has it among its `parents`, and is written again every ten minutes its
-process is at work, with the entries above it, so a shell open for a week
-stays; an entry holds when its process started, and one whose pid has
-another start in a later event or snapshot is of an earlier process, from
-before a restart, and is replaced). `session` is the entry point the
+lasts a day, or ten minutes once its process exits, and is written again
+every ten minutes its process is at work, with the entries above it, so a
+shell open for a week stays; an exited process whose child is seen at work
+is kept as a live one is, for as long as the child goes on, so what a
+launcher left running still has the launcher, and the shell or the agent
+above it, among its `parents`; an entry holds when its process started and
+when its parent did, so one whose pid has another start in a later event or
+snapshot is of an earlier process and is replaced, and a chain that would
+pass through a process that took a parent's pid since ends there,
+`(unknown)`, rather than name a stranger). `session` is the entry point the
 process's session started from, as ECS's entry leader, which a process takes
 from its parent when it forks and keeps when that parent exits; for a
 process whose fork was not seen, walking up the tree, the first process whose
@@ -152,11 +156,15 @@ subscribes to. The terminal, the apps and an agent left open were started
 before the capture, so the programs they run have no one above them and
 `responsible` has a pid and no name: in a ten-minute run 68 of 249 programs'
 chains ended in `(unknown)`, and the judge read one as "no known launcher".
-The source lists what is running (`ps -axo pid=,ppid=,lstart=,comm=`) as
+The source lists what is running (`ps -axo pid=,ppid=,lstart=,comm=`, and
+`ps -axww -o pid=,args=` for each one's command line) as
 one line each, ahead of the sensor's first line and again a second after it
-starts, which gives the tree each process's parent, path and start. The plugin takes a line only for a process
+starts, which gives the tree each process's parent, path, start and what it
+was started to do: a server or an agent left running is `node ~/srv/server.js
+--port 8080` and not a bare `node`. `ps` joins a command line's arguments with spaces, so one that held a
+space is read as two, and the keys on it are taken out as an exec's are. The plugin takes a line only for a process
 it does not know, or knows by another start, and a process's first event replaces what the snapshot said (its
-signature, and its parent unless launchd has taken it since), so a late or
+signature, and its parent unless launchd has taken it since) and keeps its command line, so a late or
 repeated snapshot does no harm.
 
 ## The capture's own processes
@@ -165,10 +173,13 @@ The source sends one line, `{"monitor": {"pid": N}}`, with tangent's own
 pid. From then on the plugin drops the records of that process and
 everything under it (the sensor, tcpdump, the snapshot's `ps`, and what an
 `exec` sink runs), though the tree still knows them. A name or a command line could not exempt them, since a
-look-alike is worth a flag. The declaration is itself a record, in the
-session of the process it names: whatever can write to one of the plugin's
-sources can write the line (a socket source would let anything running as
-the person), and a program that is called the monitor is seen being so. A line
+look-alike is worth a flag. The source builds every line it sends, so no
+program on the Mac can write this one. The declaration is kept in the lake,
+with the process and its parents, but in no session, so the judge never
+reads it: in a session it read as a program hiding its own activity, and
+each start of tangent was flagged. Whatever can write to one of the plugin's
+sources can write the line, so feed the plugin from a `macos` source alone: a
+socket source would let anything running as the person exempt itself. A line
 that names a pid the tree does not know is not taken, since it would exempt
 whatever took that pid next with no record of it.
 
@@ -186,7 +197,13 @@ characters) with the agent's session id, working directory and pid as one
 line. A message typed while the agent is
 working never becomes a `user` entry: Claude Code queues it as an attachment
 (`queued_command`, its `origin.kind` `human` too), and the source takes
-those as well, marked `during`. Each line carries `after`, what the agent
+those as well, marked `during`. An agent run headless (`claude -p`, the
+Agent SDK) is sent its prompts by whatever started it, and Claude Code gives
+them no `origin`: the one that starts a turn has `promptSource` `sdk`, and
+one sent mid-turn is a `queued_command` in a session whose `entrypoint` is
+the SDK's (`sdk-cli`). The source takes those too, marked `headless`, since
+a person at a terminal and a package's script both start agents that way.
+Each line carries `after`, what the agent
 had last said before the prompt, its first 400 characters and its last 800:
 "yes, the second one" says nothing alone.
 
@@ -199,7 +216,8 @@ session's latest five prompts in the order they were typed, each to 600
 bytes with its time, as `asked`: this window's and, from state for two hours,
 the ones before, since what an agent runs for an hour was asked for once. A
 prompt has `replying_to` (what the agent had last said) on the summary it
-first appears in, and `while_working` when it was typed mid-turn. A window that holds only a prompt
+first appears in, `while_working` when it was typed mid-turn, and `headless`
+when what started the agent sent it. A window that holds only a prompt
 is not judged alone. The transcript's format is Claude Code's own and may
 change with a release; a line the source cannot read is skipped. Anything
 running as the person can write a transcript, so a prompt is what was
@@ -260,8 +278,8 @@ unmarked until the file says so.
 
 The judge reads sessions, not records. `macos_sessions` is grouped by
 `session.id` and `session.window`: a session's events within five minutes of
-each other, closed live fifteen minutes after the first or after a minute of
-quiet. An agent's session is cut at the person's prompts instead: a prompt
+each other, closed live fifteen minutes after the first or after fifteen seconds
+of quiet. An agent's session is cut at the person's prompts instead: a prompt
 that sets the agent to work opens a turn (`session.turn`, the prompt's
 time), a message typed while it works joins the turn under way, and the
 turn's events are summed up five minutes of their own time at a time
@@ -275,7 +293,10 @@ environment or did something rarer first, then the busiest; one program under tw
 different parents is two), what it is (path, signing
 identity, team, platform, tty), what started it (`parents`, the whole chain,
 and `responsible`), the commands it
-ran with how often (each as the record holds it), what it did to the files in the groups above (created,
+ran with how often (each as the record holds it; a program whose start is in
+an earlier summary, or before the log, has `ran_earlier`, the start of its
+command line as the tree kept it and each of its later records carries it,
+`process.command`), what it did to the files in the groups above (created,
 written, read, deleted, replaced, renamed into place; each file named, or for
 many under one directory the directory with a count and a few names), the
 agent-steering variables it set, and its rarer events. The files are listed
@@ -283,6 +304,25 @@ by what was done to them, not by group, and the facts stay out: a model
 reads `persistence` or `credentials` on a file as a verdict, and flagged
 sessions that only read `CLAUDE.md` as agents do at every start. Claude Code's marketplace refresh, two thousand events in a
 second, is one line of it; a session is a few kilobytes.
+
+One kind of session gets no summary, and so is not judged: macOS starting a
+service of its own that then does nothing on record. Every record of the
+session's window is a program starting, and each is an Apple platform binary
+by its code signature, under `/System/` or `/usr/libexec/` (the sealed
+system volume, which nothing a person runs can write to), started by launchd
+with nothing between, with no arguments (launchd's own `xpcproxy` aside,
+whose arguments name the job), with none of the facts above, and not a
+program that runs code it is handed (a shell, `jsc`, `perl`). A file in the
+groups above, a connection or a child is another record, and the session is
+summed up whole. None of these is a name a program chooses for itself. On a
+Mac these starts are most sessions, and a model on the same Mac cannot read
+them as fast as they come: over the fourteen recorded cases this leaves out
+627 of the judge's 980 requests, every one of which it had passed, and with
+it the same seven attacks stand and the same seven look-alikes are left
+alone. The records are in the lake like any other, for the reviewer and for
+`tangent query`. What it gives up is the judge's reading of one thing: an
+Apple service launchd started, under whatever job name, that then did
+nothing the log records.
 
 Nothing is left out of a summary for the session having done a great deal,
 which a session can do on purpose: twenty-five commands run twice once hid
@@ -357,11 +397,11 @@ finding says what is missing); and `check`, what to look at or undo first.
 The alert goes on with its review, with the SQL it ran, the files it read and the
 tokens it took; examples/macos writes them to `reviews.ndjson`.
 
-An alert's own records are in the lake once the sink seals their file, five
-minutes after opening it and up to a quarter more. So the plugin is grouped
-by an alert's session and window with `expire_after_ms: 400000`: each alert
-waits that long before its review, and the table ends that long after the
-alert's last event, so a replay's review sees what a live one would. A
+An alert's own records are the table's once the sink has written them,
+before it seals their file. The plugin is grouped by an alert's session and
+window with `expire_after_ms: 10000`: each alert waits ten seconds before
+its review, and the table ends that long after the alert's last event, so a
+replay's review sees what a live one would. A
 grouped plugin has workers of its own, so a review that takes a minute
 holds up neither the capture nor the judge; reviews themselves go one at a
 time (`concurrency: 1`), a turn given two minutes and three tries before
@@ -507,10 +547,10 @@ sent, and the package's contents, are not in these records.
 
 ## Tests
 
-`tests/input.json` is thirty-eight synthetic records as eslogger writes them, two
-connections' lines, two of the snapshot's and one prompt's, as the source sends them (version 10,
+`tests/input.json` is forty-three synthetic records as eslogger writes them, two
+connections' lines, four of the snapshot's, tangent's declaration of itself and three prompts', as the source sends them (version 10,
 schema 1, the shapes of a macOS 26 capture, no real values): a shell, an agent
-started from it with `ANTHROPIC_BASE_URL` set, the person's prompt to it, the agent saving its config and
+started from it with `ANTHROPIC_BASE_URL` set, the person's prompts to it and one sent headless, the agent saving its config and
 reading the keychain, a package install under it whose `node` reads
 credentials and a transcript, plants a settings file and `CLAUDE.md`, and runs
 an unsigned program from `/tmp` that installs a LaunchAgent, which, once
@@ -518,7 +558,7 @@ the package script and the agent above it have exited, reads an SSH key and
 calls evil.example; a browser's QUIC connection made by its helper, and the
 helper saving cookies; the terminal and the login above the shell, known only
 from the snapshot; and around them the noise the plugin drops.
-`tests/expected.json` is the twenty-five records the plugin keeps, written
+`tests/expected.json` is the twenty-eight records the plugin keeps, written
 against `tests/addresses.yaml` and `tests/networks.csv`, the tables' answers
 for the fixture's two addresses. `make test` in `packs/` runs it; `cargo test` here runs the
 path groups' unit tests, and in `sessions/` the summary's, one of them over

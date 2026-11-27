@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "compile-wasm"
-version = "0.3.0"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -7008,7 +7008,7 @@ dependencies = [
 
 [[package]]
 name = "tangent-bench"
-version = "0.3.0"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -7039,7 +7039,7 @@ dependencies = [
 
 [[package]]
 name = "tangent-cli"
-version = "0.3.0"
+version = "0.3.3"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7070,7 +7070,7 @@ dependencies = [
 
 [[package]]
 name = "tangent-compact"
-version = "0.3.0"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "rand 0.9.5",
@@ -7082,7 +7082,7 @@ dependencies = [
 
 [[package]]
 name = "tangent-runtime"
-version = "0.3.0"
+version = "0.3.3"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7165,7 +7165,7 @@ dependencies = [
 
 [[package]]
 name = "tangent-shared"
-version = "0.3.0"
+version = "0.3.3"
 dependencies = [
  "ahash",
  "anyhow",

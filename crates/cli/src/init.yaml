@@ -63,7 +63,8 @@ plugins:
     tables:
       lake: lake                 # table `lake` is what sink `lake` has written
     group_by: [_norm.org, _norm.actor]
-    expire_after_ms: 4000000
+    expire_after_ms: 60000       # an actor's alerts a minute apart or less are one review,
+    max_age_ms: 300000           # which begins five minutes after the first, however long they go on
     config:
       model: reviewer
       table: lake

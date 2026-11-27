@@ -92,8 +92,8 @@ impl InferenceNode {
     }
 
     /// One turn of a conversation a plugin holds (`model.chat`): the
-    /// plugin's messages and tools to the model, under one of the node's
-    /// permits and with its prompt, timeout and retries, and the model's
+    /// plugin's messages and tools to the model, in one of its model's
+    /// places and with the node's prompt, timeout and retries, and the model's
     /// turn back, as the plugin interface describes both. A turn the model
     /// did not finish is the error: one it failed or refused, one with
     /// neither text nor a call after `retries` more tries, one `max_tokens`
@@ -146,7 +146,7 @@ impl InferenceNode {
         let (reply, content, calls) = loop {
             attempt += 1;
             let reply = {
-                let _permit = self.model.permit().await;
+                let _place = self.model.turn().await;
                 // A turn that waited for its place while the run began to
                 // stop is one not yet sent.
                 if self.model.stop().finishing() {
@@ -254,7 +254,7 @@ impl InferenceNode {
             }
         }
         let done = futures::future::join_all(jobs.into_iter().map(|(ids, chunk)| async move {
-            let _permit = self.model.permit().await;
+            let _place = self.model.place().await;
             if self.model.stop().finishing() {
                 return (ids, None);
             }
@@ -844,7 +844,7 @@ pub(crate) mod stub {
                         let silence = json!({"role": "assistant", "content": ""});
                         let (message, finish) = if body.contains("cut short") {
                             (call, "length")
-                        } else if body.contains("filtered") {
+                        } else if body.contains("filtered") && req["model"] != "second" {
                             (silence, "content_filter")
                         } else if body.contains("say nothing") {
                             (silence, "stop")
@@ -1018,6 +1018,7 @@ pub(crate) mod stub {
                 concurrency: 2,
                 timeout_ms: 5_000,
                 retries: 0,
+                fallback: None,
                 serve: None,
             },
             node: tangent_shared::inference::InferenceConfig {
@@ -1456,6 +1457,45 @@ mod tests {
         }
     }
 
+    /// A turn the model declines is asked of its `fallback`, once, and that
+    /// model's turn is the turn: its call, or a decline of its own, which is
+    /// the error it is with no fallback.
+    #[tokio::test]
+    async fn a_turn_the_model_declines_is_asked_of_its_fallback() {
+        let tools = json!([{"name": "query", "description": "Run SQL.",
+            "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}}}]);
+        let request = |asked: &str| {
+            json!({"messages": [{"role": "user", "text": asked}], "tools": tools}).to_string()
+        };
+        for (fallback, tag) in [
+            ("second", "chat-fallback"),
+            ("third", "chat-fallback-declines"),
+        ] {
+            let (url, seen) = stub::model().await;
+            let mut cfg = stub::config(&url);
+            cfg.model.fallback = Some(fallback.into());
+            let node = cfg.node("reviewer", &stub::dir(tag)).unwrap();
+            let turn = node.chat(&request("filtered")).await;
+            let asked: Vec<Value> = seen
+                .lock()
+                .await
+                .drain(..)
+                .map(|body| serde_json::from_str::<Value>(&body).unwrap()["model"].take())
+                .collect();
+            assert_eq!(asked, [json!("stub"), json!(fallback)]);
+            if fallback == "second" {
+                let reply: Value = serde_json::from_str(&turn.unwrap()).unwrap();
+                assert_eq!(reply["calls"][0]["name"], "query", "{reply}");
+            } else {
+                let e = turn.unwrap_err();
+                assert!(format!("{e:#}").contains("failed the turn"), "{e:#}");
+            }
+            // one it does not decline is the model's own
+            node.chat(&request("look")).await.unwrap();
+            assert_eq!(seen.lock().await.len(), 1);
+        }
+    }
+
     /// A turn with nothing in it is asked for again, `retries` times: the
     /// model that says nothing twice and then calls a tool has made its call,
     /// and the one that never says anything is the error after the last try.
@@ -1737,6 +1777,86 @@ mod tests {
         for c in calls {
             c.abort();
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A conversation's turn takes the model's next free place ahead of the
+    /// records already waiting for one: an alert being reviewed is not kept
+    /// waiting by what is still to be judged.
+    #[tokio::test]
+    async fn a_turn_goes_ahead_of_the_records_that_wait() {
+        let (url, seen) = stub::model().await;
+        let dir = stub::dir("turn-first");
+        let mut cfg = stub::config(&url);
+        cfg.model.concurrency = 1;
+        cfg.node.group_by = vec!["who".into()];
+        let nodes = nodes(
+            &[(cfg.node.model.clone(), cfg.model)].into(),
+            &[
+                ("judge".into(), cfg.node.clone()),
+                ("reviewer".into(), cfg.node),
+            ]
+            .into(),
+            &dir,
+            &Stop::default(),
+        )
+        .unwrap();
+        let held = nodes["judge"].model.place().await;
+        let judge = Arc::clone(&nodes["judge"]);
+        let records = tokio::spawn(async move {
+            // three actors' records, a request each, all in line
+            let records = ["a", "b", "c"].map(|who| json!({"who": who})).to_vec();
+            judge.annotate_all(records).await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let reviewer = Arc::clone(&nodes["reviewer"]);
+        let turn = tokio::spawn(async move {
+            let asked = json!({"messages": [{"role": "user", "text": "is the alert right"}]});
+            reviewer.chat(&asked.to_string()).await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(held);
+        turn.await.unwrap().unwrap();
+        assert_eq!(records.await.unwrap().len(), 3);
+        let seen = seen.lock().await;
+        assert_eq!(seen.len(), 4);
+        assert!(
+            seen[0].contains("is the alert right"),
+            "the turn came last and was sent first: {}",
+            seen[0]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A caller that stopped waiting for a place leaves it to the next in
+    /// line.
+    #[tokio::test]
+    async fn a_place_passes_over_whoever_stopped_waiting() {
+        let dir = stub::dir("gave-up");
+        let mut cfg = stub::config("http://127.0.0.1:1/v1");
+        cfg.model.concurrency = 1;
+        let model = Arc::clone(&cfg.node("judge", &dir).unwrap().model);
+        let held = model.place().await;
+        let gone = {
+            let model = Arc::clone(&model);
+            tokio::spawn(async move { drop(model.turn().await) })
+        };
+        let waits = {
+            let model = Arc::clone(&model);
+            tokio::spawn(async move { drop(model.place().await) })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        gone.abort();
+        let _ = gone.await;
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(2), waits)
+            .await
+            .expect("the place came to the one still waiting")
+            .unwrap();
+        // and is free again after it
+        tokio::time::timeout(Duration::from_secs(2), model.place())
+            .await
+            .expect("the place is free");
         let _ = std::fs::remove_dir_all(dir);
     }
 

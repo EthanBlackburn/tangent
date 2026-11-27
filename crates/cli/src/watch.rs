@@ -14,14 +14,25 @@
 //! a source whose variable is unset is left idle.
 //!
 //! While any of them runs it says what the judge checks and flags and what
-//! each review finds ([`crate::follow`]), among the runtime's own lines.
+//! each review finds ([`crate::follow`]); unless `RUST_LOG` is set, the
+//! runtime's own logs go to `watch.log` in the pipeline's directory and only
+//! errors reach stderr.
 
 use std::ffi::OsString;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use fs2::FileExt as _;
 use tangent_runtime::RuntimeOptions;
+use tangent_shared::sources::common::SourceConfig;
+use tangent_shared::Config;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::{EnvFilter, Layer as _};
 
 use crate::follow::Follow;
 use crate::init::{self, Choices, Provider, Server, Source};
@@ -186,11 +197,114 @@ pub async fn mac(provider: Option<Provider>, no_notify: bool) -> Result<()> {
         ],
         pace: "a session\n\
                is judged five minutes at a time, or an agent's turn at its end, and an alert is\n\
-               reviewed about seven minutes after it.",
+               reviewed as soon as it is raised.",
         shown: Some("To see it catch an attack, run `tangent simulate` in another terminal."),
         no_notify,
     })
     .await
+}
+
+/// Prints one confirmation line once the pipeline (or Mac sensor, after
+/// `sudo`) is live, so the terminal is not left blank after startup.
+struct Ready {
+    target: &'static str,
+    message: &'static str,
+    printed: AtomicBool,
+}
+
+impl Ready {
+    fn for_config(config: &Path) -> Self {
+        let has_mac = Config::load(config).is_ok_and(|loaded| {
+            loaded
+                .config
+                .sources
+                .values()
+                .any(|s| matches!(s, SourceConfig::Macos(_)))
+        });
+        if has_mac {
+            Self {
+                target: "tangent_runtime::sources::macos",
+                message: "the sensor is started",
+                printed: AtomicBool::new(false),
+            }
+        } else {
+            Self {
+                target: "tangent_runtime",
+                message: "pipeline started",
+                printed: AtomicBool::new(false),
+            }
+        }
+    }
+}
+
+struct MessageMatches {
+    want: &'static str,
+    matched: bool,
+}
+
+impl tracing::field::Visit for MessageMatches {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" && value == self.want {
+            self.matched = true;
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" && format!("{value:?}") == self.want {
+            self.matched = true;
+        }
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Ready {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if self.printed.load(Ordering::Relaxed) || event.metadata().target() != self.target {
+            return;
+        }
+        let mut check = MessageMatches {
+            want: self.message,
+            matched: false,
+        };
+        event.record(&mut check);
+        if check.matched && !self.printed.swap(true, Ordering::SeqCst) {
+            println!("Started. Activity will show up here.");
+        }
+    }
+}
+
+/// Routes runtime logs to `watch.log` in `dir` (info+) and only errors to
+/// stderr, when `RUST_LOG` was not set (otherwise `main` already initialized
+/// stderr tracing and `try_init` is a no-op).
+fn init_logging(dir: &Path, ready: Option<Ready>) -> Option<PathBuf> {
+    if std::env::var_os("RUST_LOG").is_some() {
+        return None;
+    }
+    let path = dir.join("watch.log");
+    let stderr = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(EnvFilter::new("error"));
+    let file_layer = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()
+        .map(|file| {
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(Mutex::new(file))
+                .with_filter(EnvFilter::new("info"))
+        });
+    let logged = file_layer.is_some();
+    let _ = tracing_subscriber::registry()
+        .with(stderr)
+        .with(file_layer)
+        .with(ready)
+        .try_init();
+    logged.then_some(path)
 }
 
 /// Writes the pipeline to its directory, fetches what it needs, says what
@@ -204,6 +318,7 @@ async fn start(pipeline: Pipeline) -> Result<()> {
     // file's are its own: the lake, the alerts and their reviews.
     std::env::set_current_dir(&dir).with_context(|| format!("entering {}", dir.display()))?;
     let config = dir.join("tangent.yaml");
+    let log = init_logging(&dir, Some(Ready::for_config(&config)));
     fetch::missing(&config).await?;
     if pipeline.server == Server::Ollama {
         let root = local::root()?;
@@ -225,8 +340,17 @@ async fn start(pipeline: Pipeline) -> Result<()> {
         "They are kept, with the pipeline and its lake, in {}",
         dir.display()
     );
-    let app = notify::app(&config, pipeline.no_notify).await;
-    if app.is_some() {
+    if let Some(log) = log {
+        println!(
+            "Runtime log: {} (set RUST_LOG=info for verbose terminal logs).",
+            log.display()
+        );
+    }
+    let notifier = match notify::app(&config, pipeline.no_notify).await {
+        Some(app) => Notifier::start(app).await,
+        None => None,
+    };
+    if notifier.is_some() {
         println!(
             "A review that upholds an alert is a notification on this Mac too, once you allow Tangent's (--no-notify shows none)."
         );
@@ -236,34 +360,61 @@ async fn start(pipeline: Pipeline) -> Result<()> {
     }
     println!("Ctrl-C stops it.\n");
 
-    following(&dir, &config, RuntimeOptions::default(), app).await
+    following(&dir, &config, RuntimeOptions::default(), notifier).await
 }
 
 /// `tangent watch --config`: the owner's config, run where they are.
 pub async fn config(config: PathBuf, once: bool, no_notify: bool) -> Result<()> {
     let config = config.canonicalize().unwrap_or(config);
-    fetch::missing(&config).await?;
-    let app = notify::app(&config, no_notify).await;
     // A sink's path is read against the directory tangent runs in.
     let dir = std::env::current_dir().context("reading the directory this runs in")?;
+    let ready = (!once).then(|| Ready::for_config(&config));
+    let log = init_logging(&dir, ready);
+    fetch::missing(&config).await?;
+    let notifier = match notify::app(&config, no_notify).await {
+        Some(app) => Notifier::start(app).await,
+        None => None,
+    };
+    if !once {
+        if let Some(log) = log {
+            println!(
+                "Watching {}. Runtime log: {} (Ctrl-C stops it).\n",
+                config.display(),
+                log.display()
+            );
+        }
+    }
     let opts = RuntimeOptions {
         once,
         ..Default::default()
     };
-    following(&dir, &config, opts, app).await
+    following(&dir, &config, opts, notifier).await
+}
+
+/// How long the pipeline's review plugin holds an alert before starting the
+/// reviewer (`expire_after_ms` on `macos_review` or `review`), so `Follow`
+/// can tell the user when a queued review will begin.
+fn review_wait(config: &Path) -> Option<Duration> {
+    let cfg = Config::load(config).ok()?.config;
+    let plugin = cfg
+        .plugins
+        .get("macos_review")
+        .or_else(|| cfg.plugins.get("review"))?;
+    Some(Duration::from_millis(plugin.expire_after_ms))
 }
 
 /// Runs `config` until it ends or a signal, saying what it writes in
-/// `dir`, the directory it runs in, and showing through `app`, when there
-/// is one, the reviews that are notifications.
+/// `dir`, the directory it runs in, and showing through `notifier`, when
+/// there is one, the reviews that are notifications.
 async fn following(
     dir: &Path,
     config: &PathBuf,
     opts: RuntimeOptions,
-    app: Option<PathBuf>,
+    notifier: Option<Notifier>,
 ) -> Result<()> {
+    let wait = review_wait(config);
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let said = tokio::spawn(Follow::new(dir, app.map(Notifier::start)).run(stopped));
+    let said = tokio::spawn(Follow::new(dir, notifier, wait).run(stopped));
     tokio::spawn(async {
         if signalled().await {
             println!(

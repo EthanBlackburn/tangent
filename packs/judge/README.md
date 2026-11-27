@@ -254,12 +254,15 @@ The view reads the lake as examples/cloud-infra writes it: Parquet with
 `ts`, `source` and `_norm`'s `org`, `actor`, `kind` and `ip` as columns, and
 `record_column: record`. A lake without those columns does not fit it.
 
-An actor's records are in the lake once the sink seals their file, an hour
-after opening it in the example. So the plugin is grouped by actor with
-`expire_after_ms: 4000000`: an actor's alerts wait that long after the last
-of them and are reviewed as one, and the table ends with the last alert, so
-a replay's review sees what a live one would. With a lake that seals sooner,
-set both lower in your config. A grouped plugin has workers of its own, so a
+An actor's records are the table's once the sink has written them, before
+it seals their file. The plugin is grouped by actor with
+`expire_after_ms: 60000` and `max_age_ms: 300000`: an actor's alerts wait a
+minute after the last of them and are reviewed as one, five minutes after
+the first at the latest, so an attack that keeps going is reviewed while it
+does, in parts. The model is shown the first alerts of a review, about
+24,000 characters of them, and told how many there are: the others' records
+are in the table. The table ends with the last alert, so
+a replay's review sees what a live one would. A grouped plugin has workers of its own, so a
 review holds up neither ingest nor the judge; reviews themselves go one at a
 time (`concurrency: 1`), a turn given two minutes and three tries. Alerts
 still waiting when the input ends are reviewed before the lake has their

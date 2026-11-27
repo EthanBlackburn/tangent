@@ -47,8 +47,8 @@ was asked").
 which Claude Sonnet 5.5 on Bedrock (REVIEW_MODEL for another) reads the
 alert, queries the lake, reads the scripts and the agent settings the log
 points to (never credentials or transcripts), and writes what happened and
-whether it was malicious to `reviews.ndjson`, about seven minutes after the
-alert, once the lake has its records. It uses the AWS credentials the Haiku
+whether it was malicious to `reviews.ndjson`, as soon as the alert is
+raised. It uses the AWS credentials the Haiku
 judge does.
 
 Each review that stands (called `malicious` or `unresolved`) then comes up

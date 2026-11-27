@@ -17,7 +17,8 @@
 //!   still read.
 //! - **What the person asked.** The sensor shows what an agent ran, never
 //!   why. Tangent follows Claude Code's transcripts under `~/.claude`, as
-//!   you, and makes a line of each prompt as it is typed
+//!   you, and makes a line of each prompt as it is typed or, to an agent
+//!   run headless (`claude -p`), sent
 //!   ([`transcripts`]).
 //!
 //! The sensor and tcpdump need root and tangent does not, so they are
@@ -258,8 +259,8 @@ async fn allow_root(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// What the person asks Claude Code, until `stop`: each prompt as it is
-/// typed, read from the transcripts under `~/.claude` as you. An error here
+/// What Claude Code is asked, until `stop`: each prompt as it is typed or
+/// sent, read from the transcripts under `~/.claude` as you. An error here
 /// is logged and ends the prompts only.
 async fn prompts(name: Arc<str>, router: Arc<Router>, stop: CancellationToken) {
     let Some(home) = std::env::var_os("HOME") else {
@@ -340,12 +341,12 @@ fn monitor(pid: u32, now: DateTime<Utc>) -> BytesMut {
     line(&json!({"time": stamp(now), "monitor": {"pid": pid}}))
 }
 
-/// Every process running now, one line each, as the plugin reads them.
-async fn snapshot(now: DateTime<Utc>) -> Result<Vec<BytesMut>> {
+/// What `ps` lists with `columns`.
+async fn ps(columns: &[&str]) -> Result<String> {
     // The start times in English and in UTC, whatever the Mac's language
     // and time zone.
     let ps = Command::new("ps")
-        .args(["-axo", "pid=,ppid=,lstart=,comm="])
+        .args(columns)
         .env("LC_ALL", "C")
         .env("TZ", "UTC")
         .output()
@@ -354,14 +355,37 @@ async fn snapshot(now: DateTime<Utc>) -> Result<Vec<BytesMut>> {
     if !ps.status.success() {
         bail!("ps: {}", String::from_utf8_lossy(&ps.stderr).trim());
     }
-    Ok(processes(&String::from_utf8_lossy(&ps.stdout), now))
+    Ok(String::from_utf8_lossy(&ps.stdout).into_owned())
 }
+
+/// Every process running now, one line each, as the plugin reads them.
+async fn snapshot(now: DateTime<Utc>) -> Result<Vec<BytesMut>> {
+    let rows = ps(&["-axo", "pid=,ppid=,lstart=,comm="]).await?;
+    // Each one's command line, in a listing of its own: a path and a
+    // command line both hold spaces, and one row cannot end both. A
+    // process is known without it, so a listing that fails costs only that.
+    let commands = ps(&["-axww", "-o", "pid=,args="]).await.unwrap_or_default();
+    Ok(processes(&rows, &commands, now))
+}
+
+/// The most of a command line a snapshot's line carries: what names the
+/// script an interpreter runs and what it was told, not a pasted file.
+const COMMAND_BYTES: usize = 1000;
 
 /// `ps -axo pid=,ppid=,lstart=,comm=` as the plugin's lines: a row is a
 /// pid, its parent's, when it started (five words) and its path, which may
-/// hold spaces. A row that is not one is left out.
-fn processes(ps: &str, now: DateTime<Utc>) -> Vec<BytesMut> {
+/// hold spaces. A row that is not one is left out. `commands` is
+/// `ps -axww -o pid=,args=`, a pid and its command line: a process in both
+/// has its command line as `ps` wrote it, to [`COMMAND_BYTES`].
+fn processes(ps: &str, commands: &str, now: DateTime<Utc>) -> Vec<BytesMut> {
     let now = stamp(now);
+    let commands: std::collections::HashMap<u32, &str> = commands
+        .lines()
+        .filter_map(|row| {
+            let (pid, command) = row.trim_start().split_once(char::is_whitespace)?;
+            Some((pid.parse().ok()?, command.trim()))
+        })
+        .collect();
     ps.lines()
         .filter_map(|row| {
             let mut rest = row;
@@ -382,6 +406,13 @@ fn processes(ps: &str, now: DateTime<Utc>) -> Vec<BytesMut> {
             let mut ps = json!({"pid": pid, "ppid": ppid, "path": path});
             if let Some(start) = started(&words[2..]) {
                 ps["start"] = json!(start);
+            }
+            if let Some(command) = commands.get(&pid).filter(|c| !c.is_empty()) {
+                let mut cut = command.len().min(COMMAND_BYTES);
+                while !command.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                ps["command"] = json!(command[..cut]);
             }
             Some(line(&json!({"time": now, "ps": ps})))
         })
@@ -437,13 +468,38 @@ mod tests {
  5120   412 Mon Mar  2 09:01:07 2026     -zsh
 ";
         assert_eq!(
-            parsed(&processes(ps, at())),
+            parsed(&processes(ps, "", at())),
             [
                 json!({"time": "2026-03-02T09:30:00.000000Z", "ps": {"pid": 1, "ppid": 0, "path": "/sbin/launchd", "start": "2026-11-17T19:20:35Z"}}),
                 json!({"time": "2026-03-02T09:30:00.000000Z", "ps": {"pid": 412, "ppid": 1, "path": "/Applications/Visual Studio Code.app/Contents/MacOS/Electron", "start": "2026-03-02T09:00:00Z"}}),
                 json!({"time": "2026-03-02T09:30:00.000000Z", "ps": {"pid": 5120, "ppid": 412, "path": "zsh", "start": "2026-03-02T09:01:07Z"}}),
             ]
         );
+    }
+
+    /// A process in both listings has its command line, as ps wrote it and
+    /// no longer than the line carries; one in the first alone has none.
+    #[test]
+    fn a_snapshot_row_has_its_command_line() {
+        let ps = "\
+  412     1 Mon Mar  2 09:00:00 2026     /usr/local/bin/node
+  413     1 Mon Mar  2 09:00:00 2026     /bin/cat
+  414     1 Mon Mar  2 09:00:00 2026     /bin/sleep
+";
+        let long = "y".repeat(2 * COMMAND_BYTES);
+        let commands =
+            format!("  412 node /srv/app/server.js --port 8080\n  414 sleep {long}\n  999 gone\n");
+        let lines = parsed(&processes(ps, &commands, at()));
+        assert_eq!(
+            lines[0]["ps"]["command"],
+            "node /srv/app/server.js --port 8080"
+        );
+        assert!(lines[1]["ps"].get("command").is_none(), "{}", lines[1]);
+        assert_eq!(
+            lines[2]["ps"]["command"].as_str().unwrap().len(),
+            COMMAND_BYTES
+        );
+        assert_eq!(lines.len(), 3);
     }
 
     /// A row that is not a process is left out, and one whose start is not
@@ -458,7 +514,7 @@ PID PPID STARTED COMMAND
   79     1 Mon Foo  2 09:00:00 2026     /bin/cat
 ";
         assert_eq!(
-            parsed(&processes(ps, at())),
+            parsed(&processes(ps, "", at())),
             [
                 json!({"time": "2026-03-02T09:30:00.000000Z", "ps": {"pid": 79, "ppid": 1, "path": "/bin/cat"}})
             ]
@@ -485,6 +541,7 @@ PID PPID STARTED COMMAND
             .find(|l| l["ps"]["pid"] == json!(std::process::id()))
             .expect("this process is running");
         assert!(me["ps"]["start"].is_string(), "{me}");
+        assert!(me["ps"]["command"].is_string(), "{me}");
         assert!(lines.len() > 20, "{} processes", lines.len());
     }
 

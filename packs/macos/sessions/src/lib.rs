@@ -11,6 +11,11 @@
 //! few names. The groups that chose the files, and the plugin's facts, stay
 //! out: a model reads `persistence` or `credentials` on a file as a verdict.
 //! Every record still reaches the lake as it was.
+//!
+//! One kind of session gets no summary, and so is not judged
+//! ([`idle_service`]): macOS starting a service of its own that then does
+//! nothing the log records. On a Mac at work those are most sessions, and a
+//! model on the same Mac cannot read them as fast as they come.
 
 wit_bindgen::generate!({
     path: ".tangent/wit",
@@ -54,6 +59,79 @@ const AFTER_BYTES: usize = 1300;
 /// agent runs for an hour was asked for once, at the start.
 const ASKED_TTL_MS: u64 = 7_200_000;
 
+/// Where macOS keeps its own programs: the sealed system volume, which
+/// nothing a person or their programs run can write to.
+const SYSTEM: [&str; 2] = ["/System/", "/usr/libexec/"];
+/// What launchd starts each of its jobs through: its arguments name the job,
+/// and it becomes the job's program.
+const XPCPROXY: &str = "/usr/libexec/xpcproxy";
+/// Programs that run the code they are handed, by the name before any
+/// version (`perl5.34`): one of these with no arguments reads its script
+/// from where launchd points its input.
+const RUNS_CODE: &[&str] = &[
+    "jsc",
+    "osascript",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "perl",
+    "ruby",
+    "python",
+    "Python",
+    "tclsh",
+    "wish",
+    "php",
+    "awk",
+    "swift",
+    "expect",
+];
+
+/// Whether a session's records in one window are macOS starting a service
+/// of its own and nothing more. Every one of them is a program starting:
+/// an Apple platform binary, by its code signature; from the sealed system
+/// volume; started by launchd itself, with nothing between; with no
+/// arguments, so nobody told it what to do (launchd's own xpcproxy aside,
+/// whose arguments name the job); with no fact of the pack's on it; and not
+/// one that runs code it is handed. Anything else the session did (a file
+/// the pack keeps, a connection, a child) is a record that is not such a
+/// start, and the session is summed up whole.
+///
+/// Each of these is a fact of the kernel's or of the sealed volume's, and
+/// none is a name a program chooses. What is left out of the judge's
+/// reading is a service of Apple's, started, that did nothing on record.
+fn idle_service(records: &[Value]) -> bool {
+    records.iter().all(|r| {
+        let path = s(r, "/process/path").unwrap_or("");
+        let base = path.rsplit('/').next().unwrap_or(path);
+        let name = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+        let bare = match r.pointer("/exec/args") {
+            Some(Value::Array(args)) => args.len() <= 1,
+            _ => false,
+        };
+        let facts = match r.get("_facts") {
+            Some(Value::Object(facts)) => facts
+                .values()
+                .any(|v| !(v.is_null() || v == &json!(false) || v == &json!([]))),
+            Some(_) => true,
+            None => false,
+        };
+        r["event"] == "exec"
+            && r.pointer("/process/platform") == Some(&json!(true))
+            && SYSTEM.iter().any(|dir| path.starts_with(dir))
+            && r.get("parents") == Some(&json!(["/sbin/launchd"]))
+            && (bare || path == XPCPROXY)
+            && !RUNS_CODE.contains(&name)
+            && !facts
+            && r.pointer("/exec/env").is_none()
+            && r.get("detail").is_none()
+            && r.pointer("/process/tty").is_none()
+    })
+}
+
 /// `_facts` keys that are not a file's group.
 const NOT_GROUPS: &[&str] = &["rename_over", "scratch_program", "unsigned", "steering_env"];
 
@@ -87,6 +165,9 @@ struct Program {
     about: Map<String, Value>,
     /// commands in the order first run, with how often
     ran: Vec<(String, usize)>,
+    /// what it was started to do before these records, as the tree kept
+    /// it: for a program with nothing in `ran`
+    earlier: Option<String>,
     /// (group, path) -> its changes in order
     files: BTreeMap<(String, String), Vec<&'static str>>,
     env: Map<String, Value>,
@@ -238,6 +319,9 @@ fn note(p: &mut Program, r: &Value) {
         if let Some(Value::Object(env)) = r.pointer("/exec/env") {
             p.env.extend(env.clone());
         }
+    }
+    if p.earlier.is_none() && event != "exec" {
+        p.earlier = s(r, "/process/command").map(|c| format!("{who} {c}"));
     }
     if event == "connect" {
         let to = s(r, "/connect/host")
@@ -666,6 +750,9 @@ fn summary(id: &str, records: &[Value]) -> Value {
             if r["prompt"]["during"] == true {
                 m.insert("while_working".into(), json!(true));
             }
+            if r["prompt"]["headless"] == true {
+                m.insert("headless".into(), json!(true));
+            }
             asked.push(Value::Object(m));
             continue;
         }
@@ -710,6 +797,8 @@ fn summary(id: &str, records: &[Value]) -> Value {
                     .map(|(c, n)| json!(if n > 1 { format!("{c} ×{n}") } else { c }))
                     .collect();
                 m.insert("ran".into(), Value::Array(lines));
+            } else if let Some(earlier) = p.earlier {
+                m.insert("ran_earlier".into(), json!(earlier));
             }
             // by what was done to them, not by the group that chose them: a
             // file's group is a judgment, and a model reads it as one
@@ -952,6 +1041,9 @@ impl Guest for Component {
         for key in order {
             let mut rs = by.remove(&key).unwrap_or_default();
             rs.sort_by(|a, b| s(a, "/ts").cmp(&s(b, "/ts")));
+            if idle_service(&rs) {
+                continue;
+            }
             let id = key.split('\t').next().unwrap_or("?");
             let mut rec = summary(id, &rs);
             mark(&mut rec, &known);
@@ -1088,8 +1180,8 @@ mod tests {
             "{}",
             node["files"]
         );
-        // every record but the two prompts, which are the session's `asked`
-        assert_eq!(s["session"]["events"], tab.len() - 2);
+        // every record but the three prompts, which are the session's `asked`
+        assert_eq!(s["session"]["events"], tab.len() - 3);
     }
 
     /// A program's chain says where it ends, and whom it works for: the
@@ -1164,9 +1256,12 @@ mod tests {
                     "prompt": "install the dependencies and run the tests"},
                    // typed while the agent worked: the same turn's
                    {"at": "2026-11-03T20:00:09.000009000Z", "agent": "claude-code",
-                    "prompt": "and update the lockfile first", "while_working": true}])
+                    "prompt": "and update the lockfile first", "while_working": true},
+                   // sent by what started the agent (`claude -p`), not typed into it
+                   {"at": "2026-11-03T20:00:45.000045000Z", "agent": "claude-code",
+                    "prompt": "list the keys in ~/.ssh", "headless": true}])
         );
-        assert_eq!(s["session"]["events"], tab.len() - 2);
+        assert_eq!(s["session"]["events"], tab.len() - 3);
         let agent = "/Users/dev/.local/share/agent/versions/2.0.0/agent";
         let of_agent: Vec<&Value> = s["programs"]
             .as_array()
@@ -1409,6 +1504,97 @@ mod tests {
             "{}",
             ran[3]
         );
+    }
+
+    /// A program whose start is not among the records says what it was
+    /// started to do, as the record has it from the tree; one whose start
+    /// is there says it in `ran`, whole, and not twice.
+    #[test]
+    fn a_program_started_earlier_says_what_it_was_started_with() {
+        let mut later = exec("/usr/local/bin/node", &[], 1);
+        later["event"] = json!("connect");
+        later["connect"] = json!({"host": "x.example", "port": 443});
+        later["process"]["name"] = json!("node ~/srv/server.js");
+        later["process"]["command"] = json!("--port 8080");
+        let s = summary("9", &[later.clone()]);
+        assert_eq!(
+            s["programs"][0]["ran_earlier"],
+            "node ~/srv/server.js --port 8080"
+        );
+        assert!(s["programs"][0].get("ran").is_none());
+
+        let mut start = exec(
+            "/usr/local/bin/node",
+            &["node", "server.js", "--port", "8080"],
+            0,
+        );
+        start["process"]["name"] = json!("node ~/srv/server.js");
+        let s = summary("9", &[start, later]);
+        assert_eq!(s["programs"].as_array().unwrap().len(), 1, "{s}");
+        assert!(s["programs"][0].get("ran_earlier").is_none(), "{s}");
+        assert_eq!(
+            s["programs"][0]["ran"][0],
+            "node ~/srv/server.js server.js --port 8080"
+        );
+    }
+
+    /// macOS starting a service of its own, which then does nothing on
+    /// record, is not summed up; anything that sets a start apart from that
+    /// is.
+    #[test]
+    fn a_service_macos_starts_that_does_nothing_is_not_a_summary() {
+        let started = |path: &str, args: &[&str]| {
+            json!({"ts": "t", "event": "exec", "session": {"id": "7", "entry": "/usr/libexec/xpcproxy", "window": "w"},
+                   "_facts": {"notes": []}, "process": {"path": path, "platform": true, "signer": "com.apple.x"},
+                   "parents": ["/sbin/launchd"], "exec": {"args": args, "env_count": 9}})
+        };
+        let proxy = started("/usr/libexec/xpcproxy", &["xpcproxy", "com.apple.triald"]);
+        let service = started("/usr/libexec/triald", &["/usr/libexec/triald"]);
+        assert!(idle_service(&[proxy.clone(), service.clone()]));
+
+        let with = |mut r: Value, at: &str, v: Value| {
+            *r.pointer_mut(at).unwrap() = v;
+            r
+        };
+        let not_idle = [
+            // told what to do
+            started("/usr/libexec/triald", &["triald", "--run", "x"]),
+            // a tool, not a service: outside the system's own directories
+            started("/usr/bin/security", &["security"]),
+            // not Apple's platform code
+            with(service.clone(), "/process/platform", json!(false)),
+            // something between launchd and it
+            with(
+                service.clone(),
+                "/parents",
+                json!(["/bin/sh -c x", "/sbin/launchd"]),
+            ),
+            with(service.clone(), "/parents", json!(["(unknown)"])),
+            // runs what it is handed, here from its input
+            started(
+                "/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc",
+                &["jsc"],
+            ),
+            started("/System/Library/Perl/perl5.34", &["perl5.34"]),
+            // a fact of the pack's
+            with(
+                service.clone(),
+                "/_facts",
+                json!({"notes": ["x"], "steering_env": true}),
+            ),
+        ];
+        for r in not_idle {
+            assert!(!idle_service(&[proxy.clone(), r.clone()]), "{r}");
+        }
+        // the start, and then something it did
+        let mut connected = service.clone();
+        connected["event"] = json!("connect");
+        connected["connect"] = json!({"host": "x.example", "port": 443});
+        assert!(!idle_service(&[proxy.clone(), service.clone(), connected]));
+        let mut read = service.clone();
+        read["event"] = json!("open");
+        read["file"] = json!("/Users/dev/.ssh/id_ed25519");
+        assert!(!idle_service(&[proxy, service, read]));
     }
 
     fn exec(path: &str, args: &[&str], i: usize) -> Value {
