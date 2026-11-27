@@ -649,9 +649,14 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<bool> {
         String::new()
     };
     println!("Installing Tangent.app and root sensor daemon (asks for your password once)...");
+    // `bootout` returns before launchd has let go of the daemon, and a
+    // `bootstrap` in the meantime is refused ("Bootstrap failed: 5"): the
+    // old one is waited for, up to half a minute, and the new one is tried
+    // once more if it is refused all the same.
     let install_script = format!(
         "set -eu; \
          launchctl bootout system/{SENSOR_LABEL} 2>/dev/null || true; \
+         n=0; while launchctl print system/{SENSOR_LABEL} >/dev/null 2>&1 && [ $n -lt 150 ]; do sleep 0.2; n=$((n+1)); done; \
          rm -rf '{daemon_dir}'; \
          mkdir -p '{daemon_dir}'; \
          chown root:wheel '{daemon_dir}'; \
@@ -665,7 +670,7 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<bool> {
          cp '{tmp_plist}' '{DAEMON_PLIST}'; \
          chown root:wheel '{DAEMON_PLIST}'; \
          chmod 644 '{DAEMON_PLIST}'; \
-         launchctl bootstrap system '{DAEMON_PLIST}'",
+         launchctl bootstrap system '{DAEMON_PLIST}' || {{ sleep 3; launchctl bootstrap system '{DAEMON_PLIST}'; }}",
         daemon_dir = shell_escape(Path::new(tangent_shared::sensor::DAEMON_APP_DIR)),
         daemon_app = shell_escape(&daemon_app),
         src_app = shell_escape(&source_app),
