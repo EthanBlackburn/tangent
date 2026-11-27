@@ -760,7 +760,8 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
 
         // 7. Quit
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit Menu Bar", action: #selector(quitMenuBar), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit Tangent", action: #selector(quitTangent), keyEquivalent: "q")
+        quit.toolTip = "Stops watching and removes this icon. `tangent up` starts both again."
         quit.target = self
         menu.addItem(quit)
     }
@@ -951,8 +952,23 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
         NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
     }
 
-    @objc private func quitMenuBar() {
-        NSApp.terminate(nil)
+    /// Quit is the whole of Tangent: the watch and this icon, as `tangent
+    /// down --all` stops them. launchd keeps the menu bar running, so one
+    /// that only ended itself would be back in a few seconds, and "Pause
+    /// Watching" is there for stopping the watch alone. Stopping the menu
+    /// bar's agent ends this process, and the command with it, which by then
+    /// has done what it was run for.
+    @objc private func quitTangent() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: tangentBin)
+        proc.arguments = ["down", "--all"]
+        proc.standardInput = FileHandle.nullDevice
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        // without a tangent to run, at least this icon goes
+        if (try? proc.run()) == nil {
+            NSApp.terminate(nil)
+        }
     }
 }
 
