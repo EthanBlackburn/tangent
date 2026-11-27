@@ -368,12 +368,21 @@ pub async fn show_status(as_json: bool) -> Result<()> {
             .map(|t| parse_env(&t))
             .unwrap_or_default();
         let choices = choices(read_choice(&dir).flatten(), init::no_inkling(), |var| {
-            init::set(var) || saved.get(var).is_some_and(|v| !v.trim().is_empty())
+            std::env::var(var)
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .or_else(|| saved.get(var).filter(|v| !v.trim().is_empty()).cloned())
         });
+        let auth_error = if alive {
+            snap.as_ref().and_then(|s| s.auth_error.clone())
+        } else {
+            None
+        };
         let out = json!({
             "choices": choices,
             "state": effective_state,
             "alive": alive,
+            "auth_error": auth_error,
             "daemon_socket": daemon_socket,
             "daemon_socket_path": es_sock.display().to_string(),
             "app_installed": app_installed,
@@ -418,6 +427,9 @@ pub async fn show_status(as_json: bool) -> Result<()> {
             println!("  Models   {}", s.models);
         }
         if alive {
+            if let Some(auth_err) = &s.auth_error {
+                println!("  Auth     {auth_err}");
+            }
             let mut line = format!("{} sessions checked · {} flagged", s.checked, s.flagged);
             if s.pending > 0 {
                 line.push_str(&format!(" · {} reviewing", s.pending));
@@ -439,40 +451,77 @@ pub async fn show_status(as_json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Who can judge this Mac, for the menu bar's Models menu: the model on this
-/// Mac and each provider's pair, in `--provider`'s order. Each has the
-/// arguments `tangent up` starts it with, whether it is the one `up` last
-/// started, whether it can be started from where there is nobody to ask, and
-/// when it cannot, why. `set` says whether a variable has a value, here or
-/// kept by an earlier `up`.
-fn choices(current: Option<Provider>, no_inkling: Option<String>, set: impl Fn(&str) -> bool) -> Vec<Value> {
+/// Whether an environment variable holds a secret (never echoed in
+/// `status --json`).
+fn is_secret_var(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.contains("KEY") || upper.contains("TOKEN") || upper.contains("SECRET")
+}
+
+/// Who can judge this Mac, for the menu bar's Models menu and companion window:
+/// the model on this Mac and each provider's pair, in `--provider`'s order.
+/// Each has the arguments `tangent up` starts it with, whether it is the one
+/// `up` last started, whether it can be started from where there is nobody to
+/// ask, its configurable environment variables (secrets as booleans only, never
+/// values), and when it cannot start yet, why.
+fn choices(
+    current: Option<Provider>,
+    no_inkling: Option<String>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<Value> {
     use clap::ValueEnum as _;
     let (name, models) = mac::brief(None);
     let mut choices = vec![json!({
+        "provider": "local",
         "name": name,
         "models": models,
         "args": ["up", "--local"],
         "current": current.is_none(),
         "ready": no_inkling.is_none(),
         "note": no_inkling.map(|_| "Needs an Apple Silicon Mac with 32 GB of memory"),
+        "env_vars": [],
     })];
     for provider in Provider::value_variants() {
         let mac = Mac::new(Some(*provider)).watched();
-        let missing = watch::unset(&mac.config(), &mac.needs(), |name| {
-            set(name).then(|| std::ffi::OsString::from("set"))
+        let config = mac.config();
+        let needs = mac.needs();
+        let missing = watch::unset(&config, &needs, |name| {
+            lookup(name).map(std::ffi::OsString::from)
         });
         let note = (!missing.is_empty()).then(|| {
             let vars: Vec<&str> = missing.iter().map(|(var, _)| *var).collect();
             format!("Needs {}", vars.join(", "))
         });
+        let env_vars: Vec<Value> = needs
+            .iter()
+            .map(|(var, desc)| {
+                let required = config.contains(&format!("${{{var}}}"));
+                let secret = is_secret_var(var);
+                let val = lookup(var);
+                let mut item = json!({
+                    "name": var,
+                    "description": desc,
+                    "required": required,
+                    "secret": secret,
+                    "set": val.is_some(),
+                });
+                if !secret {
+                    item["value"] = json!(val);
+                }
+                item
+            })
+            .collect();
         let (name, models) = mac::brief(Some(*provider));
+        let prov = provider_name(*provider);
         choices.push(json!({
+            "provider": prov,
             "name": name,
             "models": models,
-            "args": ["up", "--provider", provider_name(*provider)],
+            "args": ["up", "--provider", prov],
             "current": current == Some(*provider),
             "ready": missing.is_empty(),
             "note": note,
+            "env_vars": env_vars,
         }));
     }
     choices
@@ -1070,8 +1119,13 @@ mod tests {
     #[test]
     fn the_menu_bar_is_told_who_can_judge() {
         let small = Some("this Mac has 16 GB of memory".to_string());
-        let said = choices(Some(Provider::Bedrock), small, |var| var == "OPENAI_API_KEY");
+        let said = choices(Some(Provider::Bedrock), small, |var| match var {
+            "OPENAI_API_KEY" => Some("sk-secret-do-not-leak".to_string()),
+            "AWS_PROFILE" => Some("prod".to_string()),
+            _ => None,
+        });
         assert_eq!(said.len(), 5, "this Mac, and four providers");
+        assert_eq!(said[0]["provider"], "local");
         assert_eq!(said[0]["args"], json!(["up", "--local"]));
         assert_eq!(said[0]["ready"], false);
         assert_eq!(said[0]["name"], "This Mac");
@@ -1082,16 +1136,29 @@ mod tests {
                 .unwrap()
                 .clone()
         };
-        // Bedrock's profile has `default` to fall back on
+        // Bedrock's profile has `default` to fall back on, and is non-secret.
         assert_eq!(by("bedrock")["current"], true);
         assert_eq!(by("bedrock")["ready"], true);
         assert_eq!(by("bedrock")["name"], "Bedrock");
         assert_eq!(by("bedrock")["models"], "Claude Haiku 5.5 + Sonnet 5.5");
         assert_eq!(by("bedrock")["note"], Value::Null);
-        assert_eq!(by("openai")["ready"], true);
+        assert_eq!(by("bedrock")["env_vars"][0]["name"], "AWS_PROFILE");
+        assert_eq!(by("bedrock")["env_vars"][0]["secret"], false);
+        assert_eq!(by("bedrock")["env_vars"][0]["value"], "prod");
+
+        // Secret API keys report `set: true` but never echo the secret value.
+        let openai = by("openai");
+        assert_eq!(openai["ready"], true);
+        assert_eq!(openai["env_vars"][0]["name"], "OPENAI_API_KEY");
+        assert_eq!(openai["env_vars"][0]["secret"], true);
+        assert_eq!(openai["env_vars"][0]["set"], true);
+        assert!(openai["env_vars"][0].get("value").is_none());
+        assert!(!serde_json::to_string(&said).unwrap().contains("sk-secret"));
+
         assert_eq!(by("anthropic")["current"], false);
         assert_eq!(by("anthropic")["ready"], false);
         assert_eq!(by("anthropic")["note"], "Needs ANTHROPIC_API_KEY");
+        assert_eq!(by("anthropic")["env_vars"][0]["set"], false);
     }
 
     #[test]
