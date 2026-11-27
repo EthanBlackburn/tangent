@@ -271,6 +271,18 @@ impl Mac {
     }
 }
 
+/// Who judges, in a few words, for where there is room for few: the menu
+/// bar and `tangent status`. Who serves the models, and the models.
+pub fn brief(provider: Option<Provider>) -> (&'static str, &'static str) {
+    match provider {
+        None => ("This Mac", "Inkling 2 Mini"),
+        Some(Provider::Anthropic) => ("Anthropic", "Claude Haiku 5.5 + Sonnet 5.5"),
+        Some(Provider::Bedrock) => ("Bedrock", "Claude Haiku 5.5 + Sonnet 5.5"),
+        Some(Provider::Openrouter) => ("OpenRouter", "DeepSeek V4 Flash"),
+        Some(Provider::Openai) => ("OpenAI", "GPT-6 Luna + GPT-6.1 Terra"),
+    }
+}
+
 /// Whether this machine is one the pipeline can watch, with these models:
 /// a Mac, and for Inkling one with Apple Silicon and the memory for it. It
 /// is asked before anything is written or downloaded. Where Inkling is not
