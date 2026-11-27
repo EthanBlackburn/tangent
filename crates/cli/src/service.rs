@@ -214,7 +214,7 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
 
     // 1. Ensure `/Applications/Tangent.app` + root LaunchDaemon are installed and running.
     let uid = current_uid()?;
-    ensure_sensor_daemon(uid).await?;
+    let app_replaced = ensure_sensor_daemon(uid).await?;
 
     // 2. Install & bootstrap the unprivileged user LaunchAgents (watcher + menu bar).
     let agents_dir = launch_agents_dir()?;
@@ -249,7 +249,10 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
     // The menu bar's Resume runs this very command, as the menu bar's child:
     // stopping the menu bar would end this before it was started again. One
     // that is up and was started as it would be now is left running.
-    let menu_bar_is_current = is_agent_loaded(APP_LABEL)
+    // One running from an app that has just been replaced is the old app
+    // still, whatever its plist says, and is started again from the new.
+    let menu_bar_is_current = !app_replaced
+        && is_agent_loaded(APP_LABEL)
         && fs::read_to_string(&app_plist_path).is_ok_and(|now| now == app_xml);
     if !menu_bar_is_current {
         stop_agent(&gui_domain, APP_LABEL)?;
@@ -551,8 +554,9 @@ fn same_app(source: &Path, installed: &Path) -> bool {
 
 /// Installs or updates both copies of `Tangent.app` and the root LaunchDaemon
 /// unless they are this tangent's sensor already, with the daemon listening.
-/// Needs zero `sudo` when already up to date.
-async fn ensure_sensor_daemon(uid: u32) -> Result<()> {
+/// Needs zero `sudo` when already up to date. Whether the app was installed
+/// or replaced, which what runs from it has to be started again for.
+async fn ensure_sensor_daemon(uid: u32) -> Result<bool> {
     let installed_app = tangent_shared::sensor::installed_app();
     let daemon_app = tangent_shared::sensor::daemon_app();
     let sock_dir = tangent_shared::sensor::daemon_dir();
@@ -611,7 +615,7 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<()> {
         && Path::new(DAEMON_PLIST).is_file()
         && es_sock.exists()
     {
-        return Ok(());
+        return Ok(false);
     }
 
     if !std::io::stdin().is_terminal() {
@@ -688,7 +692,7 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if es_sock.exists() {
-            return Ok(());
+            return Ok(true);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
