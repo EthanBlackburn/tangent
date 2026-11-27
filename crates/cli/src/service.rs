@@ -575,9 +575,24 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<()> {
     }
 
     // The app to install: this version's, from the cache, or the one named.
+    // One that is named and is not there is said, not passed over for the
+    // release's: that sensor may be older than this tangent, and is then
+    // installed in place of the one meant.
     let custom_app = std::env::var_os("TANGENT_SENSOR_APP")
-        .map(PathBuf::from)
-        .filter(|p| p.exists());
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
+    if let Some(custom) = &custom_app {
+        if !tangent_shared::sensor::binary(custom.parent().unwrap_or(Path::new("/")))
+            .is_file()
+            || custom.file_name() != Some(std::ffi::OsStr::new(tangent_shared::sensor::APP))
+        {
+            bail!(
+                "TANGENT_SENSOR_APP names {}, and there is no {} with a sensor in it there",
+                custom.display(),
+                tangent_shared::sensor::APP
+            );
+        }
+    }
     let verified = custom_app.is_none();
     let source_app = if let Some(custom) = custom_app {
         custom
@@ -679,8 +694,27 @@ async fn ensure_sensor_daemon(uid: u32) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // It is not left starting over as root every few seconds. sudo has just
+    // been given the password, and is not asked to ask again.
+    let _ = Command::new("sudo")
+        .args(["-n", "--", LAUNCHCTL, "bootout", &format!("system/{SENSOR_LABEL}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let said = fs::read_to_string(DAEMON_LOG).unwrap_or_default();
+    let last = said.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("nothing");
+    // A sensor from before the daemon takes `daemon` for no argument and
+    // starts as the sensor a terminal runs, which says this.
+    let old = if last.contains("give the terminal") {
+        format!(
+            "\nThe sensor installed, from {}, is one from before the daemon. A build of this tangent's own is named with TANGENT_SENSOR_APP=/path/to/Tangent.app.",
+            source_app.display()
+        )
+    } else {
+        String::new()
+    };
     bail!(
-        "the sensor daemon was installed and is not listening on {}: {DAEMON_LOG} has what it said",
+        "the sensor daemon was installed and is not listening on {}, and has been stopped. It said: {last}{old}",
         es_sock.display()
     )
 }
