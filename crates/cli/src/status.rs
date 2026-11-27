@@ -228,6 +228,14 @@ impl Tracker {
     pub fn start(dir: &Path, mode: &str, models: &str) -> Self {
         let now = now_rfc3339();
         let seeded = seed_recent(dir);
+        // A watch that ended on an error is started again by launchd every
+        // few seconds until what it lacks is given. What it lacked is said
+        // until this one is watching, so the menu bar does not go from
+        // "Needs Full Disk Access" to "Starting" and back each time.
+        let (error, needs_fda) = match read(dir) {
+            Some(last) if last.state == "error" => (last.error, last.needs_fda),
+            _ => (None, false),
+        };
         let snapshot = Snapshot {
             state: "starting".to_string(),
             pid: Some(std::process::id()),
@@ -240,8 +248,8 @@ impl Tracker {
             pending: 0,
             alerts: 0,
             recent_alerts: seeded,
-            error: None,
-            needs_fda: false,
+            error,
+            needs_fda,
         };
         let tracker = Self {
             inner: Arc::new(Mutex::new(TrackerInner {
@@ -312,6 +320,15 @@ impl Tracker {
         write_atomic(&g.dir, &g.snapshot);
     }
 
+    /// The error this watch ended on, when it did.
+    pub fn failed(&self) -> Option<String> {
+        let g = self.inner.lock().unwrap();
+        match g.snapshot.state.as_str() {
+            "error" => g.snapshot.error.clone(),
+            _ => None,
+        }
+    }
+
     fn flush(&self) {
         let g = self.inner.lock().unwrap();
         write_atomic(&g.dir, &g.snapshot);
@@ -319,7 +336,6 @@ impl Tracker {
 }
 
 /// Reads `status.json` from `dir`, if present and valid.
-#[allow(dead_code)]
 pub fn read(dir: &Path) -> Option<Snapshot> {
     let text = fs::read_to_string(dir.join(FILE)).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
@@ -481,6 +497,19 @@ mod tests {
         assert_eq!(snap.state, "error");
         assert!(snap.needs_fda);
         assert_eq!(snap.pid, None);
+
+        assert_eq!(
+            tracker.failed().as_deref(),
+            Some("source mac: not permitted: grant Tangent Full Disk Access")
+        );
+        // the next start, which launchd makes, still says what is lacking
+        let next = Tracker::start(dir.path(), "hosted", "Claude Haiku 5.5 + Sonnet 5.5");
+        let snap = read(dir.path()).unwrap();
+        assert_eq!(snap.state, "starting");
+        assert!(snap.needs_fda);
+        assert_eq!(next.failed(), None, "it has not failed itself");
+        next.set_watching();
+        assert!(!read(dir.path()).unwrap().needs_fda, "and no longer once it watches");
 
         tracker.set_stopped();
         let snap = read(dir.path()).unwrap();

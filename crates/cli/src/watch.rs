@@ -282,12 +282,62 @@ impl tracing::field::Visit for MessageMatches {
     }
 }
 
+/// An event's message, as text.
+struct Message(String);
+
+impl tracing::field::Visit for Message {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.0 = value.to_string();
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{value:?}");
+        }
+    }
+}
+
+/// What the runtime logs when the Mac's source ends on an error, before the
+/// error itself. The runtime goes on without a source that failed, which is
+/// right for one audit log of several and not for the one thing a Mac's
+/// watch reads.
+const NO_SENSOR: &str = "macos source error: ";
+
+/// Asks this process to stop as a signal would, so what waits for a model
+/// is saved, and again a moment later, which ends the requests under way.
+fn stop_this_process() {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("/bin/sh")
+            .args(["-c", "kill -TERM \"$0\"; sleep 2; kill -TERM \"$0\" 2>/dev/null", &std::process::id().to_string()])
+            .stdin(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Ready {
     fn on_event(
         &self,
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
+        // A watch tangent keeps the status of ends when its sensor does:
+        // status.json says why, which is how the menu bar and `tangent up`
+        // come to ask for Full Disk Access, and launchd starts it again.
+        if let Some(status) = &self.status {
+            let meta = event.metadata();
+            if meta.target() == "tangent_runtime::dag" && *meta.level() == tracing::Level::ERROR {
+                let mut said = Message(String::new());
+                event.record(&mut said);
+                if let Some(why) = said.0.strip_prefix(NO_SENSOR) {
+                    status.set_error(why);
+                    stop_this_process();
+                }
+                return;
+            }
+        }
         if self.printed.load(Ordering::Relaxed) || event.metadata().target() != self.target {
             return;
         }
@@ -472,9 +522,12 @@ async fn following(
     let _ = stop.send(());
     let _ = said.await;
     if let Some(status) = status {
-        match &ran {
-            Ok(()) => status.set_stopped(),
-            Err(e) => status.set_error(&format!("{e:#}")),
+        match (&ran, status.failed()) {
+            // The sensor ended it: the status says why already, and the
+            // exit is a failure, so launchd starts it again.
+            (_, Some(why)) => bail!("{why}"),
+            (Ok(()), None) => status.set_stopped(),
+            (Err(e), None) => status.set_error(&format!("{e:#}")),
         }
     }
     ran
