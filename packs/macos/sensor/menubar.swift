@@ -64,6 +64,7 @@ struct WatchStatus {
     let recentAlerts: [AlertItem]
     let error: String?
     let needsFda: Bool
+    let authError: String?
 
     /// True if the watch process is actually alive right now.
     var isAlive: Bool {
@@ -93,14 +94,17 @@ struct WatchStatus {
             alerts: n("alerts"),
             recentAlerts: recent,
             error: dict["error"] as? String,
-            needsFda: dict["needs_fda"] as? Bool ?? false
+            needsFda: dict["needs_fda"] as? Bool ?? false,
+            authError: dict["auth_error"] as? String
         )
     }
 }
 
 /// One way to judge this Mac, from `tangent status --json`'s `choices`: the
 /// model on this Mac, or a provider's pair.
-struct ModelChoice {
+struct ModelChoice: Identifiable {
+    var id: String { provider.isEmpty ? name : provider }
+    let provider: String
     /// Who serves the models, and the models, each in a few words.
     let name: String
     let models: String
@@ -111,17 +115,22 @@ struct ModelChoice {
     let ready: Bool
     /// When it cannot, why.
     let note: String?
+    /// Configurable environment variables (API keys / AWS profile).
+    let envVars: [ProviderEnvVar]
 
     static func parse(_ dict: [String: Any]) -> ModelChoice? {
         guard let name = dict["name"] as? String, let args = dict["args"] as? [String], !args.isEmpty
         else { return nil }
+        let envVars = (dict["env_vars"] as? [[String: Any]] ?? []).compactMap(ProviderEnvVar.parse)
         return ModelChoice(
+            provider: dict["provider"] as? String ?? name.lowercased(),
             name: name,
             models: dict["models"] as? String ?? "",
             args: args,
             current: dict["current"] as? Bool ?? false,
             ready: dict["ready"] as? Bool ?? false,
-            note: dict["note"] as? String
+            note: dict["note"] as? String,
+            envVars: envVars
         )
     }
 }
@@ -194,7 +203,7 @@ private func symbolImage(_ name: String, color: NSColor) -> NSImage? {
         .withSymbolConfiguration(config)
 }
 
-private func relativeTime(_ rfc3339: String) -> String {
+func relativeTime(_ rfc3339: String) -> String {
     let fmt = ISO8601DateFormatter()
     fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let date = fmt.date(from: rfc3339) ?? ISO8601DateFormatter().date(from: rfc3339)
@@ -206,195 +215,14 @@ private func relativeTime(_ rfc3339: String) -> String {
     return "\(secs / 86400)d ago"
 }
 
-// MARK: native Alert Inspector panel
-
-private final class AlertPanelController: NSWindowController {
-    private let alert: AlertItem
-    private let onAnswered: () -> Void
-    private var statusLabel: NSTextField!
-    private var answerButtons: [NSButton] = []
-
-    init(alert: AlertItem, existingAnswer: String?, onAnswered: @escaping () -> Void) {
-        self.alert = alert
-        self.onAnswered = onAnswered
-
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 390),
-            styleMask: [.titled, .closable, .resizable, .utilityWindow],
-            backing: .buffered,
-            defer: false
-        )
-        panel.title = alert.verdict == "malicious" ? "Tangent — Malicious Activity" : "Tangent — Needs a Look"
-        panel.isFloatingPanel = true
-        panel.level = .floating
-        panel.minSize = NSSize(width: 420, height: 320)
-        panel.center()
-        super.init(window: panel)
-        buildUI(in: panel, existingAnswer: existingAnswer)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    private func buildUI(in panel: NSPanel, existingAnswer: String?) {
-        let root = NSView(frame: panel.contentLayoutRect)
-        root.translatesAutoresizingMaskIntoConstraints = false
-        panel.contentView = root
-
-        // Header row: verdict pill + subject + relative time
-        let badge = NSTextField(labelWithString: alert.verdict == "malicious" ? "MALICIOUS" : "NEEDS A LOOK")
-        badge.font = .systemFont(ofSize: 11, weight: .bold)
-        badge.textColor = .white
-        badge.wantsLayer = true
-        badge.layer?.backgroundColor = (alert.verdict == "malicious" ? NSColor.systemRed : NSColor.systemOrange).cgColor
-        badge.layer?.cornerRadius = 4
-        badge.alignment = .center
-        badge.translatesAutoresizingMaskIntoConstraints = false
-
-        let subjectLabel = NSTextField(labelWithString: alert.subject.isEmpty ? alert.who : alert.subject)
-        subjectLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-        subjectLabel.lineBreakMode = .byTruncatingMiddle
-        subjectLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let timeLabel = NSTextField(labelWithString: relativeTime(alert.ts))
-        timeLabel.font = .systemFont(ofSize: 12)
-        timeLabel.textColor = .secondaryLabelColor
-        timeLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let pathLabel = NSTextField(labelWithString: alert.who)
-        pathLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        pathLabel.textColor = .secondaryLabelColor
-        pathLabel.lineBreakMode = .byTruncatingMiddle
-        pathLabel.isSelectable = true
-        pathLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        // Scrollable detail body (Finding + What to check first)
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-
-        let textView = NSTextView()
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.drawsBackground = true
-        textView.backgroundColor = .textBackgroundColor
-        textView.textContainerInset = NSSize(width: 10, height: 10)
-        textView.autoresizingMask = [.width]
-
-        let attr = NSMutableAttributedString()
-        let sectionAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]
-        let bodyAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .regular),
-            .foregroundColor: NSColor.labelColor,
-        ]
-        attr.append(NSAttributedString(string: "FINDING\n", attributes: sectionAttrs))
-        attr.append(NSAttributedString(string: "\(alert.finding)\n", attributes: bodyAttrs))
-        if !alert.check.isEmpty {
-            attr.append(NSAttributedString(string: "\nWHAT TO CHECK FIRST\n", attributes: sectionAttrs))
-            attr.append(NSAttributedString(string: alert.check, attributes: bodyAttrs))
-        }
-        textView.textStorage?.setAttributedString(attr)
-        scroll.documentView = textView
-
-        // Footer: feedback buttons + recorded status
-        statusLabel = NSTextField(labelWithString: answerCaption(existingAnswer))
-        statusLabel.font = .systemFont(ofSize: 11)
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let buttonStack = NSStackView()
-        buttonStack.orientation = .horizontal
-        buttonStack.spacing = 8
-        buttonStack.translatesAutoresizingMaskIntoConstraints = false
-
-        if alert.feedbackFile != nil, alert.feedbackLine != nil {
-            for (index, item) in answers.enumerated() {
-                let btn = NSButton(title: item.button, target: self, action: #selector(answerClicked(_:)))
-                btn.tag = index
-                btn.bezelStyle = .rounded
-                if item.written == "not_mine" && alert.verdict == "malicious" {
-                    btn.hasDestructiveAction = true
-                }
-                answerButtons.append(btn)
-                buttonStack.addArrangedSubview(btn)
-            }
-        }
-        let closeBtn = NSButton(title: "Close", target: self, action: #selector(closeClicked))
-        closeBtn.bezelStyle = .rounded
-        closeBtn.keyEquivalent = "\u{1b}"
-        buttonStack.addArrangedSubview(closeBtn)
-
-        let views: [NSView] = [badge, subjectLabel, timeLabel, pathLabel, scroll, statusLabel, buttonStack]
-        for v in views {
-            root.addSubview(v)
-        }
-
-        NSLayoutConstraint.activate([
-            badge.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
-            badge.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 82),
-            badge.heightAnchor.constraint(equalToConstant: 20),
-
-            subjectLabel.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
-            subjectLabel.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 10),
-            subjectLabel.trailingAnchor.constraint(lessThanOrEqualTo: timeLabel.leadingAnchor, constant: -8),
-
-            timeLabel.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
-            timeLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-
-            pathLabel.topAnchor.constraint(equalTo: badge.bottomAnchor, constant: 6),
-            pathLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            pathLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-
-            scroll.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: 12),
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-            scroll.bottomAnchor.constraint(equalTo: buttonStack.topAnchor, constant: -12),
-
-            statusLabel.centerYAnchor.constraint(equalTo: buttonStack.centerYAnchor),
-            statusLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: buttonStack.leadingAnchor, constant: -10),
-
-            buttonStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-            buttonStack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
-        ])
-    }
-
-    private func answerCaption(_ answer: String?) -> String {
-        guard let answer else { return "Was this your doing?" }
-        let label = answers.first(where: { $0.written == answer })?.button ?? answer
-        return "Recorded: \(label)"
-    }
-
-    @objc private func answerClicked(_ sender: NSButton) {
-        guard sender.tag >= 0, sender.tag < answers.count,
-              let file = alert.feedbackFile,
-              let lineObj = alert.feedbackLine,
-              let data = try? JSONSerialization.data(withJSONObject: lineObj),
-              let lineStr = String(data: data, encoding: .utf8)
-        else { return }
-        let chosen = answers[sender.tag]
-        keep(chosen.written, for: ["file": file, "line": lineStr])
-        statusLabel.stringValue = answerCaption(chosen.written)
-        // one answer is one line in the file
-        for button in answerButtons { button.isEnabled = false }
-        onAnswered()
-    }
-
-    @objc private func closeClicked() {
-        window?.close()
-    }
-}
-
 // MARK: menu bar controller
+
+private let openWindowNotification = Notification.Name("com.ethanblackburn.tangent.openWindow")
 
 private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     let watchDir: String
     let tangentBin: String
+    let store: TangentStore
 
     private var statusItem: NSStatusItem!
     private var dotLayer: CALayer?
@@ -403,7 +231,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
     private var timer: Timer?
     private var currentStatus: WatchStatus?
     private var answered: [String: String] = [:]
-    private var openPanels: [AlertPanelController] = []
+    private var windowController: TangentWindowController?
     private var busyAction: String?
     /// Who can judge this Mac, as `tangent status --json` last listed them.
     private var modelChoices: [ModelChoice] = []
@@ -411,16 +239,54 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
     init(watchDir: String, tangentBin: String) {
         self.watchDir = watchDir
         self.tangentBin = tangentBin
+        self.store = TangentStore(watchDir: watchDir, tangentBin: tangentBin)
         super.init()
+        wireStore()
+    }
+
+    private func wireStore() {
+        store.onRunCLI = { [weak self] args, label in
+            self?.runTangentCLI(args, busyLabel: label)
+        }
+        store.onSimulate = { [weak self] name in
+            self?.launchSimulation(name)
+        }
+        store.onOpenFDA = { [weak self] in
+            self?.openFullDiskAccess()
+        }
+        store.onOpenLog = { [weak self] in
+            self?.openWatchLog()
+        }
+        store.onOpenFolder = { [weak self] in
+            self?.openDataFolder()
+        }
+        store.onCopyStatus = { [weak self] in
+            self?.copyDiagnostics()
+        }
+        store.onReloadRequested = { [weak self] in
+            self?.reload()
+            self?.refreshModelChoices()
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installStandardMainMenu()
+
         // Set notification delegate so clicks on banners route directly here.
         if Bundle.main.bundleIdentifier != nil {
             let center = UNUserNotificationCenter.current()
             center.delegate = self
             registerAnswers(center)
         }
+
+        // Bring the main window forward if the user opens Tangent.app again
+        // from Finder / Spotlight while this menu bar instance is running.
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(openMainWindow),
+            name: openWindowNotification,
+            object: nil
+        )
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -445,9 +311,29 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        DistributedNotificationCenter.default().removeObserver(self)
         timer?.invalidate()
         dirSource?.cancel()
         if dirFd >= 0 { Darwin.close(dirFd) }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openMainWindow()
+        return true
+    }
+
+    @objc func openMainWindow() {
+        let controller = ensureWindowController()
+        controller.show()
+    }
+
+    private func ensureWindowController() -> TangentWindowController {
+        if let existing = windowController {
+            return existing
+        }
+        let created = TangentWindowController(store: store)
+        windowController = created
+        return created
     }
 
     // MARK: notification click handling inside the menu bar app
@@ -472,31 +358,14 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
 
     private func openNotificationDetail(_ content: UNNotificationContent) {
         reload()
-        // If this matches a recent alert in status.json, show the rich inspector.
-        if let matched = currentStatus?.recentAlerts.first(where: {
+        let matched = currentStatus?.recentAlerts.first(where: {
             $0.who == content.subtitle || $0.subject == content.subtitle
-        }) {
-            presentAlertPanel(matched)
-            return
-        }
-        // Fallback: construct an AlertItem straight from notification payload.
-        let info = content.userInfo
-        let detail = info["detail"] as? String ?? content.body
-        let lineObj = (info["line"] as? String)
-            .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
-        let verdict = content.title.lowercased().contains("malicious") ? "malicious" : "unresolved"
-        let item = AlertItem(
-            ts: ISO8601DateFormatter().string(from: Date()),
-            verdict: verdict,
-            subject: content.subtitle,
-            who: content.subtitle,
-            summary: content.body,
-            finding: detail,
-            check: "",
-            feedbackFile: info["file"] as? String,
-            feedbackLine: lineObj
+        })
+        store.selectAlert(
+            matchingSubjectOrTs: matched?.ts ?? "",
+            subject: matched?.subject ?? content.subtitle
         )
-        presentAlertPanel(item)
+        openMainWindow()
     }
 
     // MARK: kqueue directory watcher
@@ -522,6 +391,11 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
     private func reload() {
         currentStatus = WatchStatus.load(from: watchDir)
         answered = loadAnsweredAlerts(in: watchDir)
+        store.status = currentStatus
+        store.answered = answered
+        if windowController?.window?.isVisible == true {
+            store.reloadHistory()
+        }
         updateIcon()
     }
 
@@ -535,23 +409,37 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
         return FileManager.default.fileExists(atPath: esPath)
     }
 
+    private var activeAuthError: String? {
+        guard currentStatus?.isAlive == true,
+              let err = currentStatus?.authError, !err.isEmpty
+        else { return nil }
+        return err
+    }
+
     private func updateIcon() {
         guard let button = statusItem.button else { return }
         let status = currentStatus
         let alive = status?.isAlive ?? false
         let needsFda = status?.needsFda ?? false
+        let hasAuthErr = activeAuthError != nil
         let hasError = (status?.state == "error") && !alive
         let unread = unacknowledgedAlerts
 
-        button.appearsDisabled = !alive && unread.isEmpty && !needsFda && !hasError
+        button.appearsDisabled = !alive && unread.isEmpty && !needsFda && !hasError && !hasAuthErr
 
         let dotColor: NSColor?
         if !unread.isEmpty {
             dotColor = .systemRed
             button.toolTip = "Tangent — \(unread.count) alert\(unread.count == 1 ? "" : "s") to review"
-        } else if needsFda || hasError {
+        } else if needsFda || hasAuthErr || hasError {
             dotColor = .systemOrange
-            button.toolTip = needsFda ? "Tangent — Grant Full Disk Access" : "Tangent — Attention needed"
+            if needsFda {
+                button.toolTip = "Tangent — Grant Full Disk Access"
+            } else if hasAuthErr {
+                button.toolTip = "Tangent — API key rejected"
+            } else {
+                button.toolTip = "Tangent — Attention needed"
+            }
         } else if alive {
             dotColor = nil
             let count = status?.checked ?? 0
@@ -588,8 +476,15 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
         let status = currentStatus
         let alive = status?.isAlive ?? false
         let needsFda = status?.needsFda ?? false
+        let authErr = activeAuthError
         let hasError = (status?.state == "error") && !alive
         let unread = unacknowledgedAlerts
+
+        // 0. Open companion window
+        let openApp = NSMenuItem(title: "Open Tangent…", action: #selector(openMainWindow), keyEquivalent: "o")
+        openApp.target = self
+        menu.addItem(openApp)
+        menu.addItem(.separator())
 
         // 1. Status header
         let headerTitle: String
@@ -602,6 +497,10 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
         } else if needsFda {
             headerTitle = "Needs Full Disk Access"
             headerSymbol = "exclamationmark.triangle.fill"
+            headerColor = .systemOrange
+        } else if authErr != nil {
+            headerTitle = "API Key Rejected"
+            headerSymbol = "key.slash.fill"
             headerColor = .systemOrange
         } else if hasError {
             headerTitle = "Watcher Stopped (Error)"
@@ -633,25 +532,29 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             menu.addItem(modelItem)
         }
 
-        // Who judges: the model on this Mac, or a provider's pair. One is
-        // picked whole: a pair's two models were measured together.
+        // Who judges: the model on this Mac, or a provider's pair. Providers
+        // without a saved key open the key sheet instead of staying greyed out.
         if !modelChoices.isEmpty {
             let pickItem = NSMenuItem(title: "Models", action: nil, keyEquivalent: "")
             let pickMenu = NSMenu()
             pickMenu.autoenablesItems = false
-            // One short line each: who serves them, and the models. Why one
-            // is greyed is its tooltip, and nothing else is said here.
             for (index, choice) in modelChoices.enumerated() {
+                let canConfigureKey = !choice.envVars.isEmpty
+                let suffix = (!choice.ready && canConfigureKey) ? " (Set key…)" : ""
                 let item = NSMenuItem(
-                    title: "\(choice.name)  ·  \(choice.models)",
+                    title: "\(choice.name)  ·  \(choice.models)\(suffix)",
                     action: #selector(chooseModels(_:)), keyEquivalent: "")
                 item.target = self
                 item.tag = index
                 item.state = choice.current ? .on : .off
-                item.isEnabled = choice.ready && busyAction == nil
+                item.isEnabled = (choice.ready || canConfigureKey) && busyAction == nil
                 item.toolTip = choice.note
                 pickMenu.addItem(item)
             }
+            pickMenu.addItem(.separator())
+            let manageKeys = NSMenuItem(title: "Manage API Keys…", action: #selector(openModelsTab), keyEquivalent: "")
+            manageKeys.target = self
+            pickMenu.addItem(manageKeys)
             pickItem.submenu = pickMenu
             menu.addItem(pickItem)
         }
@@ -676,13 +579,22 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             menu.addItem(errItem)
         }
 
-        // 3. One-click Full Disk Access action if needed
+        // 3. One-click fixes when action is needed
         if needsFda {
             menu.addItem(.separator())
             let fda = NSMenuItem(title: "Grant Full Disk Access…", action: #selector(openFullDiskAccess), keyEquivalent: "")
             fda.target = self
             fda.image = symbolImage("lock.shield", color: .systemOrange)
             menu.addItem(fda)
+        }
+
+        if let authErr {
+            menu.addItem(.separator())
+            let fixKey = NSMenuItem(title: "Update API Key…", action: #selector(openUpdateActiveKey), keyEquivalent: "")
+            fixKey.target = self
+            fixKey.image = symbolImage("key.fill", color: .systemOrange)
+            fixKey.toolTip = authErr
+            menu.addItem(fixKey)
         }
 
         // 4. Recent Alerts section
@@ -766,19 +678,22 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
 
     @objc private func openAlert(_ sender: NSMenuItem) {
         guard let alerts = currentStatus?.recentAlerts, sender.tag >= 0, sender.tag < alerts.count else { return }
-        presentAlertPanel(alerts[sender.tag])
+        let alert = alerts[sender.tag]
+        store.selectAlert(matchingSubjectOrTs: alert.ts, subject: alert.subject)
+        openMainWindow()
     }
 
-    private func presentAlertPanel(_ alert: AlertItem) {
-        NSApp.activate(ignoringOtherApps: true)
-        let existing = answered[alert.feedbackKey]
-        let controller = AlertPanelController(alert: alert, existingAnswer: existing) { [weak self] in
-            self?.reload()
+    @objc private func openModelsTab() {
+        store.selectedTab = .models
+        openMainWindow()
+    }
+
+    @objc private func openUpdateActiveKey() {
+        store.selectedTab = .models
+        if let active = modelChoices.first(where: { $0.current }), !active.envVars.isEmpty {
+            store.keySheetChoice = active
         }
-        openPanels.removeAll { $0.window?.isVisible != true }
-        openPanels.append(controller)
-        controller.showWindow(nil)
-        controller.window?.makeKeyAndOrderFront(nil)
+        openMainWindow()
     }
 
     @objc private func openFullDiskAccess() {
@@ -797,6 +712,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
 
     private func runTangentCLI(_ args: [String], busyLabel: String) {
         busyAction = busyLabel
+        store.busyAction = busyLabel
         updateIcon()
         let bin = tangentBin
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -826,6 +742,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             }
             DispatchQueue.main.async {
                 self?.busyAction = nil
+                self?.store.busyAction = nil
                 self?.reload()
                 self?.refreshModelChoices()
                 if let failure { self?.sayFailed(failure, args: args) }
@@ -836,7 +753,14 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
     @objc private func chooseModels(_ sender: NSMenuItem) {
         guard sender.tag >= 0, sender.tag < modelChoices.count else { return }
         let choice = modelChoices[sender.tag]
-        guard choice.ready, !choice.current else { return }
+        if !choice.ready {
+            guard !choice.envVars.isEmpty else { return }
+            store.selectedTab = .models
+            store.keySheetChoice = choice
+            openMainWindow()
+            return
+        }
+        guard !choice.current else { return }
         runTangentCLI(choice.args, busyLabel: "Switching models…")
     }
 
@@ -860,7 +784,10 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
                   let listed = dict["choices"] as? [[String: Any]]
             else { return }
             let choices = listed.compactMap(ModelChoice.parse)
-            DispatchQueue.main.async { self?.modelChoices = choices }
+            DispatchQueue.main.async {
+                self?.modelChoices = choices
+                self?.store.choices = choices
+            }
         }
     }
 
@@ -1012,10 +939,17 @@ private var retainedMenuController: MenuBarController?
 
 /// Attaches the menu bar controller to an already-running `NSApplication`
 /// (used when the user opens `Tangent.app` directly from Finder/Spotlight).
-/// False, and nothing done, when a menu bar is running already.
+/// When a menu bar instance is already running, asks it to bring the Tangent
+/// window forward and returns false so this process can exit cleanly.
 func startMenuBarInRunningApp() -> Bool {
     let watchDir = defaultWatchDir()
     guard acquireMenuBarLock(in: watchDir) else {
+        DistributedNotificationCenter.default().postNotificationName(
+            openWindowNotification,
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
         return false
     }
     let app = NSApplication.shared
@@ -1024,13 +958,15 @@ func startMenuBarInRunningApp() -> Bool {
     retainedMenuController = controller
     app.delegate = controller
     controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+    controller.openMainWindow()
     return true
 }
 
-/// Entrypoint for `tangent-sensor menubar`.
+/// Entrypoint for `tangent-sensor menubar [--open]`.
 func runMenuBar() -> Never {
     var watchDir = defaultWatchDir()
     var tangentBin = findTangentBinary()
+    var openWindow = false
     let args = Array(CommandLine.arguments.dropFirst(2))
     var i = 0
     while i < args.count {
@@ -1039,6 +975,9 @@ func runMenuBar() -> Never {
             if i + 1 < args.count { watchDir = args[i + 1]; i += 2 } else { i += 1 }
         case "--tangent":
             if i + 1 < args.count { tangentBin = args[i + 1]; i += 2 } else { i += 1 }
+        case "--open":
+            openWindow = true
+            i += 1
         default:
             i += 1
         }
@@ -1046,6 +985,14 @@ func runMenuBar() -> Never {
 
     guard acquireMenuBarLock(in: watchDir) else {
         // Another menu bar instance is already running.
+        if openWindow {
+            DistributedNotificationCenter.default().postNotificationName(
+                openWindowNotification,
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
+        }
         exit(0)
     }
 
@@ -1054,6 +1001,9 @@ func runMenuBar() -> Never {
     let controller = MenuBarController(watchDir: watchDir, tangentBin: tangentBin)
     retainedMenuController = controller
     app.delegate = controller
+    if openWindow {
+        DispatchQueue.main.async { controller.openMainWindow() }
+    }
     app.run()
     exit(0)
 }
