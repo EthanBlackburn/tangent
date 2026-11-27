@@ -79,6 +79,12 @@ async fn find(config: &Path) -> Result<PathBuf> {
     if let Some(named) = named {
         return Ok(named);
     }
+    let installed_dir = Path::new(tangent_shared::sensor::INSTALLED_DIR);
+    if tangent_shared::sensor::installed_binary().is_file()
+        && tangent_shared::sensor::check(installed_dir).is_ok()
+    {
+        return Ok(tangent_shared::sensor::installed_binary());
+    }
     let dir = tangent_shared::sensor::dir()?;
     if !tangent_shared::sensor::binary(&dir).is_file() {
         crate::fetch::sensor(&dir).await?;

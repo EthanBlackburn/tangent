@@ -247,16 +247,59 @@ func openedByMacOS() -> Bool {
 let clickWithin = 10.0
 let noClick = DispatchWorkItem { exit(0) }
 
-/// Started by macOS: a notification was clicked, and macOS says which. It
-/// says so once the app has finished launching, which is AppKit's to say:
-/// with only a dispatch loop the click never comes. `notify` needs none,
-/// since macOS tells a process that is running already.
+/// How long the installed app waits for that click before it takes it that
+/// it was opened from Finder or Spotlight, and shows the menu bar. A click
+/// that comes later is still dealt with, by the menu bar.
+let menuAfter = 1.0
+
+/// Where `tangent up` puts the app (`INSTALLED_DIR` in crates/shared). Only
+/// that copy has a menu bar to show: the one `tangent watch mac` keeps in its
+/// cache is opened by macOS for a click and for nothing else, and a click
+/// that is slow to come must not leave an icon nobody asked for.
+let installedApp = "/Applications/Tangent.app"
+
+/// The notification centre's delegate is weak, and a local is let go after
+/// its last use: this is what keeps the one `opened` sets.
+private var clickDelegate: ClickOrMenuDelegate?
+
+/// Started by macOS: either a notification was clicked after `notify` ended,
+/// or the user opened `Tangent.app` directly from Finder / Spotlight. A click
+/// is dealt with and the process ends. Without one, the installed app shows
+/// the menu bar unless one is up already, and any other copy ends.
 func opened() -> Never {
+    var gotClick = false
     clicks.dealt = { exit(0) }
     let center = notifications()
-    center.delegate = clicks
     registerAnswers(center)
+    let launchMenu = DispatchWorkItem {
+        guard !gotClick else { return }
+        // Another menu bar is up: this one goes on waiting for its click.
+        if startMenuBarInRunningApp() { noClick.cancel() }
+    }
+    // Wrap clicks to mark `gotClick` as soon as a response arrives.
+    let watcher = ClickOrMenuDelegate(
+        onClick: { gotClick = true; launchMenu.cancel() }
+    )
+    clickDelegate = watcher
+    center.delegate = watcher
+    if Bundle.main.bundlePath == installedApp {
+        DispatchQueue.main.asyncAfter(deadline: .now() + menuAfter, execute: launchMenu)
+    }
     DispatchQueue.main.asyncAfter(deadline: .now() + clickWithin, execute: noClick)
     NSApplication.shared.run()
     exit(0)
+}
+
+private final class ClickOrMenuDelegate: NSObject, UNUserNotificationCenterDelegate {
+    let onClick: () -> Void
+    init(onClick: @escaping () -> Void) { self.onClick = onClick }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler done: @escaping () -> Void
+    ) {
+        onClick()
+        clicks.userNotificationCenter(center, didReceive: response, withCompletionHandler: done)
+    }
 }

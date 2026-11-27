@@ -365,6 +365,7 @@ func version(_ dotted: String) -> OperatingSystemVersion {
 switch CommandLine.arguments.dropFirst().first {
 case "notify": notify()
 case "daemon": runDaemon()
+case "menubar": runMenuBar()
 default: break
 }
 if openedByMacOS() { opened() }

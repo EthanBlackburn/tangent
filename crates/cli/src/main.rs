@@ -18,6 +18,7 @@ use tangent_runtime::query;
 mod scaffold;
 mod simulate;
 mod state;
+mod status;
 mod test;
 mod watch;
 mod wit_assets;
