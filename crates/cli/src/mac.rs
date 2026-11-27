@@ -6,10 +6,12 @@
 //!
 //! There is nothing to choose but who judges. By default it is a model on
 //! this Mac, Inkling 2 Mini on a server tangent starts, and nothing the
-//! sensor reads leaves the machine. `--hosted` is Claude Haiku 5.5 as the
-//! judge and Claude Sonnet 5.5 as the reviewer, through Anthropic's API:
+//! sensor reads leaves the machine. `--provider` names who serves a hosted
+//! pair instead, the one `tangent init cloud` writes for that provider:
 //! each session's summary is sent there, and a review sends the records it
-//! queries and the files it reads.
+//! queries and the files it reads. Claude Haiku 5.5 as the judge and Claude
+//! Sonnet 5.5 as the reviewer are the pair measured on the recorded Mac
+//! attacks; the others' settings here are not measured on them.
 
 use std::path::Path;
 
@@ -35,7 +37,7 @@ const BESIDE: &[(&str, &str)] = &[
 /// What a model brings to the config.
 struct Models {
     /// Who judges, who reviews, and who serves them, as the file says it.
-    label: &'static str,
+    label: String,
     /// What is under `models`.
     entries: String,
     /// The entries the judge and the reviewer name.
@@ -47,8 +49,65 @@ struct Models {
     /// What the reviewer is asked with, under `inference.reviewer`.
     reviewer: &'static str,
     /// Where the records go to be judged, as the file and init say it.
-    records: &'static str,
+    records: String,
     needs: &'static [(&'static str, &'static str)],
+}
+
+/// How hard a hosted judge and reviewer may be asked, after where each is
+/// served.
+const JUDGE_LIMITS: &str = "    timeout_ms: 90000
+    retries: 6
+    concurrency: 16              # the one worker sends a request at a time
+";
+const REVIEWER_LIMITS: &str = "    timeout_ms: 120000           # two minutes a try,
+    retries: 2                   # three tries, then the review is an error and the alert stands
+    concurrency: 1
+";
+
+/// What a provider's judge and reviewer are asked with on a Mac, under
+/// `inference.judge` and `inference.reviewer`, and whether the pair was
+/// measured on the recorded Mac attacks. A verdict here is a session's,
+/// with its account so far, where a cloud judge's is a record's: so the
+/// room for an answer is the Mac's, and how each model thinks is as its
+/// provider's cloud pair has it.
+fn asks(provider: Provider) -> (&'static str, &'static str, bool) {
+    match provider {
+        Provider::Anthropic | Provider::Bedrock => (
+            r#"    max_tokens: 4000             # a session's verdict, and the thinking before it
+    extra:
+      thinking: { type: adaptive }   # it thinks before each verdict, briefly
+      output_config: { effort: low }
+"#,
+            r#"    extra:
+      thinking: { type: adaptive }   # it thinks before each query and its report
+      output_config: { effort: medium }
+"#,
+            true,
+        ),
+        Provider::Openai => (
+            r#"    max_tokens: 4000             # a session's verdict, and the thinking before it
+    extra:
+      reasoning: { effort: low }   # it thinks before each verdict, briefly
+"#,
+            r#"    extra:
+      reasoning: { effort: low }   # it thinks before each query and its report, briefly
+"#,
+            false,
+        ),
+        Provider::Openrouter => (
+            r#"    max_tokens: 1200             # an answer: what the session did, why it is marked, and its account so far
+    temperature: 0.7             # with top_p, the sampling it was measured with on cloud records
+    extra:
+      top_p: 0.95
+      reasoning: { enabled: false }            # no thinking: the reply is the answer
+      provider: { require_parameters: true }   # only hosts that hold the reply to its schema
+"#,
+            r#"    extra:
+      reasoning: { effort: low }   # it thinks before each query and its report, briefly
+"#,
+            false,
+        ),
+    }
 }
 
 /// The pipeline that watches this Mac, for one choice of who judges.
@@ -61,12 +120,11 @@ pub struct Mac {
 }
 
 impl Mac {
-    /// Judged on this Mac by Inkling, or with `hosted` through Anthropic's
-    /// API.
-    pub fn new(hosted: bool) -> Self {
-        let server = match hosted {
-            true => Server::Hosted(Provider::Anthropic),
-            false => Server::Ollama,
+    /// Judged on this Mac by Inkling, or by the pair `provider` serves.
+    pub fn new(provider: Option<Provider>) -> Self {
+        let server = match provider {
+            Some(provider) => Server::Hosted(provider),
+            None => Server::Ollama,
         };
         Self {
             server,
@@ -86,8 +144,32 @@ impl Mac {
 
     fn brought(&self) -> Models {
         match self.server {
-            Server::Ollama => Models {
-                label: "Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (Ollama)",
+            Server::Hosted(provider) => {
+                let pair = self.server.pair();
+                let (judge, reviewer, measured) = asks(provider);
+                Models {
+                    label: match measured {
+                        true => pair.label.to_string(),
+                        false => format!("{}: not measured on the recorded Mac attacks", pair.label),
+                    },
+                    entries: format!(
+                        "  judge:\n{}{JUDGE_LIMITS}  reviewer:\n{}{REVIEWER_LIMITS}",
+                        pair.judge_model, pair.reviewer_model
+                    ),
+                    names: ("judge", "reviewer"),
+                    judge,
+                    batch: "48000           # a request past this is split: a few sessions' summaries",
+                    reviewer,
+                    records: format!(
+                        "are sent to {} to be judged: each session's summary, with its command lines, its paths and what you asked Claude Code. A review sends the records it queries and the files it reads",
+                        pair.host
+                    ),
+                    needs: pair.needs,
+                }
+            }
+            // a Mac has no server of its own to name: Inkling, which tangent starts
+            Server::Ollama | Server::Yours => Models {
+                label: "Inkling 2 Mini judges and reviews on this Mac, on a server tangent starts (Ollama)".to_string(),
                 entries: init::placed(&format!("  inkling:\n{INKLING}"), &init::cache()),
                 names: ("inkling", "inkling"),
                 judge: r#"    max_tokens: 1200             # an answer: what the session did, why it is marked, and its account so far
@@ -98,53 +180,20 @@ impl Mac {
 "#,
                 batch: "32000           # a request past this is split: what the model reads well at once",
                 reviewer: "",
-                records: "stay on this Mac: the model that judges them runs here",
+                records: "stay on this Mac: the model that judges them runs here".to_string(),
                 needs: &[],
-            },
-            _ => Models {
-                label: "Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews (Anthropic's API)",
-                entries: r#"  judge:
-    type: anthropic
-    api_key: "${ANTHROPIC_API_KEY}"   # a key from console.anthropic.com
-    model: claude-haiku-5-5
-    timeout_ms: 90000
-    retries: 6
-    concurrency: 16              # the one worker sends a request at a time
-  reviewer:
-    type: anthropic
-    api_key: "${ANTHROPIC_API_KEY}"
-    model: claude-sonnet-5-5
-    fallback: claude-sonnet-5    # asked what Sonnet 5.5 declines, as it does some reviews of an attack
-    timeout_ms: 120000           # two minutes a try,
-    retries: 2                   # three tries, then the review is an error and the alert stands
-    concurrency: 1
-"#
-                .to_string(),
-                names: ("judge", "reviewer"),
-                judge: r#"    max_tokens: 4000             # a session's verdict, and the thinking before it
-    extra:
-      thinking: { type: adaptive }   # it thinks before each verdict, briefly
-      output_config: { effort: low }
-"#,
-                batch: "48000           # a request past this is split: a few sessions' summaries",
-                reviewer: r#"    extra:
-      thinking: { type: adaptive }   # it thinks before each query and its report
-      output_config: { effort: medium }
-"#,
-                records: "are sent to Anthropic's API to be judged: each session's summary, with its command lines, its paths and what you asked Claude Code. A review sends the records it queries and the files it reads",
-                needs: &[("ANTHROPIC_API_KEY", "a key from console.anthropic.com")],
             },
         }
     }
 
     /// Who judges, who reviews, and who serves them.
     pub fn models(&self) -> String {
-        self.brought().label.to_string()
+        self.brought().label
     }
 
     /// Where the records go to be judged.
     pub fn records(&self) -> String {
-        self.brought().records.to_string()
+        self.brought().records
     }
 
     /// The variables the config reads: the models', and none for a model
@@ -224,25 +273,33 @@ impl Mac {
 
 /// Whether this machine is one the pipeline can watch, with these models:
 /// a Mac, and for Inkling one with Apple Silicon and the memory for it. It
-/// is asked before anything is written or downloaded, and where Inkling is
-/// not started it says the command that has Claude judge instead: where
-/// the records go is the person's to say, so it is not done for them.
+/// is asked before anything is written or downloaded. Where Inkling is not
+/// started it gives the command for each provider, and says which has its
+/// key in the environment already: where the records go is the person's to
+/// say, so none is picked for them.
 pub fn runs_here(mac: &Mac) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("this watches a Mac, with macOS's Endpoint Security, and this machine is not one");
     }
     if mac.server == Server::Ollama {
         if let Some(why) = init::no_inkling() {
-            bail!(
-                "{why}.\n\n\
-                 Claude can judge this Mac instead, through Anthropic's API:\n  \
-                 tangent {} mac --hosted\n\
-                 It reads ANTHROPIC_API_KEY, a key from console.anthropic.com. Each session's summary is sent there, with its command lines, its paths and what you asked Claude Code.",
-                if mac.watched { "watch" } else { "init" }
-            );
+            bail!("{}", pick(&why, mac.watched, init::set));
         }
     }
     Ok(())
+}
+
+/// What is said where Inkling is not started, for `why`: each provider's
+/// command, what is sent to the one picked, and which pair was measured.
+fn pick(why: &str, watched: bool, set: impl Fn(&str) -> bool) -> String {
+    let verb = if watched { "watch" } else { "init" };
+    let ways = init::providers(&format!("tangent {verb} mac"), set);
+    format!(
+        "{why}.\nPick a hosted provider to watch this Mac:\n\n{}\n\n\
+         Each session's summary is sent to the one you pick, with its command lines, its paths and what you asked Claude Code.\n\
+         Measured on the recorded Mac attacks: Claude Haiku 5.5 and Sonnet 5.5 (anthropic, bedrock). Not yet: openai's and openrouter's models.",
+        init::table(&ways)
+    )
 }
 
 /// What only the person at the Mac can do, as lines to print.
@@ -252,8 +309,8 @@ The terminal it runs in needs Full Disk Access (System Settings, Privacy & Secur
 /// `tangent init mac` in `dir`: the files, and the plugins the config
 /// names and the sensor, fetched and checked. A fetch that fails takes the
 /// files with it, so what is left loads or is nothing.
-pub async fn run(dir: &Path, hosted: bool) -> Result<()> {
-    let mac = Mac::new(hosted);
+pub async fn run(dir: &Path, provider: Option<Provider>) -> Result<()> {
+    let mac = Mac::new(provider);
     runs_here(&mac)?;
     let written = init::write(dir, &mac.files())?;
     let config = dir.join("tangent.yaml");
@@ -278,7 +335,8 @@ pub async fn run(dir: &Path, hosted: bool) -> Result<()> {
         .map(|n| n.to_string_lossy().into_owned())
         .collect();
     println!("\nWrote {}.", wrote.join(", "));
-    println!("\nYour records {}.", mac.records());
+    println!("\n{}.", mac.models());
+    println!("Your records {}.", mac.records());
     let needs = mac.needs();
     if !needs.is_empty() {
         println!("\nIt reads these from the environment:");
@@ -317,15 +375,22 @@ mod tests {
         (dir, cfg)
     }
 
-    const BOTH: [bool; 2] = [false, true];
+    /// Who can judge a Mac: Inkling here, and each provider's pair.
+    const ALL: [Option<Provider>; 5] = [
+        None,
+        Some(Provider::Anthropic),
+        Some(Provider::Bedrock),
+        Some(Provider::Openrouter),
+        Some(Provider::Openai),
+    ];
 
-    /// With either model, kept or watched: the config loads, passes what
+    /// With each of them, kept or watched: the config loads, passes what
     /// `tangent watch` checks, warns of nothing in its wiring, leaves no place
     /// unfilled, and says where the records go.
     #[test]
-    fn the_pipeline_loads_with_either_model() {
-        for hosted in BOTH {
-            for mac in [Mac::new(hosted), Mac::new(hosted).watched()] {
+    fn the_pipeline_loads_whoever_judges() {
+        for provider in ALL {
+            for mac in [Mac::new(provider), Mac::new(provider).watched()] {
                 let (_dir, cfg) = written(mac);
                 assert_eq!(cfg.warnings(), Vec::<String>::new(), "{mac:?}");
                 let config = mac.config();
@@ -350,28 +415,103 @@ mod tests {
     }
 
     /// Judged here, both nodes name the one entry tangent starts, and no
-    /// record leaves; hosted, each has its own and a key is needed.
+    /// record leaves; with a provider, each has its own, served where that
+    /// provider's cloud pair is and asked with the room a session's verdict
+    /// takes, and the file says which pair was not measured on a Mac.
     #[test]
-    fn who_judges_is_inkling_here_or_claude_hosted() {
-        let (_dir, here) = written(Mac::new(false));
+    fn who_judges_is_inkling_here_or_a_provider_s_pair() {
+        let (_dir, here) = written(Mac::new(None));
         assert_eq!(here.models.len(), 1);
         assert!(here.models["inkling"].serve.is_some());
         assert_eq!(here.models["inkling"].concurrency, 1);
         assert_eq!(&*here.inference["judge"].model, "inkling");
         assert_eq!(&*here.inference["reviewer"].model, "inkling");
-        assert!(Mac::new(false).records().starts_with("stay on this Mac"));
-        assert!(Mac::new(false).needs().is_empty());
+        assert!(Mac::new(None).records().starts_with("stay on this Mac"));
+        assert!(Mac::new(None).needs().is_empty());
 
-        let (_dir, hosted) = written(Mac::new(true));
+        let claude = Mac::new(Some(Provider::Anthropic));
+        let (_dir, hosted) = written(claude);
         assert_eq!(hosted.models.len(), 2);
         assert!(hosted.models.values().all(|m| m.serve.is_none()));
         assert_eq!(hosted.models["judge"].model, "claude-haiku-5-5");
         assert_eq!(hosted.models["reviewer"].model, "claude-sonnet-5-5");
-        assert!(Mac::new(true).records().contains("sent to Anthropic's API"));
+        assert!(claude.records().contains("sent to Anthropic's API"));
         assert_eq!(
-            Mac::new(true).needs(),
+            claude.needs(),
             [("ANTHROPIC_API_KEY", "a key from console.anthropic.com")]
         );
+
+        for (provider, judge, reviewer, host, measured) in [
+            (
+                Provider::Anthropic,
+                "claude-haiku-5-5",
+                "claude-sonnet-5-5",
+                "Anthropic's API",
+                true,
+            ),
+            (
+                Provider::Bedrock,
+                "us.anthropic.claude-haiku-5-5",
+                "us.anthropic.claude-sonnet-5-5",
+                "Amazon Bedrock",
+                true,
+            ),
+            (
+                Provider::Openai,
+                "gpt-6-luna",
+                "gpt-6.1-terra",
+                "OpenAI's API",
+                false,
+            ),
+            (
+                Provider::Openrouter,
+                "deepseek/deepseek-v4-flash-0731",
+                "deepseek/deepseek-v4-flash-0731",
+                "OpenRouter",
+                false,
+            ),
+        ] {
+            let mac = Mac::new(Some(provider));
+            let (_dir, cfg) = written(mac);
+            assert_eq!(cfg.models["judge"].model, judge);
+            assert_eq!(cfg.models["reviewer"].model, reviewer);
+            assert_eq!(cfg.models["judge"].concurrency, 16, "{provider:?}");
+            assert!(
+                cfg.inference["judge"].max_tokens >= 1200,
+                "{provider:?}: a session's verdict is longer than a record's"
+            );
+            assert!(
+                mac.records().contains(&format!("sent to {host} ")),
+                "{provider:?}"
+            );
+            assert_eq!(
+                mac.models()
+                    .contains("not measured on the recorded Mac attacks"),
+                !measured,
+                "{provider:?}"
+            );
+        }
+    }
+
+    /// Where Inkling is not started, each provider's command is given for
+    /// the command that was run, with the one whose key is set first, what
+    /// is sent, and which pair was measured.
+    #[test]
+    fn a_mac_too_small_for_inkling_is_given_each_provider_s_command() {
+        let why = "this Mac has 16 GB of memory, and Inkling 2 Mini needs 32";
+        let said = pick(why, true, |var| var == "AWS_PROFILE");
+        assert!(
+            said.starts_with(
+                "this Mac has 16 GB of memory, and Inkling 2 Mini needs 32.\n\
+                 Pick a hosted provider to watch this Mac:\n\n\
+                 \x20 tangent watch mac --provider bedrock      (AWS_PROFILE is set)\n\
+                 \x20 tangent watch mac --provider anthropic    (needs ANTHROPIC_API_KEY)\n"
+            ),
+            "{said}"
+        );
+        assert!(said.contains("Each session's summary is sent to the one you pick"));
+        assert!(said.contains("Measured on the recorded Mac attacks"));
+        assert!(pick(why, false, |_| false).contains("  tangent init mac --provider anthropic "));
     }
 
     /// The file is what the packs say: the config it writes loads to the
@@ -381,7 +521,7 @@ mod tests {
     /// with, which is the model's.
     #[test]
     fn the_config_is_what_the_packs_say() {
-        let (_dir, ours) = written(Mac::new(true));
+        let (_dir, ours) = written(Mac::new(Some(Provider::Anthropic)));
         let theirs = r#"include: [pack:macos, pack:macos/judge, pack:macos/lake, pack:judge/hosted, pack:macos/review]
 sources:
   mac: { type: macos }
@@ -444,7 +584,7 @@ enrichment_tables:
     /// The files beside the config are the pack's own.
     #[test]
     fn the_briefs_and_the_profiles_are_the_packs() {
-        let files = Mac::new(false).files();
+        let files = Mac::new(None).files();
         let names: Vec<&str> = files.iter().map(|(name, _)| *name).collect();
         assert_eq!(
             names,

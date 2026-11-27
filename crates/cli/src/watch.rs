@@ -35,7 +35,7 @@ use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _};
 
 use crate::follow::Follow;
-use crate::init::{self, Choices, Server, Source};
+use crate::init::{self, Choices, Provider, Server, Source};
 use crate::mac::{self, Mac};
 use crate::notify::{self, Notifier};
 use crate::{fetch, local};
@@ -122,6 +122,18 @@ struct Pipeline {
     no_notify: bool,
 }
 
+/// Whether there is something to watch: `tangent watch cloud` asks it
+/// first, before who judges.
+pub fn sourced(sources: &[Source]) -> Result<()> {
+    if sources.is_empty() {
+        bail!(
+            "--sources says what to watch: one or more of {}",
+            init::names::<Source>(", ")
+        );
+    }
+    Ok(())
+}
+
 /// `tangent watch cloud`: the pipeline `tangent init cloud` writes for
 /// these flags, kept in tangent's own directory, and run.
 pub async fn cloud(
@@ -130,12 +142,7 @@ pub async fn cloud(
     models: Option<(String, String)>,
     no_notify: bool,
 ) -> Result<()> {
-    if sources.is_empty() {
-        bail!(
-            "--sources says what to watch: one or more of {}",
-            init::names::<Source>(", ")
-        );
-    }
+    sourced(&sources)?;
     init::runs_here(server)?;
     let choices = Choices::new(sources, server, models).watched();
     needed(&choices.config(), &choices.needs())?;
@@ -144,7 +151,7 @@ pub async fn cloud(
     let trail = choices.watch().contains(&Source::Cloudtrail) && !queued;
     if trail && choices.watch().len() == 1 {
         bail!(
-            "CloudTrail is read as it is written from the SQS queue its trail's bucket notifies, and {QUEUE} is not set. Its last day needs no queue: `tangent init cloud --sources cloudtrail`, then `tangent replay --config tangent.yaml --from 1d`"
+            "CloudTrail is read as it is written from the SQS queue its trail's bucket notifies, and {QUEUE} is not set. Its last day needs no queue: `tangent init cloud` with these flags, then `tangent replay --config tangent.yaml --from 1d`"
         );
     }
 
@@ -173,8 +180,8 @@ pub async fn cloud(
 
 /// `tangent watch mac`: the pipeline `tangent init mac` writes, kept in
 /// tangent's own directory, and run.
-pub async fn mac(hosted: bool, no_notify: bool) -> Result<()> {
-    let mac = Mac::new(hosted).watched();
+pub async fn mac(provider: Option<Provider>, no_notify: bool) -> Result<()> {
+    let mac = Mac::new(provider).watched();
     mac::runs_here(&mac)?;
     needed(&mac.config(), &mac.needs())?;
     start(Pipeline {

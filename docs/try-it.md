@@ -13,7 +13,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/EthanBlackburn/tangent/
 2. Write the config, in an empty directory:
 
 ```bash
-tangent init cloud --sources cloudtrail,github
+tangent init cloud --sources cloudtrail,github --provider anthropic
 ```
 
 `--sources` is what to watch, one or more of:
@@ -28,25 +28,36 @@ tangent init cloud --sources cloudtrail,github
 
 Without it, init writes the pipeline with no source yet.
 
-Two models read the records: one judges every record and flags freely, and the other reviews each actor's alerts, with the records to query, and clears what turns out to be ordinary work. Init writes models served for you: Claude Haiku 5.5 as the judge and Claude Sonnet 5.5 as the reviewer, through Anthropic's API, with `ANTHROPIC_API_KEY`. Every record is sent there to be judged, and the file and init's last lines say so.
+Two models read the records: one judges every record and flags freely, and the other reviews each actor's alerts, with the records to query, and clears what turns out to be ordinary work. You say who serves them, since every record is sent there to be judged: `--provider`, or `--local` for a model on this machine. Init picks neither for you. With no flag it writes nothing, and lists the command for each provider with whether its key is in your environment already:
 
-`--provider` and `--model`, given together, name others: who serves the models, and each model by the exact name the provider takes. One name judges and reviews, and two with a comma are the judge's, then the reviewer's:
+```
+$ tangent init cloud --sources okta
+Error: say who judges your records. A hosted provider is sent every one:
+
+  tangent init cloud --sources okta --provider openai       (OPENAI_API_KEY is set)
+  tangent init cloud --sources okta --provider anthropic    (needs ANTHROPIC_API_KEY)
+  tangent init cloud --sources okta --provider bedrock      (AWS_PROFILE is not set: your AWS profile `default`)
+  tangent init cloud --sources okta --provider openrouter   (needs OPENROUTER_API_KEY)
+  tangent init cloud --sources okta --local                 (Inkling 2 Mini on this Mac: no record leaves it)
+```
+
+`--provider` alone is the pair measured with that provider, in the table below. `--model` with it names other models, each by the exact name the provider takes. One name judges and reviews, and two with a comma are the judge's, then the reviewer's:
 
 ```bash
-tangent init cloud --sources okta --provider openrouter --model deepseek/deepseek-v4-flash-0731
+tangent init cloud --sources okta --provider openrouter
 tangent init cloud --sources okta --provider openai --model gpt-6-luna,gpt-6.1-terra
 ```
 
 Each provider's settings were measured with the models below, over the logs [tangent-eval](https://github.com/EthanBlackburn/tangent-eval) builds: 71 attacks, and 5,304 ordinary records a model reads.
 
-| `--provider` | measured with: judge, then reviewer, and their names for `--model` | attacks caught, of 71 | ordinary records flagged after review, of 5,304 | it needs |
+| `--provider` | its pair: judge, then reviewer, and their names for `--model` | attacks caught, of 71 | ordinary records flagged after review, of 5,304 | it needs |
 |---|---|---|---|---|
-| `anthropic` | Claude Haiku 5.5, Claude Sonnet 5.5, through Anthropic's API: `claude-haiku-5-5,claude-sonnet-5-5`, and what init writes without the two flags | 70 (one run) | 40 | `ANTHROPIC_API_KEY` |
+| `anthropic` | Claude Haiku 5.5, Claude Sonnet 5.5, through Anthropic's API: `claude-haiku-5-5,claude-sonnet-5-5` | 70 (one run) | 40 | `ANTHROPIC_API_KEY` |
 | `bedrock` | the same two on Amazon Bedrock: `us.anthropic.claude-haiku-5-5,us.anthropic.claude-sonnet-5-5` | | | an AWS profile with Bedrock access to both models in every US region: the models are called in us-west-2, and their `us.` profiles may serve a call from another |
 | `openrouter` | DeepSeek V4 Flash, open weights, as both, through OpenRouter: `deepseek/deepseek-v4-flash-0731` | 71 (two runs) | 10 to 13 | `OPENROUTER_API_KEY` |
 | `openai` | GPT-6 Luna, GPT-6.1 Terra, through OpenAI's API: `gpt-6-luna,gpt-6.1-terra` | 71 (one run) | 20 | `OPENAI_API_KEY` |
 
-`--local` is a model on this machine in place of a hosted one, and no record leaves it:
+`--local` is a model on this machine, and no record leaves it:
 
 ```bash
 tangent init cloud --sources okta --local                         # Inkling 2 Mini, on a server tangent starts
@@ -88,7 +99,7 @@ What the judge flagged is in alerts.ndjson and every verdict in verdicts.ndjson.
 ## `tangent watch cloud`: both steps in one
 
 ```bash
-tangent watch cloud --sources okta,github
+tangent watch cloud --sources okta,github --provider anthropic
 ```
 
 It takes init's flags, and runs the pipeline init would write for them, leaving no file where you are. The config goes to tangent's own directory, `~/.local/share/tangent/cloud` (under `$XDG_DATA_HOME` when that is set), written again at each start, and tangent runs there: the alerts, their reviews, the lake and each actor's history are kept there too, and the next start goes on from them. It prints where they are.
@@ -122,10 +133,13 @@ It watches the Mac it runs on: what each program runs, opens and connects to, an
 
 | | judges and reviews | where your records go | it needs |
 |---|---|---|---|
-| alone | Inkling 2 Mini, on a server tangent starts | nowhere: the model runs on this Mac | Apple Silicon with 32 GB of memory or more; the model (20 GB) is downloaded first, after asking. On another Mac tangent stops before it downloads anything and gives the `--hosted` command: it does not send your records to a hosted model unasked |
-| `--hosted` | Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews, through Anthropic's API | each session's summary is sent there, with its command lines, its paths and your prompts; a review sends the records it queries and the files it reads | `ANTHROPIC_API_KEY` |
+| alone | Inkling 2 Mini, on a server tangent starts | nowhere: the model runs on this Mac | Apple Silicon with 32 GB of memory or more; the model (20 GB) is downloaded first, after asking. On another Mac tangent stops before it downloads anything and lists the command for each provider, with whether its key is in your environment already: it does not send your records to a hosted model unasked |
+| `--provider anthropic` | Claude Haiku 5.5 judges, Claude Sonnet 5.5 reviews, through Anthropic's API | each session's summary is sent there, with its command lines, its paths and your prompts; a review sends the records it queries and the files it reads | `ANTHROPIC_API_KEY` |
+| `--provider bedrock` | the same two on Amazon Bedrock | the same, to Bedrock | an AWS profile with Bedrock access to both models in the US regions (`AWS_PROFILE`, or `default`) |
+| `--provider openai` | GPT-6 Luna judges, GPT-6.1 Terra reviews, through OpenAI's API. Not measured on the recorded Mac attacks | the same, to OpenAI | `OPENAI_API_KEY` |
+| `--provider openrouter` | DeepSeek V4 Flash, open weights, judges and reviews, through OpenRouter. Not measured on the recorded Mac attacks | the same, to OpenRouter | `OPENROUTER_API_KEY` |
 
-Inkling's settings here are the ones measured on cloud logs, with room for the longer answer a session takes. Its results on the recorded Mac attacks in [tangent-eval](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos) are not published yet; the hosted pair's are there.
+Inkling's settings here are the ones measured on cloud logs, with room for the longer answer a session takes. Its results on the recorded Mac attacks in [tangent-eval](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos) are not published yet. Claude Haiku 5.5 with Claude Sonnet 5.5 is the pair measured there. OpenAI's and OpenRouter's models are each provider's cloud pair, asked with the room a session's verdict takes, and have not been run on those attacks.
 
 Two things are yours to do:
 

@@ -14,7 +14,7 @@ about two minutes. Open `demo.html` in a browser to watch it play, add
 
 ## What it shows, and what is from where
 
-What `tangent watch mac --hosted` shows for two runs of tangent-eval's
+What `tangent watch mac --provider anthropic` shows for two runs of tangent-eval's
 [trojanised extension case](https://github.com/EthanBlackburn/tangent-eval/tree/main/macos/cases/cursor-extension),
 one take each, since each was its own VM:
 
