@@ -29,7 +29,7 @@ cp AppIcon.icns "$app/Contents/Resources/"
 
 # both kinds of Mac in one binary, for macOS 13 and later (Info.plist says so too)
 for arch in arm64 x86_64; do
-  swiftc -O -target "$arch-apple-macos13.0" -o "build/tangent-sensor.$arch" main.swift notify.swift -lEndpointSecurity -lbsm
+  swiftc -O -target "$arch-apple-macos13.0" -o "build/tangent-sensor.$arch" main.swift notify.swift daemon.swift -lEndpointSecurity -lbsm
 done
 lipo -create build/tangent-sensor.arm64 build/tangent-sensor.x86_64 -output "$app/Contents/MacOS/tangent-sensor"
 rm build/tangent-sensor.arm64 build/tangent-sensor.x86_64

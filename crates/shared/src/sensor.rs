@@ -24,12 +24,24 @@ use anyhow::{bail, Context, Result};
 pub const ARCHIVE: &str = "tangent-sensor-macos.zip";
 
 /// The app inside the archive, and the sensor inside the app.
-const APP: &str = "Tangent.app";
+pub const APP: &str = "Tangent.app";
 const BINARY: &str = "Contents/MacOS/tangent-sensor";
+
+/// Where `tangent up` installs the signed app bundle for the LaunchDaemon
+/// and menu bar.
+pub const INSTALLED_DIR: &str = "/Applications";
+
+/// Where the root sensor daemon listens on its Unix sockets (`es.sock`,
+/// `net.sock`), unless overridden by `TANGENT_SENSOR_SOCKET_DIR`.
+pub const DAEMON_DIR: &str = "/var/run/tangent";
+
+/// Environment variable that overrides [`DAEMON_DIR`] (used in tests and
+/// non-default daemon setups).
+pub const SOCKET_DIR_ENV: &str = "TANGENT_SENSOR_SOCKET_DIR";
 
 /// What the sensor is signed as: its bundle identifier, and the Apple
 /// Developer team tangent's releases are signed by.
-const IDENTIFIER: &str = "com.ethanblackburn.tangent.sensor";
+pub const IDENTIFIER: &str = "com.ethanblackburn.tangent.sensor";
 const TEAM: &str = "8X5P8C448L";
 
 /// macOS's own, by its full path: a `codesign` earlier on PATH is not asked.
@@ -49,6 +61,34 @@ pub fn dir() -> Result<PathBuf> {
 /// The program a `macos` source starts, in the app under `dir`.
 pub fn binary(dir: &Path) -> PathBuf {
     dir.join(APP).join(BINARY)
+}
+
+/// The installed app bundle under `/Applications`.
+pub fn installed_app() -> PathBuf {
+    Path::new(INSTALLED_DIR).join(APP)
+}
+
+/// The binary inside the installed app bundle under `/Applications`.
+pub fn installed_binary() -> PathBuf {
+    binary(Path::new(INSTALLED_DIR))
+}
+
+/// Directory holding the sensor daemon's sockets.
+pub fn daemon_dir() -> PathBuf {
+    std::env::var_os(SOCKET_DIR_ENV)
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from(DAEMON_DIR))
+}
+
+/// The Endpoint Security NDJSON socket inside `dir`.
+pub fn es_socket(dir: &Path) -> PathBuf {
+    dir.join("es.sock")
+}
+
+/// The tcpdump stream socket inside `dir`.
+pub fn net_socket(dir: &Path) -> PathBuf {
+    dir.join("net.sock")
 }
 
 /// What `codesign` holds the app to, in its own language: the sensor's
