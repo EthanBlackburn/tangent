@@ -151,13 +151,21 @@ private func peerAuthorized(_ clientFd: Int32, allowedUid: uid_t) -> Bool {
     return true
 }
 
-/// Configures a connected client socket: blocking, SO_NOSIGPIPE, and a bounded
-/// write timeout so a stalled reader can never wedge Endpoint Security or
-/// shutdown.
+/// Configures a connected client socket: blocking, SO_NOSIGPIPE, and room
+/// for a burst.
 ///
 /// macOS hands `accept` the listener's O_NONBLOCK, and with it a write to a
-/// reader that is a few kilobytes behind fails at once with EAGAIN, where the
-/// timeout below was meant to wait for it. So the flag is cleared here.
+/// reader that is a few kilobytes behind fails at once with EAGAIN. So the
+/// flag is cleared here, and a write waits for the reader as a write to the
+/// pipe `sudo tangent-sensor` has does: tangent stops reading for seconds at
+/// a time while a model is asked, and what the kernel cannot queue meanwhile
+/// it drops and counts, which the sensor reports. A write is not given up on
+/// after some time, which ended the capture every few minutes on a busy Mac.
+/// What ends a write that waits is the session's teardown, which shuts the
+/// socket down first.
+///
+/// A Unix socket queues 8 KB unless asked for more, where a pipe has 64: the
+/// 4 MB asked for here is what rides out a burst without the reader.
 private func configureClientSocket(_ fd: Int32) {
     let flags = fcntl(fd, F_GETFL, 0)
     if flags >= 0 {
@@ -165,8 +173,8 @@ private func configureClientSocket(_ fd: Int32) {
     }
     var one: Int32 = 1
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-    var tv = timeval(tv_sec: 2, tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    var room: Int32 = 4 << 20
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &room, socklen_t(MemoryLayout<Int32>.size))
 }
 
 /// Writes a single JSON control line to `fd`.
