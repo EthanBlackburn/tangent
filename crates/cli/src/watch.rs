@@ -63,7 +63,7 @@ fn home(what: &str, var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
 /// The variables `config` reads with no value to fall back on, of `needs`,
 /// that `var` has nothing for: `${NAME}` in the file, and not
 /// `${NAME:-default}`.
-fn unset(
+pub fn unset(
     config: &str,
     needs: &[(&'static str, &'static str)],
     var: impl Fn(&str) -> Option<OsString>,

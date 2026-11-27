@@ -16,6 +16,7 @@ mod mac;
 mod notify;
 use tangent_runtime::query;
 mod scaffold;
+mod service;
 mod simulate;
 mod state;
 mod status;
@@ -192,6 +193,56 @@ enum Commands {
         /// the alert malicious
         #[arg(long, global = true)]
         no_notify: bool,
+        /// Load KEY=VALUE environment variables from a 0600 file before
+        /// starting (used by `tangent up`'s LaunchAgent).
+        #[arg(long, value_name = "FILE", global = true, hide = true)]
+        env_file: Option<PathBuf>,
+    },
+
+    /// Start watching this Mac in the background with the native menu bar.
+    ///
+    /// Installs `/Applications/Tangent.app` and the root sensor LaunchDaemon
+    /// on first run (asks for sudo once), then runs Tangent unprivileged as
+    /// your user so watching survives terminal closes, sleep, and reboots
+    /// with no daily sudo prompts.
+    Up {
+        /// Who serves the models, in place of one on this Mac: that
+        /// provider's pair, as `tangent watch mac --provider` has it. Each
+        /// session's summary is sent there. It is remembered: `tangent up`
+        /// alone starts what the last one named.
+        #[arg(long, value_enum, conflicts_with = "local")]
+        provider: Option<init::Provider>,
+        /// Switch back to local Inkling 2 Mini on Apple Silicon (32 GB+ RAM).
+        #[arg(long)]
+        local: bool,
+    },
+
+    /// Pause background Mac watching (zero sudo; sensor drops to 0% CPU).
+    ///
+    /// Leaves the menu bar icon in your top bar showing Paused so you can
+    /// resume with one click or `tangent up`. Pass `--all` to also quit the
+    /// menu bar.
+    Down {
+        /// Also stop the menu bar app.
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Show live status of the background Mac watcher, sensor daemon, and
+    /// recent alerts (zero sudo).
+    Status {
+        /// Print machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Remove the background LaunchAgents, root sensor LaunchDaemon, and
+    /// `/Applications/Tangent.app`. Keeps your logs and Parquet lake unless
+    /// `--purge` is passed.
+    Uninstall {
+        /// Also delete `~/.local/share/tangent/mac` (alerts, reviews, lake).
+        #[arg(long)]
+        purge: bool,
     },
 
     /// Run an attack on this Mac, for `tangent watch mac` to catch, in a
@@ -400,8 +451,12 @@ async fn main() -> Result<()> {
                     model,
                 }),
             no_notify,
+            env_file,
             ..
         } => {
+            if let Some(env_file) = env_file {
+                service::load_env_file(&env_file)?;
+            }
             watch::sourced(&sources)?;
             let command = init::command("watch", &sources);
             let (server, models) = init::served(&command, local, provider, model.as_deref())?;
@@ -410,20 +465,35 @@ async fn main() -> Result<()> {
         Commands::Watch {
             watch: Some(Watch::Mac { provider }),
             no_notify,
+            env_file,
             ..
-        } => watch::mac(provider, no_notify).await?,
+        } => {
+            if let Some(env_file) = env_file {
+                service::load_env_file(&env_file)?;
+            }
+            watch::mac(provider, no_notify).await?
+        }
         Commands::Watch {
             watch: None,
             config,
             once,
             no_notify,
+            env_file,
         } => {
+            if let Some(env_file) = env_file {
+                service::load_env_file(&env_file)?;
+            }
             // clap shows the help when neither is given.
             let Some(config) = config else {
                 anyhow::bail!("watch cloud, watch mac, or watch --config <FILE>");
             };
             watch::config(config, once, no_notify).await?
         }
+
+        Commands::Up { provider, local } => service::up(provider, local).await?,
+        Commands::Down { all } => service::down(all).await?,
+        Commands::Status { json } => service::show_status(json).await?,
+        Commands::Uninstall { purge } => service::uninstall(purge).await?,
 
         Commands::Simulate { attack } => simulate::run(attack)?,
 
@@ -734,5 +804,22 @@ mod tests {
         .unwrap();
         let err = format!("{:#}", show_config(&file).unwrap_err());
         assert!(err.contains("a cycle: first -> second -> first"), "{err}");
+    }
+
+    #[test]
+    fn background_service_verbs_parse() {
+        let ok = |args: &[&str]| Cli::try_parse_from([&["tangent"], args].concat()).is_ok();
+        assert!(ok(&["up"]));
+        assert!(ok(&["up", "--provider", "bedrock"]));
+        assert!(ok(&["up", "--local"]));
+        assert!(!ok(&["up", "--provider", "bedrock", "--local"]));
+        assert!(!ok(&["up", "--hosted"]), "a provider is named");
+        assert!(ok(&["down"]));
+        assert!(ok(&["down", "--all"]));
+        assert!(ok(&["status"]));
+        assert!(ok(&["status", "--json"]));
+        assert!(ok(&["uninstall"]));
+        assert!(ok(&["uninstall", "--purge"]));
+        assert!(ok(&["watch", "mac", "--provider", "anthropic", "--env-file", "/tmp/env"]));
     }
 }

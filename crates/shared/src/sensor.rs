@@ -31,6 +31,14 @@ const BINARY: &str = "Contents/MacOS/tangent-sensor";
 /// and menu bar.
 pub const INSTALLED_DIR: &str = "/Applications";
 
+/// Where the root sensor daemon's own copy of the app is kept. Nothing but
+/// root writes here or to any directory above it, which `/Applications` is
+/// not: an administrator's programs may rename what is in it without a
+/// password, and what launchd starts as root must not be theirs to replace.
+/// The copy in `/Applications` is the one run as you, for the menu bar and
+/// the notifications.
+pub const DAEMON_APP_DIR: &str = "/Library/Application Support/Tangent";
+
 /// Where the root sensor daemon listens on its Unix sockets (`es.sock`,
 /// `net.sock`), unless overridden by `TANGENT_SENSOR_SOCKET_DIR`.
 pub const DAEMON_DIR: &str = "/var/run/tangent";
@@ -45,7 +53,7 @@ pub const IDENTIFIER: &str = "com.ethanblackburn.tangent.sensor";
 const TEAM: &str = "8X5P8C448L";
 
 /// macOS's own, by its full path: a `codesign` earlier on PATH is not asked.
-const CODESIGN: &str = "/usr/bin/codesign";
+pub const CODESIGN: &str = "/usr/bin/codesign";
 
 /// Where the archive of tangent `version`'s sensor is.
 pub fn url(version: &str) -> String {
@@ -73,6 +81,16 @@ pub fn installed_binary() -> PathBuf {
     binary(Path::new(INSTALLED_DIR))
 }
 
+/// The root daemon's own copy of the app bundle.
+pub fn daemon_app() -> PathBuf {
+    Path::new(DAEMON_APP_DIR).join(APP)
+}
+
+/// The binary launchd starts as root, inside [`daemon_app`].
+pub fn daemon_binary() -> PathBuf {
+    binary(Path::new(DAEMON_APP_DIR))
+}
+
 /// Directory holding the sensor daemon's sockets.
 pub fn daemon_dir() -> PathBuf {
     std::env::var_os(SOCKET_DIR_ENV)
@@ -94,7 +112,7 @@ pub fn net_socket(dir: &Path) -> PathBuf {
 /// What `codesign` holds the app to, in its own language: the sensor's
 /// identifier, a certificate Apple issued to tangent's team, and Apple's
 /// notarization.
-fn requirement() -> String {
+pub fn requirement() -> String {
     format!(
         "identifier \"{IDENTIFIER}\" and anchor apple generic \
          and certificate leaf[subject.OU] = \"{TEAM}\" and notarized"
