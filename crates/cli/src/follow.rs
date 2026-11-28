@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use crate::notify::{Note, Notifier};
-use crate::status::{AlertSummary, Tracker};
+use crate::status::{self, AlertSummary, Tracker};
 
 /// How often the files are read for what is new.
 const EVERY: Duration = Duration::from_secs(1);
@@ -458,6 +458,9 @@ pub struct Follow {
     notifier: Option<Notifier>,
     /// Upheld reviews collected since the last `status.json` flush.
     new_alerts: Vec<AlertSummary>,
+    /// Pending `auth_error` update for `status.json`: `Some(Some(msg))` sets,
+    /// `Some(None)` clears after a clean judge or review call.
+    auth_change: Option<Option<String>>,
     status: Option<Tracker>,
 }
 
@@ -495,6 +498,7 @@ impl Follow {
             notes: Vec::new(),
             notifier,
             new_alerts: Vec::new(),
+            auth_change: None,
             status,
         }
     }
@@ -609,9 +613,17 @@ impl Follow {
         let at = Instant::now();
         let mut lines = Vec::new();
         let parsed = |line: String| serde_json::from_str::<Value>(&line).ok();
-        for _ in self.verdicts.lines().into_iter().filter_map(parsed) {
+        for record in self.verdicts.lines().into_iter().filter_map(parsed) {
             self.judged += 1;
             self.checked += 1;
+            let err = text(&record, &["judge", "error"]);
+            if !err.is_empty() {
+                if status::looks_like_auth_error(&err) {
+                    self.auth_change = Some(Some(err));
+                }
+            } else if record.get("judge").is_some() {
+                self.auth_change = Some(None);
+            }
         }
         let alerts: Vec<Value> = self.alerts.lines().into_iter().filter_map(parsed).collect();
         self.flagged += alerts.len() as u64;
@@ -638,6 +650,14 @@ impl Follow {
         for record in self.reviews.lines().into_iter().filter_map(parsed) {
             if !says_a_review(&record) {
                 continue;
+            }
+            let rev_err = text(&record, &["review", "error"]);
+            if !rev_err.is_empty() {
+                if status::looks_like_auth_error(&rev_err) {
+                    self.auth_change = Some(Some(rev_err));
+                }
+            } else {
+                self.auth_change = Some(None);
             }
             let ids = self.resolve(&record);
             lines.extend(review(&record, &ids, self.style));
@@ -666,8 +686,12 @@ impl Follow {
         if let Some(status) = &self.status {
             let alerts = std::mem::take(&mut self.new_alerts);
             status.update(self.judged, self.flagged, self.pending.len() as u64, alerts);
+            if let Some(change) = self.auth_change.take() {
+                status.set_auth_error(change);
+            }
         } else {
             self.new_alerts.clear();
+            self.auth_change = None;
         }
         for note in self.notes.drain(..) {
             if let Some(notifier) = &self.notifier {
@@ -1110,5 +1134,32 @@ mod tests {
             ["#1  cleared  ana@acme.example (1 alert)  Hers."]
         );
         assert_eq!(follow.pending.len(), 1, "ci's alert waits");
+    }
+
+    #[test]
+    fn judge_auth_errors_surface_in_status_and_clear_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let tracker = Tracker::start(dir.path(), "hosted", "Claude Haiku 5.5 + Sonnet 5.5");
+        tracker.set_watching();
+        let mut follow = Follow::with_style(dir.path(), None, None, Some(tracker), Style::plain());
+
+        let rejected = json!({
+            "session": {"entry": "/bin/zsh"},
+            "judge": {"error": "HTTP 401 Unauthorized: invalid x-api-key"}
+        });
+        append(&dir.path().join("verdicts.ndjson"), &format!("{rejected}\n"));
+        follow.say(false);
+        assert_eq!(
+            status::read(dir.path()).unwrap().auth_error.as_deref(),
+            Some("HTTP 401 Unauthorized: invalid x-api-key")
+        );
+
+        let ok = json!({
+            "session": {"entry": "/bin/zsh"},
+            "judge": {"warrants_investigation": "pass"}
+        });
+        append(&dir.path().join("verdicts.ndjson"), &format!("{ok}\n"));
+        follow.say(false);
+        assert_eq!(status::read(dir.path()).unwrap().auth_error, None);
     }
 }

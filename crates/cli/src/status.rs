@@ -159,6 +159,7 @@ pub struct Snapshot {
     pub recent_alerts: Vec<AlertSummary>,
     pub error: Option<String>,
     pub needs_fda: bool,
+    pub auth_error: Option<String>,
 }
 
 impl Snapshot {
@@ -178,6 +179,7 @@ impl Snapshot {
             "recent_alerts": recent,
             "error": self.error,
             "needs_fda": self.needs_fda,
+            "auth_error": self.auth_error,
         })
     }
 
@@ -206,6 +208,10 @@ impl Snapshot {
             recent_alerts,
             error: v.get("error").and_then(Value::as_str).map(str::to_string),
             needs_fda: v.get("needs_fda").and_then(Value::as_bool).unwrap_or(false),
+            auth_error: v
+                .get("auth_error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         })
     }
 }
@@ -250,6 +256,7 @@ impl Tracker {
             recent_alerts: seeded,
             error,
             needs_fda,
+            auth_error: None,
         };
         let tracker = Self {
             inner: Arc::new(Mutex::new(TrackerInner {
@@ -267,6 +274,20 @@ impl Tracker {
         g.snapshot.state = "watching".to_string();
         g.snapshot.error = None;
         g.snapshot.needs_fda = false;
+        g.snapshot.auth_error = None;
+        g.snapshot.updated_at = now_rfc3339();
+        write_atomic(&g.dir, &g.snapshot);
+    }
+
+    /// Updates or clears the current provider authentication/billing error
+    /// (401/403, invalid API key, expired AWS SSO token) observed on live
+    /// judge or review calls.
+    pub fn set_auth_error(&self, err: Option<String>) {
+        let mut g = self.inner.lock().unwrap();
+        if g.snapshot.auth_error == err {
+            return;
+        }
+        g.snapshot.auth_error = err;
         g.snapshot.updated_at = now_rfc3339();
         write_atomic(&g.dir, &g.snapshot);
     }
@@ -303,6 +324,7 @@ impl Tracker {
         // is what `tangent up` and the menu bar would take for today's.
         g.snapshot.error = None;
         g.snapshot.needs_fda = false;
+        g.snapshot.auth_error = None;
         g.snapshot.updated_at = now_rfc3339();
         write_atomic(&g.dir, &g.snapshot);
     }
@@ -348,6 +370,35 @@ pub fn read(dir: &Path) -> Option<Snapshot> {
 /// or a socket as much as of this.
 pub fn looks_like_fda(err: &str) -> bool {
     err.to_ascii_lowercase().contains("full disk access")
+}
+
+/// Whether a judge or review error indicates rejected, expired, or missing
+/// provider credentials (e.g. HTTP 401/403, revoked API key, expired AWS SSO).
+pub fn looks_like_auth_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    [
+        "401",
+        "403",
+        "unauthorized",
+        "authentication_error",
+        "authentication error",
+        "invalid x-api-key",
+        "invalid_api_key",
+        "incorrect api key",
+        "api key not valid",
+        "expiredtoken",
+        "sso token has expired",
+        "token has expired",
+        "no credentials",
+        "unrecognizedclient",
+        "invalidclienttokenid",
+        "accessdenied",
+        "credit balance is too low",
+        "insufficient_quota",
+        "invalid_payment_instrument",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 /// Seeds up to [`MAX_RECENT`] upheld alerts from the tail of `reviews.ndjson`.
@@ -523,5 +574,24 @@ mod tests {
     fn only_an_error_that_names_full_disk_access_asks_for_it() {
         assert!(looks_like_fda("source mac: not permitted: grant Tangent Full Disk Access"));
         assert!(!looks_like_fda("opening lake/x.parquet: Operation not permitted (os error 1)"));
+    }
+
+    #[test]
+    fn auth_error_detects_provider_rejections_and_tracks_clear() {
+        assert!(looks_like_auth_error("HTTP 401 Unauthorized: invalid x-api-key"));
+        assert!(looks_like_auth_error("ExpiredTokenException: The SSO token has expired"));
+        assert!(looks_like_auth_error("403 Forbidden: INVALID_PAYMENT_INSTRUMENT"));
+        assert!(!looks_like_auth_error("request timed out after 90s"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let tracker = Tracker::start(dir.path(), "hosted", "Claude Haiku 5.5 + Sonnet 5.5");
+        tracker.set_watching();
+        tracker.set_auth_error(Some("401 Unauthorized: invalid x-api-key".to_string()));
+        assert_eq!(
+            read(dir.path()).unwrap().auth_error.as_deref(),
+            Some("401 Unauthorized: invalid x-api-key")
+        );
+        tracker.set_auth_error(None);
+        assert_eq!(read(dir.path()).unwrap().auth_error, None);
     }
 }

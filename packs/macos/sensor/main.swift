@@ -366,6 +366,7 @@ switch CommandLine.arguments.dropFirst().first {
 case "notify": notify()
 case "daemon": runDaemon()
 case "menubar": runMenuBar()
+case "key": runKeyCommand()
 default: break
 }
 if openedByMacOS() { opened() }

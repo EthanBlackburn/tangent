@@ -193,10 +193,11 @@ enum Commands {
         /// the alert malicious
         #[arg(long, global = true)]
         no_notify: bool,
-        /// Load KEY=VALUE environment variables from a 0600 file before
+        /// Load saved API keys from the macOS Login Keychain (via
+        /// `Tangent.app`) and non-secret settings from `service.json` before
         /// starting (used by `tangent up`'s LaunchAgent).
-        #[arg(long, value_name = "FILE", global = true, hide = true)]
-        env_file: Option<PathBuf>,
+        #[arg(long, global = true, hide = true)]
+        keychain: bool,
     },
 
     /// Start watching this Mac in the background with the native menu bar.
@@ -451,11 +452,11 @@ async fn main() -> Result<()> {
                     model,
                 }),
             no_notify,
-            env_file,
+            keychain,
             ..
         } => {
-            if let Some(env_file) = env_file {
-                service::load_env_file(&env_file)?;
+            if keychain {
+                service::load_keychain_env(&watch::data_dir("mac")?)?;
             }
             watch::sourced(&sources)?;
             let command = init::command("watch", &sources);
@@ -465,11 +466,11 @@ async fn main() -> Result<()> {
         Commands::Watch {
             watch: Some(Watch::Mac { provider }),
             no_notify,
-            env_file,
+            keychain,
             ..
         } => {
-            if let Some(env_file) = env_file {
-                service::load_env_file(&env_file)?;
+            if keychain {
+                service::load_keychain_env(&watch::data_dir("mac")?)?;
             }
             watch::mac(provider, no_notify).await?
         }
@@ -478,10 +479,10 @@ async fn main() -> Result<()> {
             config,
             once,
             no_notify,
-            env_file,
+            keychain,
         } => {
-            if let Some(env_file) = env_file {
-                service::load_env_file(&env_file)?;
+            if keychain {
+                service::load_keychain_env(&watch::data_dir("mac")?)?;
             }
             // clap shows the help when neither is given.
             let Some(config) = config else {
@@ -820,6 +821,6 @@ mod tests {
         assert!(ok(&["status", "--json"]));
         assert!(ok(&["uninstall"]));
         assert!(ok(&["uninstall", "--purge"]));
-        assert!(ok(&["watch", "mac", "--provider", "anthropic", "--env-file", "/tmp/env"]));
+        assert!(ok(&["watch", "mac", "--provider", "anthropic", "--keychain"]));
     }
 }
