@@ -73,6 +73,11 @@ pub struct PluginConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_by: Vec<String>,
 
+    /// How many workers a grouped plugin has, each with a group at a time:
+    /// what its groups do at once. Unset: `runtime.workers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workers: Option<usize>,
+
     /// A group closes at this many records. Unset: only time closes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_events: Option<usize>,
@@ -118,6 +123,7 @@ impl Default for PluginConfig {
             inference: Vec::new(),
             drop_on_error: true,
             group_by: Vec::new(),
+            workers: None,
             max_events: None,
             expire_after_ms: default_expire_after_ms(),
             max_age_ms: None,

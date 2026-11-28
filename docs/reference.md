@@ -58,6 +58,7 @@ A plugin can take its records a group at a time:
 plugins:
   renderer:
     group_by: [_norm.org, _norm.actor]   # a group per value of these fields
+    workers: 1                           # how many groups it is given at once (default: runtime.workers)
     max_events: 40                       # closes at 40 records,
     expire_after_ms: 30000               # or once nothing has joined it for 30 s (the default),
     max_age_ms: 600000                   # or 10 minutes after it opened, however busy its key (unset by default)

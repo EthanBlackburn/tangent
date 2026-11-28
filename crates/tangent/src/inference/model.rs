@@ -280,6 +280,17 @@ impl Model {
     /// what it replies is the reply, a decline of its own included. A run
     /// that is stopping asks no one else.
     pub async fn send(&self, node: &str, request: CompletionRequest) -> Result<CompletionResponse> {
+        let began = std::time::Instant::now();
+        let reply = self.answer(node, request).await;
+        if reply.is_ok() {
+            crate::INFERENCE_SECONDS
+                .with_label_values(&[node])
+                .observe(began.elapsed().as_secs_f64());
+        }
+        reply
+    }
+
+    async fn answer(&self, node: &str, request: CompletionRequest) -> Result<CompletionResponse> {
         let reply = self.ask(&self.client, node, &request).await?;
         let declined = reply.finish_reason() == Some(FinishReason::ContentFilter);
         match &self.fallback {

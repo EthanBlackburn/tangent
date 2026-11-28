@@ -115,6 +115,14 @@ impl DagRuntime {
                     "plugin {name}: max_events, max_age_ms and history group records, and it has no group_by"
                 );
             }
+            if p.workers.is_some() && p.group_by.is_empty() {
+                anyhow::bail!(
+                    "plugin {name}: workers is a grouped plugin's, and it has no group_by"
+                );
+            }
+            if p.workers == Some(0) {
+                anyhow::bail!("plugin {name}: workers must be at least 1");
+            }
             if !p.group_by.is_empty() && p.expire_after_ms == 0 {
                 anyhow::bail!("plugin {name}: expire_after_ms must be at least 1");
             }
@@ -185,6 +193,7 @@ impl DagRuntime {
         let mut groups = Vec::new();
         let mut groupers = std::collections::HashMap::new();
         for (name, p) in cfg.plugins.iter().filter(|(_, p)| !p.group_by.is_empty()) {
+            let workers = p.workers.unwrap_or(workers);
             let (engines, components) = load(
                 &cfg,
                 &plugins,

@@ -458,6 +458,9 @@ pub struct Follow {
     notifier: Option<Notifier>,
     /// Upheld reviews collected since the last `status.json` flush.
     new_alerts: Vec<AlertSummary>,
+    /// The reviews that gave a verdict in this run, and the seconds they
+    /// took together.
+    reviewed: (u64, f64),
     /// What each model last said of its credentials: the judge's, then the
     /// reviewer's. They are kept apart because they are two models, and one
     /// can be refused while the other is let in: the judge's clean call does
@@ -505,6 +508,7 @@ impl Follow {
             notes: Vec::new(),
             notifier,
             new_alerts: Vec::new(),
+            reviewed: (0, 0.0),
             judge_auth: None,
             review_auth: None,
             judge_answered: false,
@@ -662,12 +666,19 @@ impl Follow {
                 continue;
             }
             let rev_err = text(&record, &["review", "error"]);
+            let answered = rev_err.is_empty();
             if !rev_err.is_empty() {
                 if status::looks_like_auth_error(&rev_err) {
                     self.review_auth = Some(rev_err);
                 }
             } else {
                 self.review_auth = None;
+            }
+            if let Some(took) = record.pointer("/took/seconds").and_then(Value::as_f64) {
+                if answered {
+                    self.reviewed.0 += 1;
+                    self.reviewed.1 += took;
+                }
             }
             let ids = self.resolve(&record);
             lines.extend(review(&record, &ids, self.style));
@@ -694,6 +705,13 @@ impl Follow {
             println!("{line}");
         }
         if let Some(status) = &self.status {
+            // the judge's from the runtime's own count of its requests
+            let judge = tangent_runtime::INFERENCE_SECONDS.with_label_values(&["judge"]);
+            let mean = |n: u64, sum: f64| (n > 0).then(|| sum / n as f64);
+            status.set_timing(
+                mean(judge.get_sample_count(), judge.get_sample_sum()),
+                mean(self.reviewed.0, self.reviewed.1),
+            );
             let alerts = std::mem::take(&mut self.new_alerts);
             status.update(self.judged, self.flagged, self.pending.len() as u64, alerts);
             // It writes nothing when this is what the file already has.

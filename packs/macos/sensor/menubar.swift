@@ -65,6 +65,10 @@ struct WatchStatus {
     let error: String?
     let needsFda: Bool
     let authError: String?
+    /// How long the models take in this run, in seconds: the judge a
+    /// request, a review whole. Nil until there is one.
+    let judgeSeconds: Double?
+    let reviewSeconds: Double?
 
     /// True if the watch process is actually alive right now.
     var isAlive: Bool {
@@ -95,7 +99,9 @@ struct WatchStatus {
             recentAlerts: recent,
             error: dict["error"] as? String,
             needsFda: dict["needs_fda"] as? Bool ?? false,
-            authError: dict["auth_error"] as? String
+            authError: dict["auth_error"] as? String,
+            judgeSeconds: (dict["judge_seconds"] as? NSNumber)?.doubleValue,
+            reviewSeconds: (dict["review_seconds"] as? NSNumber)?.doubleValue
         )
     }
 }

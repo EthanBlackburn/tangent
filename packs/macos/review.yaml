@@ -11,12 +11,12 @@ models:
     model: ${REVIEW_MODEL:-us.anthropic.claude-sonnet-5-5}
     aws:
       region: ${AWS_REGION:-us-west-2}
-    # Reviews go one at a time, so a turn that hangs holds up every alert
-    # behind it: two minutes a try and three tries, then the review is an
-    # error and the alert stands.
+    # Three reviews go at once (the plugin's `workers`), and a turn that
+    # hangs holds up the alerts behind it: two minutes a try and three
+    # tries, then the review is an error and the alert stands.
     timeout_ms: 120000
     retries: 2
-    concurrency: 1
+    concurrency: 3
 
 inference:
   reviewer:                        # it has no inputs: the plugin calls it
@@ -24,7 +24,7 @@ inference:
     prompt_file: review.md
     max_tokens: 8000               # a turn: its thinking, and a query or the report
     extra:
-      thinking: { type: adaptive }
+      thinking: { type: adaptive, display: summarized }   # a review keeps a summary of its thinking (`steps`)
       output_config: { effort: medium }
 
 plugins:
@@ -41,6 +41,7 @@ plugins:
     # Each alert is a group of its own, and a grouped plugin has its own
     # workers, so a review holds up neither the capture nor the judge.
     group_by: [session.id, session.window]
+    workers: 3                     # three reviews at once
     expire_after_ms: 10000
     config:
       model: reviewer

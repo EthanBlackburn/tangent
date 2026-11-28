@@ -54,6 +54,16 @@ lazy_static::lazy_static! {
         vec![5e-5,1e-4,2e-4,4e-4,8e-4,1.6e-3,3.2e-3,6.4e-3,1.28e-2,2.56e-2,5.12e-2,0.102,0.204,0.409,0.819,1.638]
     ).unwrap();
 
+    /// A model's request from asked to answered, its retries included and its
+    /// wait for a place among the model's `concurrency` not: a judge's
+    /// batch, or one turn of a conversation.
+    pub static ref INFERENCE_SECONDS: HistogramVec = register_histogram_vec!(
+        "tangent_inference_seconds",
+        "Model request latency, by inference node (sec)",
+        &["node"],
+        vec![0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 60.0, 120.0, 300.0]
+    ).unwrap();
+
     pub static ref GUEST_BYTES_TOTAL: IntCounter =
         register_int_counter!("tangent_guest_bytes_total", "Bytes fed to WASM guest").unwrap();
 

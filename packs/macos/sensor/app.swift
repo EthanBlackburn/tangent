@@ -1225,6 +1225,13 @@ private struct SidebarActivityRow: View {
     }
 }
 
+/// Seconds as they are read: `3.2s`, `48s`, `1m 25s`.
+func spokenSeconds(_ seconds: Double) -> String {
+    if seconds < 10 { return String(format: "%.1fs", seconds) }
+    let whole = Int(seconds.rounded())
+    return whole < 60 ? "\(whole)s" : "\(whole / 60)m \(whole % 60)s"
+}
+
 private struct ModelsSidebarSummary: View {
     @ObservedObject var store: TangentStore
 
@@ -1263,6 +1270,27 @@ private struct ModelsSidebarSummary: View {
                     Text(current.models)
                         .font(.system(size: 12))
                         .foregroundColor(Theme.inkSecondary)
+                }
+            }
+
+            if let s = store.status, store.isAlive, s.judgeSeconds != nil || s.reviewSeconds != nil {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Speed")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundColor(Theme.inkTertiary)
+                    ForEach([("First pass", s.judgeSeconds), ("Review", s.reviewSeconds)], id: \.0) { name, seconds in
+                        if let seconds {
+                            HStack {
+                                Text(name)
+                                    .foregroundColor(Theme.inkSecondary)
+                                Spacer()
+                                Text(spokenSeconds(seconds))
+                                    .foregroundColor(Theme.ink)
+                                    .monospacedDigit()
+                            }
+                            .font(.system(size: 12))
+                        }
+                    }
                 }
             }
 

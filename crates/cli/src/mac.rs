@@ -61,7 +61,7 @@ const JUDGE_LIMITS: &str = "    timeout_ms: 90000
 ";
 const REVIEWER_LIMITS: &str = "    timeout_ms: 120000           # two minutes a try,
     retries: 2                   # three tries, then the review is an error and the alert stands
-    concurrency: 1
+    concurrency: 3               # as many reviews at once as plugin macos_review has workers
 ";
 
 /// What a provider's judge and reviewer are asked with on a Mac, under
@@ -79,7 +79,7 @@ fn asks(provider: Provider) -> (&'static str, &'static str, bool) {
       output_config: { effort: low }
 "#,
             r#"    extra:
-      thinking: { type: adaptive }   # it thinks before each query and its report
+      thinking: { type: adaptive, display: summarized }   # it thinks before each query and its report, and a review keeps a summary of it
       output_config: { effort: medium }
 "#,
             true,

@@ -160,6 +160,10 @@ pub struct Snapshot {
     pub error: Option<String>,
     pub needs_fda: bool,
     pub auth_error: Option<String>,
+    /// How long the models take in this run, in seconds, each None until
+    /// there is one: the judge a request (the mean), a review whole.
+    pub judge_seconds: Option<f64>,
+    pub review_seconds: Option<f64>,
 }
 
 impl Snapshot {
@@ -180,6 +184,8 @@ impl Snapshot {
             "error": self.error,
             "needs_fda": self.needs_fda,
             "auth_error": self.auth_error,
+            "judge_seconds": self.judge_seconds,
+            "review_seconds": self.review_seconds,
         })
     }
 
@@ -212,6 +218,8 @@ impl Snapshot {
                 .get("auth_error")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            judge_seconds: v.get("judge_seconds").and_then(Value::as_f64),
+            review_seconds: v.get("review_seconds").and_then(Value::as_f64),
         })
     }
 }
@@ -264,6 +272,8 @@ impl Tracker {
             error,
             needs_fda,
             auth_error: None,
+            judge_seconds: None,
+            review_seconds: None,
         };
         let tracker = Self {
             inner: Arc::new(Mutex::new(TrackerInner {
@@ -315,6 +325,21 @@ impl Tracker {
             return;
         }
         g.snapshot.auth_error = err;
+        g.snapshot.updated_at = now_rfc3339();
+        write_atomic(&g.dir, &g.snapshot);
+    }
+
+    /// How long the models take, to a tenth of a second: written when
+    /// either has changed.
+    pub fn set_timing(&self, judge: Option<f64>, review: Option<f64>) {
+        let tenth = |s: Option<f64>| s.map(|s| (s * 10.0).round() / 10.0);
+        let (judge, review) = (tenth(judge), tenth(review));
+        let mut g = self.inner.lock().unwrap();
+        if (g.snapshot.judge_seconds, g.snapshot.review_seconds) == (judge, review) {
+            return;
+        }
+        g.snapshot.judge_seconds = judge;
+        g.snapshot.review_seconds = review;
         g.snapshot.updated_at = now_rfc3339();
         write_atomic(&g.dir, &g.snapshot);
     }
