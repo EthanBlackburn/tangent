@@ -1280,6 +1280,11 @@ pub fn sensor_daemon_plist(sensor_bin: &Path, socket_dir: &Path, uid: u32) -> St
 }
 
 /// User LaunchAgent plist for `tangent watch mac`.
+///
+/// It names no `ProcessType`: as `Background`, macOS throttles the watcher's
+/// disk reads, and a reviewer's query of the lake that takes half a second
+/// takes most of a minute. And it may hold more files open than launchd's
+/// 256, which a query over a lake of some days needs.
 pub fn watch_agent_plist(
     tangent_bin: &Path,
     data_dir: &Path,
@@ -1324,8 +1329,11 @@ pub fn watch_agent_plist(
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <key>ProcessType</key>
-    <string>Background</string>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>4096</integer>
+    </dict>
     <key>ThrottleInterval</key>
     <integer>5</integer>
     <key>StandardOutPath</key>
@@ -1469,6 +1477,9 @@ mod tests {
         ));
         assert!(watch.contains("<string>--provider</string>\n        <string>bedrock</string>"));
         assert!(watch.contains("<string>--keychain</string>"));
+        // throttled, a query of the lake outlasts its time
+        assert!(!watch.contains("ProcessType"));
+        assert!(watch.contains("<key>NumberOfFiles</key>\n        <integer>4096</integer>"));
         assert!(watch.contains("/Users/a&amp;b/.local/share/tangent/mac/daemon.log"));
 
         let app = app_agent_plist(
