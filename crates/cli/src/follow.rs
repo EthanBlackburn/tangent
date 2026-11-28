@@ -465,6 +465,9 @@ pub struct Follow {
     /// reviewer's when both are refused.
     judge_auth: Option<String>,
     review_auth: Option<String>,
+    /// Whether the judge has answered since the status was last written:
+    /// what its request was refused for while it was tried again is over.
+    judge_answered: bool,
     status: Option<Tracker>,
 }
 
@@ -504,6 +507,7 @@ impl Follow {
             new_alerts: Vec::new(),
             judge_auth: None,
             review_auth: None,
+            judge_answered: false,
             status,
         }
     }
@@ -628,6 +632,7 @@ impl Follow {
                 }
             } else if record.get("judge").is_some() {
                 self.judge_auth = None;
+                self.judge_answered = true;
             }
         }
         let alerts: Vec<Value> = self.alerts.lines().into_iter().filter_map(parsed).collect();
@@ -693,6 +698,9 @@ impl Follow {
             status.update(self.judged, self.flagged, self.pending.len() as u64, alerts);
             // It writes nothing when this is what the file already has.
             status.set_auth_error(self.review_auth.clone().or_else(|| self.judge_auth.clone()));
+            if std::mem::take(&mut self.judge_answered) {
+                status.set_refused(None);
+            }
         } else {
             self.new_alerts.clear();
         }

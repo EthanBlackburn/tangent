@@ -236,6 +236,9 @@ struct Ready {
     message: &'static str,
     printed: AtomicBool,
     status: Option<Tracker>,
+    /// Why AWS gave no credentials, as its own client last warned: the
+    /// request that then fails says only that something did.
+    credentials: std::sync::Mutex<Option<String>>,
 }
 
 impl Ready {
@@ -253,6 +256,7 @@ impl Ready {
                 message: "the sensor is started",
                 printed: AtomicBool::new(false),
                 status,
+                credentials: std::sync::Mutex::new(None),
             }
         } else {
             Self {
@@ -260,6 +264,7 @@ impl Ready {
                 message: "pipeline started",
                 printed: AtomicBool::new(false),
                 status,
+                credentials: std::sync::Mutex::new(None),
             }
         }
     }
@@ -282,6 +287,58 @@ impl tracing::field::Visit for MessageMatches {
             self.matched = true;
         }
     }
+}
+
+/// Every field of an event, as text, and the node it names.
+#[derive(Default)]
+struct Said {
+    message: String,
+    node: String,
+    all: String,
+}
+
+impl tracing::field::Visit for Said {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        match field.name() {
+            "message" => self.message = value.to_string(),
+            "node" => self.node = value.trim_matches('"').to_string(),
+            _ => {}
+        }
+        self.all.push_str(value);
+        self.all.push(' ');
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.record_str(field, &format!("{value:?}"));
+    }
+}
+
+/// What the runtime logs each time a model's request fails and is tried
+/// again, before the error.
+const TRIED_AGAIN: &str = "inference failed, retrying";
+
+/// What to do about an AWS sign-in that has run out, for the profile the
+/// watch signs in with.
+fn sso_expired() -> String {
+    let profile = std::env::var("AWS_PROFILE")
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| format!(" --profile {}", p.trim()))
+        .unwrap_or_default();
+    format!("Your AWS sign-in has expired. Run: aws sso login{profile}")
+}
+
+/// What a judge's request that is tried again was refused for, when it was
+/// for its credentials: the error's own words, or what AWS's client warned
+/// of just before an error that names nothing.
+fn refused(error: &str, credentials: Option<&str>) -> Option<String> {
+    if crate::status::looks_like_auth_error(error) {
+        return Some(error.to_string());
+    }
+    error
+        .contains("AWS keys")
+        .then(|| credentials.map(str::to_string))
+        .flatten()
 }
 
 /// An event's message, as text.
@@ -330,6 +387,38 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Ready {
         // come to ask for Full Disk Access, and launchd starts it again.
         if let Some(status) = &self.status {
             let meta = event.metadata();
+            // The judge tries a refused request for minutes before it
+            // answers with an error, and until then nothing is judged: the
+            // status says why while it tries. Its answer, when one comes,
+            // clears it (`Follow`). The reviewer gives up within a few
+            // tries, and its answer says it.
+            if *meta.level() == tracing::Level::WARN {
+                if meta.target().starts_with("aws_config") {
+                    let mut said = Said::default();
+                    event.record(&mut said);
+                    if said.all.to_ascii_lowercase().contains("token has expired") {
+                        *self.credentials.lock().unwrap() = Some(sso_expired());
+                    }
+                    return;
+                }
+                if meta.target() == "tangent_runtime::inference::model" {
+                    let mut said = Said::default();
+                    event.record(&mut said);
+                    if said.node == "judge" {
+                        if let Some((_, error)) = said
+                            .message
+                            .strip_prefix(TRIED_AGAIN)
+                            .and_then(|rest| rest.split_once(": "))
+                        {
+                            let credentials = self.credentials.lock().unwrap().clone();
+                            if let Some(why) = refused(error, credentials.as_deref()) {
+                                status.set_refused(Some(why));
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
             if meta.target() == "tangent_runtime::dag" && *meta.level() == tracing::Level::ERROR {
                 let mut said = Message(String::new());
                 event.record(&mut said);
@@ -558,6 +647,19 @@ async fn signalled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_judge_tried_again_says_why_only_when_it_is_its_credentials() {
+        let sso = "Your AWS sign-in has expired. Run: aws sso login --profile prod";
+        let vague = "HttpError: Http client error: An unexpected error occurred. Verify Internet connection or AWS keys";
+        assert_eq!(refused(vague, Some(sso)).as_deref(), Some(sso));
+        assert_eq!(refused(vague, None), None, "it may be the network");
+        assert_eq!(
+            refused("status 403 Forbidden: INVALID_PAYMENT_INSTRUMENT", None).as_deref(),
+            Some("status 403 Forbidden: INVALID_PAYMENT_INSTRUMENT")
+        );
+        assert_eq!(refused("request timed out after 90s", Some(sso)), None);
+    }
     use crate::init::Provider;
 
     fn vars(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
