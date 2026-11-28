@@ -239,6 +239,11 @@ struct Ready {
     /// Why AWS gave no credentials, as its own client last warned: the
     /// request that then fails says only that something did.
     credentials: std::sync::Mutex<Option<String>>,
+    /// Whether AWS's client said it could not read this Mac's trusted
+    /// certificates when it was built, and whether this process has been
+    /// asked to stop for it.
+    no_roots: AtomicBool,
+    starting_over: AtomicBool,
 }
 
 impl Ready {
@@ -257,6 +262,8 @@ impl Ready {
                 printed: AtomicBool::new(false),
                 status,
                 credentials: std::sync::Mutex::new(None),
+                no_roots: AtomicBool::new(false),
+                starting_over: AtomicBool::new(false),
             }
         } else {
             Self {
@@ -265,6 +272,8 @@ impl Ready {
                 printed: AtomicBool::new(false),
                 status,
                 credentials: std::sync::Mutex::new(None),
+                no_roots: AtomicBool::new(false),
+                starting_over: AtomicBool::new(false),
             }
         }
     }
@@ -341,6 +350,33 @@ fn refused(error: &str, credentials: Option<&str>) -> Option<String> {
         .flatten()
 }
 
+/// What AWS's client warns of when macOS would not give it the trusted
+/// certificates as it was built, which now and then it does not to a process
+/// launchd has just started. The client is built once: it then trusts no
+/// server for as long as the process runs, its sign-in included, and every
+/// request fails with an issuer it does not know.
+const NO_ROOTS: &str = "native root CA certificate loading errors";
+const NO_ISSUER: &str = "UnknownIssuer";
+
+/// How long after starting over for its certificates a watch does not do
+/// it again: a Mac that never gives them is not started over and over.
+const STARTS_OVER_ONCE_IN: Duration = Duration::from_secs(600);
+
+/// Whether this watch may start over for its certificates, which it marks
+/// by the file it leaves: not within [`STARTS_OVER_ONCE_IN`] of the last.
+fn may_start_over() -> bool {
+    let mark = std::env::temp_dir().join("tangent-watch-no-roots");
+    let lately = std::fs::metadata(&mark)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|at| at.elapsed().ok())
+        .is_some_and(|since| since < STARTS_OVER_ONCE_IN);
+    if lately {
+        return false;
+    }
+    std::fs::write(&mark, b"").is_ok()
+}
+
 /// An event's message, as text.
 struct Message(String);
 
@@ -393,9 +429,37 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Ready {
             // clears it (`Follow`). The reviewer gives up within a few
             // tries, and its answer says it.
             if *meta.level() == tracing::Level::WARN {
+                if meta.target().starts_with("aws_smithy_http_client") {
+                    let mut said = Said::default();
+                    event.record(&mut said);
+                    if said.all.contains(NO_ROOTS) {
+                        self.no_roots.store(true, Ordering::Relaxed);
+                    }
+                    return;
+                }
                 if meta.target().starts_with("aws_config") {
                     let mut said = Said::default();
                     event.record(&mut said);
+                    // The client that could not read the certificates
+                    // trusts no server until the process is a new one:
+                    // launchd starts that, and what waits for the model is
+                    // held for it. Once, and then it is only said.
+                    if self.no_roots.load(Ordering::Relaxed)
+                        && said.all.contains(NO_ISSUER)
+                        && !self.starting_over.swap(true, Ordering::Relaxed)
+                    {
+                        if may_start_over() {
+                            status.set_refused(Some(
+                                "macOS did not give the watcher its trusted certificates. Starting it again…".to_string(),
+                            ));
+                            stop_this_process();
+                        } else {
+                            status.set_refused(Some(
+                                "macOS will not give the watcher its trusted certificates, so no model is reached. Run: tangent up".to_string(),
+                            ));
+                        }
+                        return;
+                    }
                     if said.all.to_ascii_lowercase().contains("token has expired") {
                         *self.credentials.lock().unwrap() = Some(sso_expired());
                     }
