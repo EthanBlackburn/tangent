@@ -13,8 +13,15 @@
 //! in the state store and go again, marked `"_context": true`, ahead of its
 //! next group.
 //!
+//! A group whose walk fails at a node that could not do its work (a model
+//! not reached, a call that ended unanswered) comes back: its records go
+//! ahead of what its key has gathered since, and go again as one group.
+//! From then until a group is through, what the groups go on to is taken
+//! to be down: they stay open, gathering, and the oldest is sent each
+//! `probe_every` to try it.
+//!
 //! Groups live in memory: records are acked once they are in one, and a
-//! crash loses the groups still open.
+//! crash loses the groups still open, those that came back among them.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -46,6 +53,26 @@ pub struct GroupConfig {
     pub expire_after: Duration,
     pub max_age: Option<Duration>,
     pub history: usize,
+    /// While a group has failed and none has been through since, how often
+    /// one is sent to try again; the rest stay open.
+    pub probe_every: Duration,
+}
+
+/// How often a grouped plugin tries again while what its groups go on to
+/// does not answer.
+pub const PROBE_EVERY: Duration = Duration::from_secs(60);
+
+/// How a group's walk ended.
+enum Outcome {
+    /// Through the DAG.
+    Through,
+    /// Through it with its last try's failure, which goes on as it is.
+    Spent,
+    /// A node could not do its work: the records go back to their key's
+    /// group, to go again with what has joined since.
+    Failed,
+    /// Stopped by a signal, or lost to an error.
+    Dropped,
 }
 
 /// A closed group on its way to the grouped plugin's workers.
@@ -161,6 +188,8 @@ pub fn spawn(
         held: Arc::clone(&held),
         done_tx,
         flushing: Vec::new(),
+        down: false,
+        probed: Instant::now(),
     };
     let grouper = Grouper {
         node: Arc::clone(&task.node),
@@ -188,6 +217,9 @@ struct Key {
     waiting: VecDeque<Vec<JsonLogView>>,
     /// A group of this key is on its way through the DAG.
     out: bool,
+    /// How many times running a group of this key has failed: none once
+    /// one is through.
+    tries: usize,
 }
 
 struct Task {
@@ -199,15 +231,21 @@ struct Task {
     /// The records in every key's `open` and `waiting`.
     held: Arc<AtomicUsize>,
     /// Where a group's walk reports it is through, with the group's records.
-    done_tx: mpsc::UnboundedSender<(Arc<str>, Vec<JsonLogView>)>,
+    done_tx: mpsc::UnboundedSender<(Arc<str>, Vec<JsonLogView>, Outcome)>,
     flushing: Vec<oneshot::Sender<()>>,
+    /// A group failed and none has been through since: what the groups go
+    /// on to (a model, the lake) is taken to be down. Groups stay open,
+    /// gathering, and one is sent each `probe_every` to try it.
+    down: bool,
+    /// When a group last failed or was sent to try.
+    probed: Instant,
 }
 
 impl Task {
     async fn run(
         mut self,
         mut rx: mpsc::Receiver<Msg>,
-        mut done_rx: mpsc::UnboundedReceiver<(Arc<str>, Vec<JsonLogView>)>,
+        mut done_rx: mpsc::UnboundedReceiver<(Arc<str>, Vec<JsonLogView>, Outcome)>,
     ) {
         let mut every = self.cfg.expire_after.min(Duration::from_secs(1));
         if let Some(age) = self.cfg.max_age {
@@ -234,7 +272,7 @@ impl Task {
                     }
                     None => break,
                 },
-                Some((key, records)) = done_rx.recv() => self.done(key, records).await,
+                Some((key, records, outcome)) = done_rx.recv() => self.done(key, records, outcome).await,
                 _ = tick.tick() => self.expire().await,
             }
         }
@@ -280,30 +318,44 @@ impl Task {
         open.records.push(r);
         open.last = now;
         self.held.fetch_add(1, Ordering::Relaxed);
-        if self
-            .cfg
-            .max_events
-            .is_some_and(|max| open.records.len() >= max)
+        // while down a full group stays open with the rest
+        if !self.down
+            && self
+                .cfg
+                .max_events
+                .is_some_and(|max| open.records.len() >= max)
         {
             self.close(key).await;
         }
     }
 
     /// Closes each group quiet for `expire_after`, or open for `max_age`.
+    /// While down, only the oldest of them, and only each `probe_every`:
+    /// the rest stay open until one is through.
     async fn expire(&mut self) {
         let cfg = &self.cfg;
-        let due: Vec<Arc<str>> = self
+        let mut due: Vec<(Instant, Arc<str>)> = self
             .keys
             .iter()
-            .filter(|(_, k)| {
-                k.open.as_ref().is_some_and(|o| {
-                    o.last.elapsed() >= cfg.expire_after
-                        || cfg.max_age.is_some_and(|age| o.opened.elapsed() >= age)
-                })
+            .filter_map(|(key, k)| {
+                let o = k.open.as_ref()?;
+                let full = cfg.max_events.is_some_and(|max| o.records.len() >= max);
+                (full
+                    || o.last.elapsed() >= cfg.expire_after
+                    || cfg.max_age.is_some_and(|age| o.opened.elapsed() >= age))
+                .then(|| (o.opened, Arc::clone(key)))
             })
-            .map(|(key, _)| Arc::clone(key))
             .collect();
-        for key in due {
+        if self.down {
+            if due.is_empty() || self.probed.elapsed() < cfg.probe_every {
+                return;
+            }
+            due.sort();
+            due.truncate(1);
+            self.probed = Instant::now();
+        }
+        let due = due.into_iter().map(|(_, key)| key);
+        for key in due.collect::<Vec<_>>() {
             self.close(key).await;
         }
     }
@@ -359,6 +411,7 @@ impl Task {
         let done = Arc::new(Through {
             tx: self.done_tx.clone(),
             group: Mutex::new(Some((Arc::clone(&key), records))),
+            spent: std::sync::atomic::AtomicBool::new(false),
         });
         let group = Group {
             node: NodeRef::Plugin {
@@ -368,7 +421,7 @@ impl Task {
             context,
             done,
             saved: false,
-            tries: 0,
+            tries: self.keys.get(&key).map_or(0, |k| k.tries),
         };
         // Out from here: the group's ack, fired or dropped, frees the key.
         if let Some(k) = self.keys.get_mut(&key) {
@@ -379,17 +432,69 @@ impl Task {
         }
     }
 
-    /// A group of `key` is through the DAG, or was dropped on the way (no
-    /// records then, and nothing to remember).
-    async fn done(&mut self, key: Arc<str>, records: Vec<JsonLogView>) {
+    /// Records back in `key`'s open group, ahead of what it holds: a group
+    /// that failed, with the closed groups that waited behind it, to go
+    /// again as one with whatever joins them.
+    fn reopen(&mut self, key: &Arc<str>, mut records: Vec<JsonLogView>) {
+        let k = self.keys.entry(Arc::clone(key)).or_default();
+        self.held.fetch_add(records.len(), Ordering::Relaxed);
+        for waiting in k.waiting.drain(..) {
+            records.extend(waiting);
+        }
+        if let Some(open) = k.open.take() {
+            records.extend(open.records);
+        }
+        let Some(first) = records.first() else {
+            return;
+        };
+        let first = serde_json::from_str(&first.to_json()).unwrap_or_default();
+        let mark = crate::underway::mark(crate::underway::Stage::Grouping, &self.node, &first);
+        for _ in 1..records.len() {
+            mark.more();
+        }
+        let now = Instant::now();
+        k.open = Some(Open {
+            records,
+            opened: now,
+            last: now,
+            mark,
+        });
+    }
+
+    /// A group of `key` is through the DAG, or failed and comes back, or
+    /// was dropped on the way (no records then, and nothing to remember).
+    async fn done(&mut self, key: Arc<str>, records: Vec<JsonLogView>, outcome: Outcome) {
+        match outcome {
+            // what it went on to answers
+            Outcome::Through => self.down = false,
+            Outcome::Spent | Outcome::Failed => {
+                self.down = true;
+                self.probed = Instant::now();
+            }
+            Outcome::Dropped => {}
+        }
+        if let Some(k) = self.keys.get_mut(&key) {
+            k.out = false;
+            match outcome {
+                Outcome::Failed => k.tries += 1,
+                Outcome::Through | Outcome::Spent => k.tries = 0,
+                Outcome::Dropped => {}
+            }
+        }
+        if matches!(outcome, Outcome::Failed) {
+            self.reopen(&key, records);
+            self.answer_if_idle();
+            return;
+        }
         if !records.is_empty() {
             self.remember(&key, &records).await;
         }
+        // while down the groups that waited behind it wait on, open
+        if self.down && self.keys.get(&key).is_some_and(|k| !k.waiting.is_empty()) {
+            self.reopen(&key, Vec::new());
+        }
         let next = match self.keys.get_mut(&key) {
-            Some(k) => {
-                k.out = false;
-                k.waiting.pop_front()
-            }
+            Some(k) => k.waiting.pop_front(),
             None => None,
         };
         match next {
@@ -482,24 +587,42 @@ impl Task {
 /// Dropped without firing (its walk was stopped by a signal, or failed),
 /// it frees the key all the same, remembering nothing.
 struct Through {
-    tx: mpsc::UnboundedSender<(Arc<str>, Vec<JsonLogView>)>,
+    tx: mpsc::UnboundedSender<(Arc<str>, Vec<JsonLogView>, Outcome)>,
     group: Mutex<Option<(Arc<str>, Vec<JsonLogView>)>>,
+    /// The group goes on with its last try's failure.
+    spent: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
 impl Ack for Through {
     async fn ack(&self) -> Result<()> {
-        if let Some(group) = self.group.lock().take() {
-            let _ = self.tx.send(group);
+        if let Some((key, records)) = self.group.lock().take() {
+            let outcome = match self.spent.load(Ordering::Relaxed) {
+                true => Outcome::Spent,
+                false => Outcome::Through,
+            };
+            let _ = self.tx.send((key, records, outcome));
         }
         Ok(())
+    }
+
+    fn regroups(&self) -> bool {
+        true
+    }
+
+    async fn failed(&self, again: bool) {
+        if !again {
+            self.spent.store(true, Ordering::Relaxed);
+        } else if let Some((key, records)) = self.group.lock().take() {
+            let _ = self.tx.send((key, records, Outcome::Failed));
+        }
     }
 }
 
 impl Drop for Through {
     fn drop(&mut self) {
         if let Some((key, _)) = self.group.get_mut().take() {
-            let _ = self.tx.send((key, Vec::new()));
+            let _ = self.tx.send((key, Vec::new(), Outcome::Dropped));
         }
     }
 }
@@ -518,6 +641,8 @@ mod tests {
     #[derive(Default)]
     struct Out {
         groups: Mutex<Handed>,
+        /// How many times each had failed before, as it was handed over.
+        tries: Mutex<Vec<usize>>,
     }
 
     #[async_trait]
@@ -528,6 +653,7 @@ mod tests {
                 .iter()
                 .map(|r| serde_json::from_str(&r.to_json()).unwrap())
                 .collect();
+            self.tries.lock().push(g.tries);
             self.groups.lock().push((records, Some(g.done)));
             Ok(())
         }
@@ -544,6 +670,26 @@ mod tests {
         async fn ack(&self, i: usize) {
             let done = self.groups.lock()[i].1.take().expect("not fired yet");
             done.ack().await.unwrap();
+        }
+        /// As a walk a node failed: the records go back, or with their
+        /// tries spent go on, and the ack fires.
+        async fn fail(&self, i: usize, again: bool) {
+            let done = self.groups.lock()[i].1.take().expect("not fired yet");
+            assert!(done.regroups());
+            done.failed(again).await;
+            if !again {
+                done.ack().await.unwrap();
+            }
+        }
+        /// Waits until `n` groups have been handed over.
+        async fn handed(&self, n: usize) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while self.groups.lock().len() < n {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("a group is handed over");
         }
         /// As a walk a signal stopped: the ack goes, unfired.
         fn drop_ack(&self, i: usize) {
@@ -563,6 +709,7 @@ mod tests {
             expire_after: Duration::from_millis(expire_ms),
             max_age: None,
             history,
+            probe_every: Duration::from_millis(60),
         })
     }
 
@@ -580,6 +727,74 @@ mod tests {
 
     async fn settle() {
         tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    /// A group that failed goes back to its key's group and goes again with
+    /// what joined meanwhile. Until one is through the others stay open,
+    /// and one at a time is sent to try.
+    #[tokio::test]
+    async fn a_failed_group_goes_again_with_what_joined_it_and_the_rest_wait() {
+        let (g, out) = start_with(GroupConfig {
+            group_by: vec!["actor".into()],
+            max_events: None,
+            expire_after: Duration::from_millis(30),
+            max_age: None,
+            history: 0,
+            probe_every: Duration::from_millis(400),
+        });
+        g.add(vec![rec("a", 1), rec("a", 2)]).await.unwrap();
+        out.handed(1).await;
+        assert_eq!(out.ids(), [vec![1, 2]]);
+        // more of a's arrive while its group is out, which then fails
+        g.add(vec![rec("a", 3)]).await.unwrap();
+        settle().await;
+        out.fail(0, true).await;
+        // b's begins after a's is back: the older of the two tries first
+        settle().await;
+        g.add(vec![rec("b", 5)]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(
+            out.ids().len(),
+            1,
+            "quiet long enough to close, and held: it is down"
+        );
+        assert_eq!(g.held(), 4);
+        // the oldest goes to try: a's, the failed records first
+        out.handed(2).await;
+        assert_eq!(out.ids()[1], [1, 2, 3]);
+        assert_eq!(*out.tries.lock(), [0, 1], "and says it has failed once");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(out.ids().len(), 2, "b's waits for it");
+        // it is through: the rest go
+        out.ack(1).await;
+        out.handed(3).await;
+        assert_eq!(out.ids()[2], [5]);
+        out.ack(2).await;
+        settle().await;
+        assert_eq!(g.held(), 0);
+    }
+
+    /// A group whose tries are spent goes on, and its key starts over; what
+    /// it went on to is still taken to be down.
+    #[tokio::test]
+    async fn a_group_whose_tries_are_spent_goes_on_and_the_rest_still_wait() {
+        let (g, out) = start_with(GroupConfig {
+            group_by: vec!["actor".into()],
+            max_events: None,
+            expire_after: Duration::from_millis(30),
+            max_age: None,
+            history: 0,
+            probe_every: Duration::from_millis(400),
+        });
+        g.add(vec![rec("a", 1)]).await.unwrap();
+        out.handed(1).await;
+        out.fail(0, false).await;
+        g.add(vec![rec("b", 2)]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(out.ids(), [vec![1]], "b's is held");
+        out.handed(2).await;
+        assert_eq!(out.ids()[1], [2]);
+        assert_eq!(*out.tries.lock(), [0, 0]);
     }
 
     /// A group closes at `max_events`, per key.
@@ -654,6 +869,7 @@ mod tests {
             expire_after: Duration::from_secs(60),
             max_age: Some(Duration::from_millis(50)),
             history: 0,
+            probe_every: Duration::from_millis(60),
         });
         for id in 1..=20 {
             g.add(vec![rec("a", id)]).await.unwrap();
