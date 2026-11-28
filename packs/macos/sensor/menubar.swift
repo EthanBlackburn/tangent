@@ -436,7 +436,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             if needsFda {
                 button.toolTip = "Tangent — Grant Full Disk Access"
             } else if hasAuthErr {
-                button.toolTip = "Tangent — API key rejected"
+                button.toolTip = "Tangent — \(AuthProblem(activeAuthError ?? "").short)"
             } else {
                 button.toolTip = "Tangent — Attention needed"
             }
@@ -498,9 +498,10 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
             headerTitle = "Needs Full Disk Access"
             headerSymbol = "exclamationmark.triangle.fill"
             headerColor = .systemOrange
-        } else if authErr != nil {
-            headerTitle = "API Key Rejected"
-            headerSymbol = "key.slash.fill"
+        } else if let authErr {
+            let problem = AuthProblem(authErr)
+            headerTitle = problem.title
+            headerSymbol = problem.aKeyMendsIt ? "key.slash.fill" : "exclamationmark.triangle.fill"
             headerColor = .systemOrange
         } else if hasError {
             headerTitle = "Watcher Stopped (Error)"
@@ -590,9 +591,15 @@ private final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDe
 
         if let authErr {
             menu.addItem(.separator())
-            let fixKey = NSMenuItem(title: "Update API Key…", action: #selector(openUpdateActiveKey), keyEquivalent: "")
+            // a key is offered only for what a key mends; the rest opens the
+            // window, where the provider's own words are
+            let aKeyMendsIt = AuthProblem(authErr).aKeyMendsIt
+            let fixKey = NSMenuItem(
+                title: aKeyMendsIt ? "Update API Key…" : "See Why…",
+                action: aKeyMendsIt ? #selector(openUpdateActiveKey) : #selector(openMainWindow),
+                keyEquivalent: "")
             fixKey.target = self
-            fixKey.image = symbolImage("key.fill", color: .systemOrange)
+            fixKey.image = symbolImage(aKeyMendsIt ? "key.fill" : "exclamationmark.triangle.fill", color: .systemOrange)
             fixKey.toolTip = authErr
             menu.addItem(fixKey)
         }

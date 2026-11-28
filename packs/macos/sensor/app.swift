@@ -818,7 +818,7 @@ private struct SidebarColumn: View {
     private var statusWord: String {
         if let busy = store.busyAction { return busy }
         if store.needsFda { return "Needs access" }
-        if store.authError != nil { return "Key rejected" }
+        if let err = store.authError { return AuthProblem(err).short }
         if store.isAlive {
             return store.status?.state == "starting" ? "Starting" : "Watching"
         }
@@ -951,7 +951,8 @@ private struct ActivitySidebarList: View {
                             SidebarActivityRow(
                                 entry: entry,
                                 isSelected: store.selectedEvent?.id == entry.id,
-                                answer: store.answered[entry.feedbackKey]
+                                answer: store.answered[entry.feedbackKey],
+                                blocked: store.authError != nil
                             )
                             .onTapGesture { store.selectedEventId = entry.id }
                         }
@@ -972,10 +973,44 @@ private struct ActivitySidebarList: View {
     }
 }
 
+/// What a provider's refusal is, in the few words there is room for. Not
+/// every one is a key's: an account that is not sold a model, and an AWS
+/// sign-in that has run out, are refused the same way, and a new key mends
+/// neither.
+struct AuthProblem {
+    /// Two words, for the status pill and a row's badge.
+    let short: String
+    /// The banner's title.
+    let title: String
+    /// Whether saving a key again could mend it.
+    let aKeyMendsIt: Bool
+
+    init(_ error: String) {
+        let e = error.lowercased()
+        if e.contains("sign-in has expired") || e.contains("sso") || e.contains("token has expired") {
+            short = "Sign-in expired"
+            title = "Your AWS sign-in has expired"
+            aKeyMendsIt = false
+        } else if e.contains("payment_instrument") || e.contains("model access is denied")
+            || e.contains("insufficient_quota") || e.contains("credit balance")
+        {
+            short = "Model blocked"
+            title = "Your account is not served this model"
+            aKeyMendsIt = false
+        } else {
+            short = "Key rejected"
+            title = "API key rejected or expired"
+            aKeyMendsIt = true
+        }
+    }
+}
+
 private struct SidebarActivityRow: View {
     let entry: FlaggedEntry
     let isSelected: Bool
     let answer: String?
+    /// Whether the models are refused: a review that waits is not under way.
+    let blocked: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -1009,7 +1044,7 @@ private struct SidebarActivityRow: View {
                         .foregroundColor(Theme.inkTertiary)
                         .padding(.top, 1)
                 } else if entry.kind == .reviewing {
-                    Text("Reviewing…")
+                    Text(blocked ? "Not reviewed: the model is refused" : "Reviewing…")
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundColor(Theme.amber)
                         .padding(.top, 1)
@@ -1117,15 +1152,16 @@ private struct ActionBannerStrip: View {
             }
 
             if let authErr = store.authError {
+                let problem = AuthProblem(authErr)
                 bannerRow(
-                    icon: "key.slash.fill",
+                    icon: problem.aKeyMendsIt ? "key.slash.fill" : "exclamationmark.triangle.fill",
                     tint: Theme.amber,
-                    title: "API key rejected or expired",
+                    title: problem.title,
                     detail: authErr,
-                    buttonTitle: "Update key"
+                    buttonTitle: problem.aKeyMendsIt ? "Update key" : "Models"
                 ) {
                     store.selectedTab = .models
-                    if let current = store.currentChoice, !current.envVars.isEmpty {
+                    if problem.aKeyMendsIt, let current = store.currentChoice, !current.envVars.isEmpty {
                         store.keySheetChoice = current
                     }
                 }
@@ -1624,7 +1660,16 @@ private struct ProviderSettingsRow: View {
                 if choice.current {
                     if !choice.envVars.isEmpty {
                         let isProfileOnly = choice.envVars.allSatisfy { !$0.secret }
-                        if store.authError != nil {
+                        if let err = store.authError, !AuthProblem(err).aKeyMendsIt {
+                            // no key mends it: it is said, and nothing is offered
+                            Text(AuthProblem(err).short)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundColor(Theme.amber)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(Theme.amber.opacity(0.14))
+                                .clipShape(Capsule())
+                        } else if store.authError != nil {
                             Button("Fix key") {
                                 store.keySheetChoice = choice
                             }
