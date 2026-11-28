@@ -179,7 +179,11 @@ func liveReviewSteps(dir: String) -> [String: [ReviewStep]] {
 }
 
 struct FlaggedEntry: Identifiable, Equatable {
+    /// The same from one reading of the files to the next, so that what is
+    /// chosen stays chosen as entries arrive.
     let id: String
+    /// The session and its window: an alert's and its review's are the same.
+    var sessionKey: String = ""
     let ts: String
     let kind: FlaggedKind
     let subject: String
@@ -440,11 +444,12 @@ private func formatExactTime(_ rfc3339: String) -> String {
 func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry] {
     var entries: [FlaggedEntry] = []
     var reviewedKeys = Set<String>()
+    var ids = Set<String>()
 
     let reviewsPath = (dir as NSString).appendingPathComponent("reviews.ndjson")
     if let text = try? String(contentsOfFile: reviewsPath, encoding: .utf8) {
         let lines = text.split(separator: "\n")
-        for (idx, raw) in lines.reversed().enumerated() {
+        for raw in lines.reversed() {
             if entries.count >= maxEntries { break }
             guard let data = raw.data(using: .utf8),
                   let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -507,8 +512,12 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
                 reviewedKeys.insert(sid)
             }
             let feedbackKey = "\(sid)|\(ts)"
+            // two reviews of a window written in one second are told apart
+            var id = "rev-\(sid)-\(window)-\(ts)"
+            while !ids.insert(id).inserted { id += "+" }
             entries.append(FlaggedEntry(
-                id: "rev-\(idx)-\(sid)-\(ts)",
+                id: id,
+                sessionKey: "\(sid)|\(window)",
                 ts: ts,
                 kind: kind,
                 subject: subject,
@@ -537,7 +546,7 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
         let recentAlertLines = text.split(separator: "\n").suffix(40).reversed()
         var pending: [FlaggedEntry] = []
         var seenPending = Set<String>()
-        for (idx, raw) in recentAlertLines.enumerated() {
+        for raw in recentAlertLines {
             guard let data = raw.data(using: .utf8),
                   let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             else { continue }
@@ -577,8 +586,11 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
             let unreviewedNote = judgeError.isEmpty
                 ? "The judge flagged this session and no review of it was finished, so nobody has looked into it."
                 : "The model could not be asked about this session, so it was never checked. It is not a finding.\n\n\(judgeError)"
+            var id = "alert-\(sid)-\(window)-\(ts)"
+            while !ids.insert(id).inserted { id += "+" }
             pending.append(FlaggedEntry(
-                id: "alert-\(idx)-\(sid)-\(ts)",
+                id: id,
+                sessionKey: "\(sid)|\(window)",
                 ts: ts,
                 kind: dropped ? .unreviewed : .reviewing,
                 subject: subject,
@@ -652,6 +664,9 @@ final class TangentStore: ObservableObject {
     @Published var unfurled: Set<ActivitySection> = []
     @Published var searchText: String = ""
     @Published var selectedEventId: String?
+    /// The session and window of the entry last chosen: when its alert is
+    /// replaced by its review, the review is what stays chosen.
+    private var selectedSessionKey: String?
     @Published var keySheetChoice: ModelChoice?
 
     var onRunCLI: (([String], String) -> Void)?
@@ -732,7 +747,16 @@ final class TangentStore: ObservableObject {
         if let id = selectedEventId, let found = filteredEvents.first(where: { $0.id == id }) {
             return found
         }
+        if let key = selectedSessionKey, let found = filteredEvents.first(where: { $0.sessionKey == key }) {
+            return found
+        }
         return firstEvent
+    }
+
+    /// Chooses an entry to show, and remembers which session's it is.
+    func choose(_ entry: FlaggedEntry) {
+        if selectedEventId != entry.id { selectedEventId = entry.id }
+        selectedSessionKey = entry.sessionKey.isEmpty || entry.sessionKey == "|" ? nil : entry.sessionKey
     }
 
     func reloadHistory() {
@@ -742,8 +766,10 @@ final class TangentStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.events = loaded
-                if self.selectedEventId == nil {
-                    self.selectedEventId = self.firstEvent?.id
+                // What was being read stays, whatever arrived: only when
+                // nothing is chosen is the first taken.
+                if let shown = self.selectedEvent {
+                    self.choose(shown)
                 }
             }
         }
@@ -752,7 +778,7 @@ final class TangentStore: ObservableObject {
     func selectAlert(matchingSubjectOrTs ts: String, subject: String) {
         selectedTab = .activity
         if let hit = events.first(where: { (!ts.isEmpty && $0.ts == ts) || (!subject.isEmpty && ($0.subject == subject || $0.who == subject)) }) {
-            selectedEventId = hit.id
+            choose(hit)
         } else {
             let dir = watchDir
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -761,7 +787,7 @@ final class TangentStore: ObservableObject {
                     guard let self else { return }
                     self.events = loaded
                     if let hit = loaded.first(where: { (!ts.isEmpty && $0.ts == ts) || (!subject.isEmpty && ($0.subject == subject || $0.who == subject)) }) {
-                        self.selectedEventId = hit.id
+                        self.choose(hit)
                     } else {
                         self.selectedEventId = self.firstEvent?.id
                     }
@@ -1155,7 +1181,7 @@ private struct ActivitySidebarList: View {
                         answer: store.answered[entry.feedbackKey],
                         blocked: store.authError != nil
                     )
-                    .onTapGesture { store.selectedEventId = entry.id }
+                    .onTapGesture { store.choose(entry) }
                 }
                 showAll(section, count: rows.count)
             }
