@@ -62,6 +62,9 @@ pub struct Group {
     pub done: Arc<dyn Ack>,
     /// Records a stop saved, read back: `done` forgets them.
     pub saved: bool,
+    /// How many times the plugin's call has been made with them and ended
+    /// unanswered ([`crate::pending::Saved::tries`]).
+    pub tries: usize,
 }
 
 /// Where closed groups go: the grouped plugin's worker pool.
@@ -365,6 +368,7 @@ impl Task {
             context,
             done,
             saved: false,
+            tries: 0,
         };
         // Out from here: the group's ack, fired or dropped, frees the key.
         if let Some(k) = self.keys.get_mut(&key) {

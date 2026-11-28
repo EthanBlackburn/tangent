@@ -30,7 +30,7 @@ use tangent_compact as compact;
 use tangent_shared::inference::{Encoding, InferenceConfig};
 use tangent_shared::models::{ModelConfig, ModelKind};
 
-mod model;
+pub(crate) mod model;
 pub mod price;
 pub mod serve;
 pub use model::Model;

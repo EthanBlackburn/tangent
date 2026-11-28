@@ -42,6 +42,7 @@ plugins:
     # workers, so a review holds up neither the capture nor the judge.
     group_by: [session.id, session.window]
     workers: 3                     # three reviews at once
+    attempts: 3                    # one that ended on a model or a lake that did not answer is made again, twice
     expire_after_ms: 10000
     config:
       model: reviewer

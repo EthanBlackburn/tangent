@@ -77,6 +77,7 @@ plugins:
     data: /                      # the records' paths are absolute. It reads only a file a record gives a reason to, never credentials or transcripts
     group_by: [session.id, session.window]
     workers: 3                   # three reviews at once: a review takes a minute or two, and alerts come in bursts
+    attempts: 3                  # a review that ended on a model or a lake that did not answer is made again a minute later, twice
     expire_after_ms: 10000       # the lake has a record once it is written, so no alert waits for a file
     config:
       model: reviewer

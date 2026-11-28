@@ -1214,6 +1214,7 @@ fn every_path_field_is_rebased() {
         tables: _, // sinks' names
         inference: _,
         drop_on_error: _,
+        attempts: _,
         group_by: _,
         workers: _,
         max_events: _,

@@ -39,6 +39,9 @@ pub struct Saved {
     pub key: String,
     pub node: NodeRef,
     pub records: Vec<JsonLogView>,
+    /// How many times a plugin's call has been made with them and ended
+    /// unanswered (`attempts`): none for what a stop saved.
+    pub tries: usize,
 }
 
 impl Pending {
@@ -53,6 +56,17 @@ impl Pending {
     /// next start, under the key given back: none for no records. They
     /// never expire.
     pub async fn save(&self, node: &NodeRef, records: &[JsonLogView]) -> Result<Option<String>> {
+        self.save_tried(node, records, 0).await
+    }
+
+    /// As [`Self::save`], for records a plugin's call has been made with
+    /// `tries` times in vain.
+    pub async fn save_tried(
+        &self,
+        node: &NodeRef,
+        records: &[JsonLogView],
+        tries: usize,
+    ) -> Result<Option<String>> {
         if records.is_empty() {
             return Ok(None);
         }
@@ -67,7 +81,11 @@ impl Pending {
             .map_or(0, |d| d.as_millis());
         // In the order saved, which is the order read back.
         let key = format!("{now:013}-{:08}", self.seq.fetch_add(1, Ordering::Relaxed));
-        let value = StateValue::Json(json!({"kind": kind, "name": **name, "records": lines}));
+        let mut value = json!({"kind": kind, "name": **name, "records": lines});
+        if tries > 0 {
+            value["tries"] = json!(tries);
+        }
+        let value = StateValue::Json(value);
         self.store.set(PENDING_NS, &key, &value, Some(0)).await?;
         Ok(Some(key))
     }
@@ -77,11 +95,12 @@ impl Pending {
         let Some(value) = self.store.get(PENDING_NS, key).await? else {
             return Ok(None);
         };
-        let (node, records) = read(&value)?;
+        let (node, records, tries) = read(&value)?;
         Ok(Some(Saved {
             key: key.to_string(),
             node,
             records,
+            tries,
         }))
     }
 
@@ -95,10 +114,11 @@ impl Pending {
         let mut saved = Vec::with_capacity(entries.len());
         for entry in entries {
             match read(&entry.value) {
-                Ok((node, records)) => saved.push(Saved {
+                Ok((node, records, tries)) => saved.push(Saved {
                     key: entry.key,
                     node,
                     records,
+                    tries,
                 }),
                 Err(e) => {
                     tracing::warn!(key = %entry.key, "saved records left unread: {e:#}");
@@ -113,7 +133,7 @@ impl Pending {
     }
 }
 
-fn read(value: &StateValue) -> Result<(NodeRef, Vec<JsonLogView>)> {
+fn read(value: &StateValue) -> Result<(NodeRef, Vec<JsonLogView>, usize)> {
     let StateValue::Json(v) = value else {
         bail!("not what a stop saves");
     };
@@ -130,7 +150,8 @@ fn read(value: &StateValue) -> Result<(NodeRef, Vec<JsonLogView>)> {
         .filter_map(Value::as_str)
         .map(|line| JsonLogView::from_bytes(BytesMut::from(line)))
         .collect::<Result<_>>()?;
-    Ok((node, records))
+    let tries = v["tries"].as_u64().unwrap_or(0) as usize;
+    Ok((node, records, tries))
 }
 
 /// The ack of saved records handed back to their node: fired once they are
