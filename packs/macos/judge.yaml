@@ -15,5 +15,6 @@ inference:
     schema_file: judge.schema.json
     encoding: { type: ndjson }
     unreached: hold              # a model that is not reached, or will not serve the key: its sessions wait and are asked again
+    cache: true                  # the brief is kept by the provider between requests, and read back at a tenth of its price or less
     batch_bytes: 48000
     max_tokens: 500

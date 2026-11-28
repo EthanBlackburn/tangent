@@ -104,6 +104,7 @@ inference:
     batch_bytes: {{batch_bytes}}
     encoding: { type: ndjson }   # a summary is sent as it is, a JSON line
     unreached: hold              # a model that is not reached, or will not serve the key: its sessions wait and are asked again
+    cache: true                  # the brief is kept by the provider between requests, and read back at a tenth of its price or less
 
   # The reviewer settles what the judge marked. It has no inputs: plugin
   # macos_review holds the conversation with it.

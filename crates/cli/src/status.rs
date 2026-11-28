@@ -273,33 +273,146 @@ struct TrackerInner {
 
 const USAGE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// This run's tokens, cost and rate, as `status.json` has them. `nodes` is
-/// each inference node's name and totals, `checked` the sessions judged and
-/// `seconds` how long the run has been going.
+/// What the models were asked and what it cost, an hour at a time, kept in
+/// the watch's directory so that a day's cost is what was measured and not
+/// the first minutes of a run stretched to a day. An hour is the hours
+/// since 1970, and has only the time a watch was running in it.
+pub struct Ledger {
+    path: PathBuf,
+    hours: std::collections::BTreeMap<u64, Hour>,
+    saved: std::time::Instant,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Hour {
+    cost: f64,
+    tokens: f64,
+    checked: f64,
+    /// The seconds of the hour a watch was running.
+    seconds: f64,
+}
+
+/// The last day as the ledger has it: what was spent and checked over the
+/// `hours` a watch was running in it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Day {
+    pub cost: f64,
+    pub tokens: f64,
+    pub checked: f64,
+    pub hours: f64,
+}
+
+const LEDGER: &str = "usage-hours.json";
+const LEDGER_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+/// The hours kept: two days.
+const LEDGER_HOURS: u64 = 48;
+
+impl Ledger {
+    pub fn open(dir: &Path) -> Self {
+        let path = dir.join(LEDGER);
+        let read: Option<Value> = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let mut hours = std::collections::BTreeMap::new();
+        for (hour, of) in read.as_ref().and_then(Value::as_object).into_iter().flatten() {
+            let n = |k: &str| of.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+            if let Ok(hour) = hour.parse() {
+                hours.insert(
+                    hour,
+                    Hour {
+                        cost: n("cost"),
+                        tokens: n("tokens"),
+                        checked: n("checked"),
+                        seconds: n("seconds"),
+                    },
+                );
+            }
+        }
+        Self {
+            path,
+            hours,
+            saved: std::time::Instant::now(),
+        }
+    }
+
+    /// Adds what was spent and checked in the `seconds` just gone to hour
+    /// `hour`, and writes the ledger every [`LEDGER_EVERY`].
+    pub fn add(&mut self, hour: u64, cost: f64, tokens: f64, checked: f64, seconds: f64) {
+        let of = self.hours.entry(hour).or_default();
+        of.cost += cost;
+        of.tokens += tokens;
+        of.checked += checked;
+        of.seconds += seconds;
+        self.hours.retain(|h, _| h + LEDGER_HOURS > hour);
+        if self.saved.elapsed() >= LEDGER_EVERY {
+            self.saved = std::time::Instant::now();
+            let out: serde_json::Map<String, Value> = self
+                .hours
+                .iter()
+                .map(|(h, of)| {
+                    (
+                        h.to_string(),
+                        json!({"cost": of.cost, "tokens": of.tokens, "checked": of.checked, "seconds": of.seconds}),
+                    )
+                })
+                .collect();
+            let tmp = self.path.with_extension("json.tmp");
+            if fs::write(&tmp, Value::Object(out).to_string()).is_ok() {
+                let _ = fs::rename(&tmp, &self.path);
+            }
+        }
+    }
+
+    /// The 24 hours up to `hour`.
+    pub fn day(&self, hour: u64) -> Day {
+        let mut day = Day::default();
+        for of in self.hours.range(hour.saturating_sub(23)..=hour).map(|(_, of)| of) {
+            day.cost += of.cost;
+            day.tokens += of.tokens;
+            day.checked += of.checked;
+            day.hours += of.seconds / 3600.0;
+        }
+        day
+    }
+}
+
+/// The hour it is, in hours since 1970.
+pub fn hour_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() / 3600)
+}
+
+/// The shortest time a day's figures are worked out from.
+const MEASURED_LEAST: f64 = 5.0 / 60.0;
+
+/// The tokens, cost and rate `status.json` has. `nodes` is each inference
+/// node's name and this run's totals; `day` the last 24 hours as the
+/// [`Ledger`] measured them, restarts included.
 ///
-/// - `tokens`: every token of every request.
+/// - `tokens`: every token of this run's requests.
 /// - `output_tokens_per_second`: by node, its output tokens over the time
-///   its requests took.
+///   its requests took, in this run.
+/// - `measured_hours`: how much of the last 24 hours a watch was running,
+///   which the rest are worked out from once it is five minutes; until
+///   then they are left out and `measuring_seconds_left` says how long.
 /// - `tokens_per_activity`, `cost_per_activity`: over the sessions checked,
 ///   the judge's requests and the reviews together.
-/// - `cost`, `cost_per_day`: USD at the providers' listed prices, and the
-///   same at this run's rate for a day. `priced` is false when a model has
-///   no listed price, and then the costs are left out.
+/// - `cost_per_day`: USD at the providers' listed prices, what was spent
+///   in the measured hours brought to 24. `priced` is false when a model
+///   has no listed price, and then the costs are left out.
 /// - `activities_per_second`, `activities_per_day`: sessions checked, at
-///   this run's rate.
-pub fn usage(
-    nodes: &[(&str, tangent_runtime::InferenceTotals)],
-    checked: u64,
-    seconds: f64,
-) -> Option<Value> {
+///   the measured hours' rate.
+pub fn usage(nodes: &[(&str, tangent_runtime::InferenceTotals)], day: &Day) -> Option<Value> {
     let requests: u64 = nodes.iter().map(|(_, t)| t.requests).sum();
-    if requests == 0 || seconds <= 0.0 {
+    if requests == 0 {
         return None;
     }
     let tokens: u64 = nodes.iter().map(|(_, t)| t.tokens.all()).sum();
-    let cost: f64 = nodes.iter().map(|(_, t)| t.cost).sum();
     let priced = nodes.iter().all(|(_, t)| t.unpriced == 0);
-    let per = |n: f64| (checked > 0).then(|| n / checked as f64);
+    let measured = day.hours >= MEASURED_LEAST;
+    let per = |n: f64| (measured && day.checked > 0.0).then(|| n / day.checked);
+    let a_day = |n: f64| measured.then(|| n / day.hours * 24.0);
     let speed: serde_json::Map<String, Value> = nodes
         .iter()
         .filter(|(_, t)| t.seconds > 0.0)
@@ -308,13 +421,15 @@ pub fn usage(
     Some(json!({
         "tokens": tokens,
         "output_tokens_per_second": speed,
-        "tokens_per_activity": per(tokens as f64),
+        "measured_hours": day.hours,
+        // how long until there is enough to work a day out from
+        "measuring_seconds_left": (!measured).then(|| ((MEASURED_LEAST - day.hours) * 3600.0).ceil()),
+        "tokens_per_activity": per(day.tokens),
         "priced": priced,
-        "cost": priced.then_some(cost),
-        "cost_per_day": priced.then(|| cost / seconds * 86400.0),
-        "cost_per_activity": per(cost).filter(|_| priced),
-        "activities_per_second": checked as f64 / seconds,
-        "activities_per_day": checked as f64 / seconds * 86400.0,
+        "cost_per_day": a_day(day.cost).filter(|_| priced),
+        "cost_per_activity": per(day.cost).filter(|_| priced),
+        "activities_per_second": a_day(day.checked).map(|n| n / 86400.0),
+        "activities_per_day": a_day(day.checked),
     }))
 }
 
@@ -632,7 +747,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn usage_is_per_activity_and_per_day_at_the_run_s_rate() {
+    fn usage_is_what_the_ledger_measured_brought_to_a_day() {
         use tangent_runtime::inference::price::Tokens;
         use tangent_runtime::InferenceTotals;
         let judge = InferenceTotals {
@@ -642,34 +757,50 @@ mod tests {
             cost: 0.01,
             unpriced: 0,
         };
-        let reviewer = InferenceTotals {
-            requests: 2,
-            seconds: 50.0,
-            tokens: Tokens { cache_read: 85_000, output: 5000, ..Tokens::default() },
-            cost: 0.09,
-            unpriced: 0,
-        };
-        assert_eq!(usage(&[("judge", InferenceTotals::default())], 0, 60.0), None);
-        // an hour's run: 20 sessions checked
-        let u = usage(&[("judge", judge), ("reviewer", reviewer)], 20, 3600.0).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(dir.path());
+        // six hours of a watch in the last day, in two runs, and an hour
+        // from two days ago that is no part of it
+        ledger.add(1000 - 30, 9.0, 9e6, 900.0, 3600.0);
+        ledger.add(1000 - 5, 0.20, 40_000.0, 10.0, 3.0 * 3600.0);
+        ledger.add(1000, 0.30, 60_000.0, 10.0, 3.0 * 3600.0);
+        let day = ledger.day(1000);
+        assert_eq!(day.hours, 6.0);
+        assert_eq!(usage(&[("judge", InferenceTotals::default())], &day), None);
+        let u = usage(&[("judge", judge)], &day).unwrap();
         let near = |k: &str, want: f64| {
             let got = u.pointer(k).and_then(Value::as_f64).unwrap();
             assert!((got - want).abs() < 1e-9, "{k}: {got} != {want}");
         };
-        assert_eq!(u["tokens"], 100_000);
         near("/output_tokens_per_second/judge", 50.0);
-        near("/output_tokens_per_second/reviewer", 100.0);
+        near("/measured_hours", 6.0);
         near("/tokens_per_activity", 5000.0);
-        near("/cost", 0.10);
-        near("/cost_per_day", 2.40);
-        near("/cost_per_activity", 0.005);
-        near("/activities_per_second", 20.0 / 3600.0);
-        near("/activities_per_day", 480.0);
+        near("/cost_per_day", 2.0);
+        assert_eq!(u["measuring_seconds_left"], Value::Null);
+        near("/cost_per_activity", 0.025);
+        near("/activities_per_day", 80.0);
+        near("/activities_per_second", 80.0 / 86400.0);
         // a model with no listed price: no cost is said
-        let unknown = InferenceTotals { unpriced: 1, ..reviewer };
-        let u = usage(&[("judge", judge), ("reviewer", unknown)], 20, 3600.0).unwrap();
-        assert_eq!((&u["priced"], &u["cost"], &u["cost_per_day"]), (&json!(false), &Value::Null, &Value::Null));
+        let unknown = InferenceTotals { unpriced: 1, ..judge };
+        let u = usage(&[("judge", unknown)], &day).unwrap();
+        assert_eq!((&u["priced"], &u["cost_per_day"]), (&json!(false), &Value::Null));
         assert_eq!(u["cost_per_activity"], Value::Null);
+        // a first minute is not a day
+        let young = Day { cost: 0.19, tokens: 5e5, checked: 76.0, hours: 0.06 };
+        let u = usage(&[("judge", judge)], &young).unwrap();
+        assert_eq!(u["cost_per_day"], Value::Null);
+        assert_eq!(u["measuring_seconds_left"], 84.0);
+    }
+
+    #[test]
+    fn the_ledger_is_read_back_by_the_next_watch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(dir.path());
+        ledger.saved = std::time::Instant::now() - LEDGER_EVERY;
+        ledger.add(500, 0.5, 1000.0, 4.0, 1800.0);
+        let again = Ledger::open(dir.path());
+        assert_eq!(again.day(500), Day { cost: 0.5, tokens: 1000.0, checked: 4.0, hours: 0.5 });
+        assert_eq!(again.day(600), Day::default());
     }
 
     #[test]

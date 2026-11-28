@@ -1922,17 +1922,22 @@ private struct HealthStage: View {
                     }
                     if !s.usage.isEmpty {
                         let u = s.usage
-                        group("Tokens and cost · this run") {
+                        let left = u["measuring_seconds_left"]
+                        let waiting = left.map { "Measuring, ready in about \(max(1, Int(($0 / 60).rounded(.up)))) min" }
+                        let none = waiting ?? "No listed price for this model"
+                        group(left == nil
+                            ? String(format: "Tokens and cost · from the last %.1f h measured", u["measured_hours"] ?? 0)
+                            : "Tokens and cost") {
                             row("Output speed", ["judge", "reviewer"].compactMap { node in
                                 u["speed.\(node)"].map { "\(node) \(Int($0.rounded())) tok/s" }
                             }.joined(separator: "  ·  "))
-                            row("Tokens per activity", u["tokens_per_activity"].map(counted) ?? "–")
-                            row("Cost per activity", u["cost_per_activity"].map(dollars) ?? "no listed price")
-                            row("Cost per day", u["cost_per_day"].map(dollars) ?? "no listed price")
+                            row("Tokens per activity", u["tokens_per_activity"].map(counted) ?? (waiting ?? "–"))
+                            row("Cost per activity", u["cost_per_activity"].map(dollars) ?? none)
+                            row("Cost per day", u["cost_per_day"].map(dollars) ?? none)
                         }
-                        group("Activity · at this run's rate") {
-                            row("Per second", u["activities_per_second"].map { String(format: "%.2f", $0) } ?? "–")
-                            row("Per day", u["activities_per_day"].map(counted) ?? "–")
+                        group("Activity") {
+                            row("Per second", u["activities_per_second"].map { String(format: "%.2f", $0) } ?? (waiting ?? "–"))
+                            row("Per day", u["activities_per_day"].map(counted) ?? (waiting ?? "–"))
                         }
                     }
                 }

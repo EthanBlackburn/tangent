@@ -34,3 +34,9 @@ panic = "unwind"
 
 [profile.profiling.package."*"]
 debug = 2
+
+# rig-bedrock 0.45.0 with one change, in vendor/rig-bedrock/src/request.rs: a
+# conversation's cache checkpoint is placed after a reasoning turn too. Drop
+# this when a release of rig-bedrock places it.
+[patch.crates-io]
+rig-bedrock = { path = "vendor/rig-bedrock" }

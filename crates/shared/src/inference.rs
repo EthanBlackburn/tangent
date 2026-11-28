@@ -78,6 +78,15 @@ pub struct InferenceConfig {
     /// way, since asking again gets the same.
     #[serde(default, skip_serializing_if = "Unreached::is_pass")]
     pub unreached: Unreached,
+
+    /// Asks the provider to keep the prompt for the requests that follow,
+    /// where it can: what is read back costs a tenth or less of what it
+    /// would, and writing it costs a quarter more at Anthropic and Bedrock.
+    /// Worth it for a node asked more often than every five minutes whose
+    /// prompt is long enough for its model to keep (some 2,000 tokens or
+    /// more). A plugin's conversation asks for it itself, a turn at a time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cache: bool,
 }
 
 /// [`InferenceConfig::unreached`].

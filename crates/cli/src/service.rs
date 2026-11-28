@@ -529,6 +529,13 @@ fn counted(n: f64) -> String {
     }
 }
 
+/// What stands where a figure will be while too little has been measured
+/// to work it out, with how long that is.
+fn measuring(seconds_left: f64) -> String {
+    let minutes = (seconds_left / 60.0).ceil().max(1.0);
+    format!("measuring, ready in about {minutes:.0} min")
+}
+
 /// USD as it is read: cents when there are some, else to four places.
 fn dollars(usd: f64) -> String {
     if usd >= 0.1 {
@@ -599,12 +606,24 @@ fn health_lines(
         let unpriced = || "unknown: a model has no listed price".to_string();
         lines.push((
             "Cost per activity",
-            n("/cost_per_activity").map_or_else(unpriced, dollars),
+            match (n("/cost_per_activity"), n("/measuring_seconds_left")) {
+                (Some(v), _) => dollars(v),
+                (None, Some(left)) => measuring(left),
+                _ => unpriced(),
+            },
             false,
         ));
         lines.push((
             "Cost per day",
-            n("/cost_per_day").map_or_else(unpriced, |v| format!("{} at this run's rate", dollars(v))),
+            match (n("/cost_per_day"), n("/measuring_seconds_left")) {
+                (Some(v), _) => format!(
+                    "{} from the last {:.1} h measured",
+                    dollars(v),
+                    n("/measured_hours").unwrap_or(0.0)
+                ),
+                (None, Some(left)) => measuring(left),
+                _ => unpriced(),
+            },
             false,
         ));
         if let (Some(second), Some(day)) = (n("/activities_per_second"), n("/activities_per_day")) {
@@ -1392,7 +1411,7 @@ mod tests {
 
         let used = snap(&|v| {
             v["usage"] = json!({"output_tokens_per_second": {"judge": 84.6}, "tokens_per_activity": 5234.0,
-                "cost_per_activity": 0.0041, "cost_per_day": 2.4,
+                "cost_per_activity": 0.0041, "cost_per_day": 2.4, "measured_hours": 6.25,
                 "activities_per_second": 0.118, "activities_per_day": 10195.0})
         });
         let (_, lines) = health_lines(Some(&used), true, true);
@@ -1400,8 +1419,17 @@ mod tests {
         assert_eq!(said("Output speed"), "judge 85 tok/s");
         assert_eq!(said("Tokens per activity"), "5.2k");
         assert_eq!(said("Cost per activity"), "$0.0041");
-        assert_eq!(said("Cost per day"), "$2.40 at this run's rate");
+        assert_eq!(said("Cost per day"), "$2.40 from the last 6.2 h measured");
         assert_eq!(said("Activities"), "0.12/s · 10.2k/day");
+
+        let young = snap(&|v| {
+            v["usage"] = json!({"output_tokens_per_second": {"judge": 84.6},
+                "measured_hours": 0.03, "measuring_seconds_left": 192.0})
+        });
+        let (_, lines) = health_lines(Some(&young), true, true);
+        let said = |name: &str| lines.iter().find(|l| l.0 == name).unwrap().1.clone();
+        assert_eq!(said("Cost per day"), "measuring, ready in about 4 min");
+        assert_eq!(said("Cost per activity"), "measuring, ready in about 4 min");
     }
 
     #[test]
