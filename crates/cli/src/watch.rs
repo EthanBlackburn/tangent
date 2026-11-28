@@ -195,11 +195,15 @@ pub async fn cloud(
 
 /// `tangent watch mac`: the pipeline `tangent init mac` writes, kept in
 /// tangent's own directory, and run.
-pub async fn mac(provider: Option<Provider>, no_notify: bool) -> Result<()> {
-    let mac = Mac::new(provider).watched();
+pub async fn mac(
+    provider: Option<Provider>,
+    named: Option<(String, String)>,
+    no_notify: bool,
+) -> Result<()> {
+    let (who, pair) = mac::brief_of(provider, named.as_ref());
+    let mac = Mac::new(provider).naming(named)?.watched();
     mac::runs_here(&mac)?;
     needed(&mac.config(), &mac.needs())?;
-    let (who, pair) = mac::brief(provider);
     let mode = if provider.is_some() { "hosted" } else { "local" };
     let models = format!("{pair} · {who}");
     start(Pipeline {

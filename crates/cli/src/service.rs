@@ -73,6 +73,16 @@ fn read_choice(dir: &Path) -> Option<Option<Provider>> {
     }
 }
 
+/// The models `tangent up --model` last named, the judge's and the
+/// reviewer's: service.json's `models`, which is not there for a pair.
+fn read_named(dir: &Path) -> Option<(String, String)> {
+    let val = read_service_json(dir);
+    match val.get("models")?.as_array()?.as_slice() {
+        [Value::String(judge), Value::String(reviewer)] => Some((judge.clone(), reviewer.clone())),
+        _ => None,
+    }
+}
+
 fn read_nonsecret_env(dir: &Path) -> BTreeMap<String, String> {
     let val = read_service_json(dir);
     let mut out = BTreeMap::new();
@@ -91,11 +101,16 @@ fn read_nonsecret_env(dir: &Path) -> BTreeMap<String, String> {
 fn write_service_state(
     dir: &Path,
     provider: Option<Provider>,
+    named: Option<&(String, String)>,
     nonsecret_env: Option<&BTreeMap<String, String>>,
 ) -> Result<()> {
     let mut root = read_service_json(dir);
     let map = root.as_object_mut().expect("object");
     map.insert("provider".to_string(), json!(provider.map(provider_name)));
+    match named {
+        Some((judge, reviewer)) => map.insert("models".to_string(), json!([judge, reviewer])),
+        None => map.remove("models"),
+    };
     if let Some(env) = nonsecret_env {
         let filtered: serde_json::Map<String, Value> = env
             .iter()
@@ -251,7 +266,11 @@ fn parse_env(text: &str) -> BTreeMap<String, String> {
 /// `tangent up [--provider <name> | --local]`: installs the privileged
 /// sensor daemon if needed (one sudo prompt) and starts the unprivileged Mac
 /// watcher + native menu bar in the background.
-pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()> {
+pub async fn up(
+    provider_flag: Option<Provider>,
+    local_flag: bool,
+    model_flag: Option<(String, String)>,
+) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("`tangent up` manages the macOS background watcher and menu bar, and this machine is not a Mac");
     }
@@ -266,9 +285,17 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
         (None, true) => None,
         (None, false) => read_choice(&dir).unwrap_or(None),
     };
+    // The models go with the provider they were named for: naming a
+    // provider again is its pair again, and `tangent up` alone is what the
+    // last one started.
+    let named = match (model_flag, provider_flag, local_flag) {
+        (Some(models), _, _) => Some(models),
+        (None, None, false) => read_named(&dir).filter(|_| provider.is_some()),
+        (None, _, _) => None,
+    };
 
     // Validate host eligibility (Apple Silicon + 32 GB for local).
-    let mac = Mac::new(provider).watched();
+    let mac = Mac::new(provider).naming(named.clone())?.watched();
     mac::runs_here_as(&mac, "tangent up")?;
 
     // Gather provider secrets (from current shell or already in macOS Keychain)
@@ -347,7 +374,12 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
     for (var, val) in &pending_secrets {
         keychain_set(var, val)?;
     }
-    write_service_state(&dir, provider, provider.is_some().then_some(&nonsecret_env))?;
+    write_service_state(
+        &dir,
+        provider,
+        named.as_ref(),
+        provider.is_some().then_some(&nonsecret_env),
+    )?;
     // Remove any legacy plaintext `env` file now that secrets live in Keychain.
     let _ = fs::remove_file(dir.join(LEGACY_ENV_FILE));
 
@@ -363,7 +395,7 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
     let tangent_bin = std::path::absolute(&tangent_bin).unwrap_or(tangent_bin);
 
     let watch_plist_path = agents_dir.join(format!("{WATCH_LABEL}.plist"));
-    let watch_xml = watch_agent_plist(&tangent_bin, &dir, provider, provider.is_some());
+    let watch_xml = watch_agent_plist(&tangent_bin, &dir, provider, named.as_ref(), provider.is_some());
     let app_plist_path = agents_dir.join(format!("{APP_LABEL}.plist"));
     let app_xml = app_agent_plist(&tangent_shared::sensor::installed_binary(), &dir, &tangent_bin);
 
@@ -404,7 +436,7 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let (who, pair) = mac::brief(provider);
+    let (who, pair) = mac::brief_of(provider, named.as_ref());
     let model_label = format!("{pair} · {who}");
 
     if let Some(snap) = &final_snap {
@@ -496,7 +528,8 @@ pub async fn show_status(as_json: bool) -> Result<()> {
     if as_json {
         let nonsecret = read_nonsecret_env(&dir);
         let in_keychain = keychain_list();
-        let choices = choices(read_choice(&dir).flatten(), init::no_inkling(), |var| {
+        let named = read_named(&dir);
+        let choices = choices(read_choice(&dir).flatten(), named.as_ref(), init::no_inkling(), |var| {
             if is_secret_var(var) {
                 (init::set(var) || in_keychain.contains(var)).then(|| "set".to_string())
             } else {
@@ -599,6 +632,7 @@ fn is_secret_var(name: &str) -> bool {
 /// values), and when it cannot start yet, why.
 fn choices(
     current: Option<Provider>,
+    named: Option<&(String, String)>,
     no_inkling: Option<String>,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Vec<Value> {
@@ -644,7 +678,9 @@ fn choices(
                 item
             })
             .collect();
-        let (name, models) = mac::brief(Some(*provider));
+        // the one that is running says the models it runs with
+        let named = named.filter(|_| current == Some(*provider));
+        let (name, models) = mac::brief_of(Some(*provider), named);
         let prov = provider_name(*provider);
         choices.push(json!({
             "provider": prov,
@@ -1080,6 +1116,7 @@ pub fn watch_agent_plist(
     tangent_bin: &Path,
     data_dir: &Path,
     provider: Option<Provider>,
+    named: Option<&(String, String)>,
     use_keychain: bool,
 ) -> String {
     let mut args = vec![
@@ -1090,6 +1127,10 @@ pub fn watch_agent_plist(
     if let Some(provider) = provider {
         args.push("--provider".to_string());
         args.push(provider_name(provider));
+        if let Some((judge, reviewer)) = named {
+            args.push("--model".to_string());
+            args.push(format!("{judge},{reviewer}"));
+        }
     }
     if use_keychain {
         args.push("--keychain".to_string());
@@ -1193,8 +1234,21 @@ mod tests {
             Path::new("/opt/homebrew/bin/tangent"),
             Path::new("/Users/a&b/.local/share/tangent/mac"),
             Some(Provider::Bedrock),
+            None,
             true,
         );
+        assert!(!watch.contains("--model"), "a pair names no model");
+        let named = ("us.anthropic.claude-haiku-5-5".to_string(), "us.anthropic.claude-sonnet-5".to_string());
+        let other = watch_agent_plist(
+            Path::new("/opt/homebrew/bin/tangent"),
+            Path::new("/tmp/mac"),
+            Some(Provider::Bedrock),
+            Some(&named),
+            true,
+        );
+        assert!(other.contains(
+            "<string>--model</string>\n        <string>us.anthropic.claude-haiku-5-5,us.anthropic.claude-sonnet-5</string>"
+        ));
         assert!(watch.contains("<string>--provider</string>\n        <string>bedrock</string>"));
         assert!(watch.contains("<string>--keychain</string>"));
         assert!(watch.contains("/Users/a&amp;b/.local/share/tangent/mac/daemon.log"));
@@ -1214,7 +1268,7 @@ mod tests {
         let mut vars = BTreeMap::new();
         vars.insert("AWS_PROFILE".to_string(), "prod".to_string());
         vars.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant-never-on-disk".to_string());
-        write_service_state(dir.path(), Some(Provider::Bedrock), Some(&vars)).unwrap();
+        write_service_state(dir.path(), Some(Provider::Bedrock), None, Some(&vars)).unwrap();
 
         let text = fs::read_to_string(dir.path().join(SERVICE_FILE)).unwrap();
         assert!(!text.contains("sk-ant-never-on-disk"), "secrets must never touch service.json");
@@ -1252,7 +1306,7 @@ mod tests {
     #[test]
     fn the_menu_bar_is_told_who_can_judge() {
         let small = Some("this Mac has 16 GB of memory".to_string());
-        let said = choices(Some(Provider::Bedrock), small, |var| match var {
+        let said = choices(Some(Provider::Bedrock), None, small, |var| match var {
             "OPENAI_API_KEY" => Some("sk-secret-do-not-leak".to_string()),
             "AWS_PROFILE" => Some("prod".to_string()),
             _ => None,
@@ -1298,9 +1352,15 @@ mod tests {
     fn who_judges_persists_in_service_json() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read_choice(dir.path()), None);
-        write_service_state(dir.path(), Some(Provider::Bedrock), None).unwrap();
+        write_service_state(dir.path(), Some(Provider::Bedrock), None, None).unwrap();
         assert_eq!(read_choice(dir.path()), Some(Some(Provider::Bedrock)));
-        write_service_state(dir.path(), None, None).unwrap();
+        // the models named go with the provider, and a pair has none
+        let named = ("a".to_string(), "b".to_string());
+        write_service_state(dir.path(), Some(Provider::Bedrock), Some(&named), None).unwrap();
+        assert_eq!(read_named(dir.path()), Some(named));
+        write_service_state(dir.path(), Some(Provider::Bedrock), None, None).unwrap();
+        assert_eq!(read_named(dir.path()), None);
+        write_service_state(dir.path(), None, None, None).unwrap();
         assert_eq!(read_choice(dir.path()), Some(None));
     }
 }
