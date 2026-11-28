@@ -33,6 +33,19 @@ use crate::{
 #[async_trait]
 pub trait Ack: Send + Sync {
     async fn ack(&self) -> Result<()>;
+
+    /// Whether records whose walk fails can go back to where they were
+    /// gathered, to go through again with what has joined them since
+    /// ([`Self::failed`]): a group's ack. Not a source's.
+    fn regroups(&self) -> bool {
+        false
+    }
+
+    /// A node of the walk could not do its work, for a reason another time
+    /// may not have. With `again` the records go back and the walk ends,
+    /// this ack unfired; without, they have had their tries and go on as
+    /// they are, and the ack still fires.
+    async fn failed(&self, _again: bool) {}
 }
 
 pub struct Record {
@@ -501,8 +514,13 @@ impl Worker {
                         // Not sent, or ended: saved for the next start, or
                         // with nowhere to save the walk ends here, unacked.
                         // Held for a model that was not reached, they go
-                        // back to the node in a while.
+                        // back to the group they were gathered in, which
+                        // goes again with what has joined it since; or,
+                        // gathered in none, to the node in a while.
                         if !unsent.is_empty() {
+                            if !self.stop.finishing() && regroup(&upstream).await {
+                                return Ok(());
+                            }
                             let Some(key) = save(&self.pending, to, &unsent).await else {
                                 return Ok(());
                             };
@@ -557,7 +575,24 @@ impl Worker {
                     }
                     return Ok(());
                 }
-                if try_again(
+                // A call that ended unanswered: the group goes back to be
+                // gathered and run again, until its tries are spent.
+                if let (Some((attempts, _)), true, false) =
+                    (&ran.unanswered, g.done.regroups(), self.stop.finishing())
+                {
+                    let again = g.tries + 1 < *attempts;
+                    tracing::info!(
+                        node = ?g.node,
+                        tried = g.tries + 1,
+                        of = attempts,
+                        "the call ended unanswered{}",
+                        if again { ", and its group goes again" } else { ": its last try" }
+                    );
+                    g.done.failed(again).await;
+                    if again {
+                        return Ok(());
+                    }
+                } else if try_again(
                     &self.pending,
                     &self.again,
                     &self.stop,
@@ -580,6 +615,9 @@ impl Worker {
                 let (out, unsent) =
                     run_inference(&self.inference, name, &g.records, &self.stop).await?;
                 if !unsent.is_empty() {
+                    if !self.stop.finishing() && regroup(std::slice::from_ref(&g.done)).await {
+                        return Ok(());
+                    }
                     let Some(key) = save(&self.pending, &g.node, &unsent).await else {
                         return Ok(());
                     };
@@ -740,6 +778,19 @@ impl Worker {
             Ok(ran(vec![frame]))
         }
     }
+}
+
+/// Whether the records of a walk that a node failed go back to the groups
+/// they were gathered in: when every ack of theirs is a group's. The walk
+/// ends there, unacked.
+async fn regroup(upstream: &[Arc<dyn Ack>]) -> bool {
+    if upstream.is_empty() || !upstream.iter().all(|a| a.regroups()) {
+        return false;
+    }
+    for a in upstream {
+        a.failed(true).await;
+    }
+    true
 }
 
 /// Whether a plugin's call that ended unanswered is to be made again
@@ -1465,6 +1516,91 @@ mod tests {
         assert_eq!(ingest_ack.0.load(Ordering::SeqCst), 2);
         assert_eq!(judged_ack.0.load(Ordering::SeqCst), 0);
         assert_eq!(taken.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A group whose judge's model is not reached goes back to where it was
+    /// gathered: its ack is told so and is not fired, and nothing of it is
+    /// kept apart or reaches a sink.
+    #[tokio::test]
+    async fn a_group_whose_model_is_not_reached_goes_back_to_be_gathered() {
+        #[derive(Default)]
+        struct Gathered {
+            back: AtomicUsize,
+            acked: AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl Ack for Gathered {
+            async fn ack(&self) -> Result<()> {
+                self.acked.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn regroups(&self) -> bool {
+                true
+            }
+            async fn failed(&self, again: bool) {
+                assert!(again);
+                self.back.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let dir = stub::dir("regroup");
+        let judge = NodeRef::Inference {
+            name: Arc::from("judge"),
+        };
+        let sink_name: Arc<str> = Arc::from("out");
+        let sink = Arc::new(RecordingSink::default());
+        let sink_manager = Arc::new(SinkManager::for_test(
+            vec![(sink_name.clone(), sink.clone() as Arc<dyn Sink>)],
+            1,
+        ));
+        let mut outs: HashMap<NodeRef, Vec<NodeRef>> = HashMap::default();
+        outs.insert(judge.clone(), vec![NodeRef::Sink { name: sink_name }]);
+        let router = Arc::new(Router::new(outs, Arc::clone(&sink_manager)));
+        let kept: Arc<dyn StateStore> =
+            Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
+        let pending = Pending::new(kept);
+        let stop = Stop::default();
+        // nothing listens here
+        let mut asked = stub::config("http://127.0.0.1:9/v1");
+        asked.node.unreached = tangent_shared::inference::Unreached::Hold;
+        let nodes = asked.nodes_until("judge", &dir, &stop).unwrap();
+        nodes["judge"].keep(true);
+        let (groups_tx, groups) = mpsc::channel(4);
+        let (tx, rx) = mpsc::channel(4);
+        let running = tokio::spawn(worker(&router, nodes, &stop, &pending, rx, groups).run());
+
+        let done = Arc::new(Gathered::default());
+        router.in_flight_counter().fetch_add(1, Ordering::AcqRel);
+        let group = Group {
+            node: judge,
+            records: vec![JsonLogView::from_bytes(BytesMut::from("{\"id\":1}")).unwrap()],
+            context: 0,
+            done: done.clone() as Arc<dyn Ack>,
+            saved: false,
+            tries: 0,
+        };
+        groups_tx
+            .send((group, Done(router.in_flight_counter(), 1)))
+            .await
+            .ok()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while done.back.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("it goes back");
+        drop((tx, groups_tx));
+        running.await.unwrap().unwrap();
+        assert_eq!(done.back.load(Ordering::SeqCst), 1);
+        assert_eq!(done.acked.load(Ordering::SeqCst), 0, "not through");
+        assert!(
+            pending.saved().await.unwrap().is_empty(),
+            "kept nowhere else"
+        );
+        assert!(sink.writes.lock().await.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
