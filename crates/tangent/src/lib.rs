@@ -124,6 +124,35 @@ lazy_static::lazy_static! {
     ).unwrap();
 }
 
+/// How many files this process may have open, raised as far as it is let.
+/// What launchd starts is given 256, and a query of the lake opens every
+/// file of the hours it is asked about at once: a lake a few days old has
+/// more than that, and the review that asked was failed with "Too many open
+/// files". macOS takes no more than `OPEN_MAX` whatever the hard limit says.
+#[cfg(unix)]
+fn raise_open_files() {
+    const ENOUGH: libc::rlim_t = 10_240;
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `limit` is a valid rlimit for both calls to read and write.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            return;
+        }
+        let want = limit.rlim_max.min(ENOUGH);
+        if limit.rlim_cur >= want {
+            return;
+        }
+        let had = limit.rlim_cur;
+        limit.rlim_cur = want;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+            tracing::warn!(open_files = had, "the limit on open files could not be raised");
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_open_files() {}
+
 pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
     let cfg = Config::from_file(config_path)?;
     cfg.validate()?;
@@ -157,6 +186,8 @@ pub async fn run(config_path: &PathBuf, opts: RuntimeOptions) -> Result<()> {
         console_subscriber::init();
     }
     tracing::debug!(target = "startup", config = ?cfg);
+
+    raise_open_files();
 
     let ingest_shutdown = CancellationToken::new();
     let stop = Stop::default();
@@ -261,4 +292,23 @@ fn jemalloc_dump(tag: &str) {
             tikv_jemalloc_ctl::raw::write::<*const libc::c_char>(b"prof.dump\0", std::ptr::null());
     }
     tracing::warn!("jemalloc: forced heap dump ({tag})");
+}
+
+#[cfg(all(test, unix))]
+mod open_files {
+    #[test]
+    fn what_launchd_gives_is_raised() {
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: `limit` is a valid rlimit to read into and to set from.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+            // never below what the tests running beside this one have open
+            let low = limit.rlim_cur.min(4096);
+            limit.rlim_cur = low;
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
+            super::raise_open_files();
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+            assert_eq!(limit.rlim_cur, limit.rlim_max.min(10_240), "from {low}");
+        }
+    }
 }
