@@ -130,6 +130,10 @@ impl DagRuntime {
         // nowhere to keep it.
         let pending = (consumers.is_some() && !cfg.runtime.state.read_only)
             .then(|| Pending::new(Arc::clone(&store)));
+        // `unreached: hold` holds only where what is held is kept.
+        for node in models.values() {
+            node.keep(pending.is_some());
+        }
         let (engines, components) = load(
             &cfg,
             &plugins,
@@ -486,7 +490,7 @@ async fn save_groups(groups: &Groups, pending: &Pending) {
         match grouper.take().await {
             Ok(records) if records.is_empty() => {}
             Ok(records) => match pending.save(&node, &records).await {
-                Ok(()) => {
+                Ok(_) => {
                     tracing::info!(
                         ?node,
                         records = records.len(),

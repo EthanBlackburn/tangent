@@ -20,6 +20,7 @@ mod service;
 mod simulate;
 mod state;
 mod status;
+mod trust;
 mod test;
 mod watch;
 mod wit_assets;
@@ -489,6 +490,10 @@ async fn main() -> Result<()> {
                 service::load_keychain_env(&watch::data_dir("mac")?)?;
             }
             let models = model.as_deref().map(init::models).transpose()?;
+            // before anything connects: the clients read them once
+            let dir = watch::data_dir("mac")?;
+            std::fs::create_dir_all(&dir)?;
+            trust::settle(&dir);
             watch::mac(provider, models, no_notify).await?
         }
         Commands::Watch {
