@@ -174,6 +174,8 @@ struct Open {
     opened: Instant,
     /// When its latest record joined: `expire_after` counts from here.
     last: Instant,
+    /// Tells a watcher the group is open, for as long as it is.
+    mark: crate::underway::Mark,
 }
 
 #[derive(Default)]
@@ -255,11 +257,23 @@ impl Task {
         let key = self.key_of(&r);
         let k = self.keys.entry(Arc::clone(&key)).or_default();
         let now = Instant::now();
-        let open = k.open.get_or_insert_with(|| Open {
-            records: Vec::new(),
-            opened: now,
-            last: now,
-        });
+        let open = match &mut k.open {
+            Some(open) => {
+                open.mark.more();
+                open
+            }
+            none => {
+                let first = serde_json::from_str(&r.to_json()).unwrap_or_default();
+                let mark =
+                    crate::underway::mark(crate::underway::Stage::Grouping, &self.node, &first);
+                none.insert(Open {
+                    records: Vec::new(),
+                    opened: now,
+                    last: now,
+                    mark,
+                })
+            }
+        };
         open.records.push(r);
         open.last = now;
         self.held.fetch_add(1, Ordering::Relaxed);

@@ -744,6 +744,11 @@ impl Follow {
                 status::percentiles(&tangent_runtime::inference_recent("judge")),
                 status::percentiles(&self.reviewed),
             );
+            status.set_underway(status::underway(
+                &tangent_runtime::underway::underway(),
+                "macos_sessions",
+                "judge",
+            ));
             let alerts = std::mem::take(&mut self.new_alerts);
             status.update(self.judged, self.flagged, self.pending.len() as u64, alerts);
             // It writes nothing when this is what the file already has.
@@ -1208,7 +1213,10 @@ mod tests {
             "session": {"entry": "/bin/zsh"},
             "judge": {"error": "HTTP 401 Unauthorized: invalid x-api-key"}
         });
-        append(&dir.path().join("verdicts.ndjson"), &format!("{rejected}\n"));
+        append(
+            &dir.path().join("verdicts.ndjson"),
+            &format!("{rejected}\n"),
+        );
         follow.say(false);
         assert_eq!(
             status::read(dir.path()).unwrap().auth_error.as_deref(),
@@ -1244,7 +1252,10 @@ mod tests {
         append(&dir.path().join("verdicts.ndjson"), &format!("{judged}\n"));
         follow.say(false);
         let said = || status::read(dir.path()).unwrap().auth_error;
-        assert_eq!(said().as_deref(), Some("status 403 Forbidden: INVALID_PAYMENT_INSTRUMENT"));
+        assert_eq!(
+            said().as_deref(),
+            Some("status 403 Forbidden: INVALID_PAYMENT_INSTRUMENT")
+        );
 
         // and it stays through the judge's later clean calls
         append(&dir.path().join("verdicts.ndjson"), &format!("{judged}\n"));

@@ -66,7 +66,10 @@ fn resolve(config_dir: &Path, file: &Path) -> PathBuf {
 /// the same request without one would not get.
 fn refuses_the_cache(error: &str) -> bool {
     let e = error.to_ascii_lowercase();
-    (e.contains("cachepoint") || e.contains("cache_control") || e.contains("cache point") || e.contains("cache checkpoint"))
+    (e.contains("cachepoint")
+        || e.contains("cache_control")
+        || e.contains("cache point")
+        || e.contains("cache checkpoint"))
         && (e.contains("400") || e.contains("validation") || e.contains("invalid"))
 }
 
@@ -370,6 +373,11 @@ impl InferenceNode {
 
     pub async fn annotate_unsent(&self, records: Vec<Value>) -> Vec<Option<Value>> {
         let n = records.len();
+        // told to a watcher as being asked about, until they are answered
+        let _asking: Vec<crate::underway::Mark> = records
+            .iter()
+            .map(|v| crate::underway::mark(crate::underway::Stage::Asking, &self.name, v))
+            .collect();
         let mut groups: Vec<(String, Vec<(usize, Value)>)> = Vec::new();
         for (i, v) in records.into_iter().enumerate() {
             let key: Vec<Option<&Value>> =
@@ -1498,8 +1506,12 @@ mod tests {
         assert!(refuses_the_cache(
             "ProviderResponseError: status 400 Bad Request: ValidationException: cachePoint is not allowed after reasoningContent"
         ));
-        assert!(refuses_the_cache("HTTP 400: invalid_request_error: cache_control cannot be set here"));
-        assert!(!refuses_the_cache("status 403 Forbidden: Model access is denied"));
+        assert!(refuses_the_cache(
+            "HTTP 400: invalid_request_error: cache_control cannot be set here"
+        ));
+        assert!(!refuses_the_cache(
+            "status 403 Forbidden: Model access is denied"
+        ));
         assert!(!refuses_the_cache("status 429: too many requests"));
     }
 
