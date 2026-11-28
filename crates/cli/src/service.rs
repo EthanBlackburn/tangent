@@ -15,8 +15,8 @@
 //! - `~/Library/LaunchAgents/com.ethanblackburn.tangent.app.plist` (user Aqua):
 //!   runs `/Applications/Tangent.app/Contents/MacOS/tangent-sensor menubar`.
 
-use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -39,7 +39,7 @@ const DAEMON_LOG: &str = "/var/log/tangent-sensor.log";
 /// not ended twenty seconds after it asked.
 const STOPS_WITHIN: Duration = Duration::from_secs(25);
 const SERVICE_FILE: &str = "service.json";
-const ENV_FILE: &str = "env";
+const LEGACY_ENV_FILE: &str = "env";
 const LAUNCHCTL: &str = "/bin/launchctl";
 const FDA_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
@@ -51,14 +51,21 @@ fn provider_name(provider: Provider) -> String {
     value.get_name().to_string()
 }
 
-/// Who judged for the last `tangent up`, from `<data_dir>/service.json`, so
-/// plain `tangent up` (and the menu bar's "Resume Watching" button) starts
-/// the same again: a provider, or `None` for the model on this Mac. Nothing
-/// when no `up` has said.
+/// Persisted service state in `<data_dir>/service.json`: the active provider
+/// (`None` for local Inkling 2 Mini) and any non-secret environment variables
+/// (such as `AWS_PROFILE`). Secret API keys are stored exclusively in the
+/// macOS Login Keychain through `Tangent.app`.
+fn read_service_json(dir: &Path) -> Value {
+    fs::read_to_string(dir.join(SERVICE_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| json!({}))
+}
+
 fn read_choice(dir: &Path) -> Option<Option<Provider>> {
     use clap::ValueEnum as _;
-    let text = fs::read_to_string(dir.join(SERVICE_FILE)).ok()?;
-    let val: Value = serde_json::from_str(&text).ok()?;
+    let val = read_service_json(dir);
     match val.get("provider")? {
         Value::Null => Some(None),
         Value::String(name) => Provider::from_str(name, false).ok().map(Some),
@@ -66,20 +73,158 @@ fn read_choice(dir: &Path) -> Option<Option<Provider>> {
     }
 }
 
-fn write_choice(dir: &Path, provider: Option<Provider>) -> Result<()> {
-    let body = serde_json::to_string_pretty(&json!({ "provider": provider.map(provider_name) }))?;
+fn read_nonsecret_env(dir: &Path) -> BTreeMap<String, String> {
+    let val = read_service_json(dir);
+    let mut out = BTreeMap::new();
+    if let Some(map) = val.get("env").and_then(Value::as_object) {
+        for (k, v) in map {
+            if !is_secret_var(k) {
+                if let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    out.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn write_service_state(
+    dir: &Path,
+    provider: Option<Provider>,
+    nonsecret_env: Option<&BTreeMap<String, String>>,
+) -> Result<()> {
+    let mut root = read_service_json(dir);
+    let map = root.as_object_mut().expect("object");
+    map.insert("provider".to_string(), json!(provider.map(provider_name)));
+    if let Some(env) = nonsecret_env {
+        let filtered: serde_json::Map<String, Value> = env
+            .iter()
+            .filter(|(k, v)| !is_secret_var(k) && !v.trim().is_empty())
+            .map(|(k, v)| (k.clone(), Value::String(v.trim().to_string())))
+            .collect();
+        map.insert("env".to_string(), Value::Object(filtered));
+    }
+    let body = serde_json::to_string_pretty(&root)?;
     fs::write(dir.join(SERVICE_FILE), format!("{body}\n"))
         .with_context(|| format!("writing {}", dir.join(SERVICE_FILE).display()))
 }
 
-/// Loads `KEY=VALUE` pairs from `path` into this process's environment when not
-/// already set (used by `tangent watch mac --env-file ...` under launchd).
-pub fn load_env_file(path: &Path) -> Result<()> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("reading env file {}", path.display()))?;
-    for (key, value) in parse_env(&text) {
+/// Locates `Tangent.app/Contents/MacOS/tangent-sensor` to broker macOS Login
+/// Keychain operations under the app's Developer ID signing identity.
+fn keychain_broker() -> Option<PathBuf> {
+    if let Some(custom) = std::env::var_os("TANGENT_SENSOR_APP")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        let bin = custom.join("Contents/MacOS/tangent-sensor");
+        if bin.is_file() {
+            return Some(bin);
+        }
+    }
+    let installed = tangent_shared::sensor::installed_binary();
+    if installed.is_file() {
+        return Some(installed);
+    }
+    if let Ok(cache_dir) = tangent_shared::sensor::dir() {
+        let cached = tangent_shared::sensor::binary(&cache_dir);
+        if cached.is_file() {
+            return Some(cached);
+        }
+    }
+    None
+}
+
+/// Lists stored secret variable names from the macOS Login Keychain without
+/// decrypting any secret values (never prompts for Keychain unlock).
+fn keychain_list() -> BTreeSet<String> {
+    let Some(app) = keychain_broker() else {
+        return BTreeSet::new();
+    };
+    let Ok(out) = Command::new(&app)
+        .args(["key", "list"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return BTreeSet::new();
+    };
+    if !out.status.success() {
+        return BTreeSet::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Stores one secret in the macOS Login Keychain via stdin to `Tangent.app`
+/// (the value never appears in argv, `ps`, or on disk).
+fn keychain_set(name: &str, value: &str) -> Result<()> {
+    let app = keychain_broker()
+        .context("Tangent.app is not installed, so API keys cannot be stored in the Keychain")?;
+    let mut child = Command::new(&app)
+        .args(["key", "set", name])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("starting {} key set", app.display()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(value.as_bytes())?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        bail!(
+            "storing {name} in macOS Keychain failed{}",
+            if err.is_empty() { String::new() } else { format!(": {err}") }
+        );
+    }
+    Ok(())
+}
+
+/// Removes every Tangent entry from the macOS Login Keychain (called by
+/// `tangent uninstall` before `/Applications/Tangent.app` is deleted).
+fn keychain_clear_all() {
+    let Some(app) = keychain_broker() else {
+        return;
+    };
+    let _ = Command::new(&app)
+        .args(["key", "clear-all"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Loads non-secret settings from `<dir>/service.json` and secret API keys
+/// from the macOS Login Keychain into this process's environment when not
+/// already set (used by `tangent watch mac --keychain` under launchd).
+pub fn load_keychain_env(dir: &Path) -> Result<()> {
+    for (key, value) in read_nonsecret_env(dir) {
         if std::env::var_os(&key).is_none() {
-            // Called at startup before background tasks are spawned.
+            std::env::set_var(&key, &value);
+        }
+    }
+    let app = keychain_broker()
+        .context("Tangent.app is not installed, so API keys cannot be read from the Keychain")?;
+    let out = Command::new(&app)
+        .args(["key", "dump"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("running {} key dump", app.display()))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        bail!(
+            "reading API keys from macOS Keychain failed{}",
+            if err.is_empty() { String::new() } else { format!(": {err}") }
+        );
+    }
+    for (key, value) in parse_env(&String::from_utf8_lossy(&out.stdout)) {
+        if std::env::var_os(&key).is_none() {
             std::env::set_var(&key, &value);
         }
     }
@@ -101,33 +246,6 @@ fn parse_env(text: &str) -> BTreeMap<String, String> {
         }
     }
     map
-}
-
-fn write_env_file(path: &Path, vars: &BTreeMap<String, String>) -> Result<()> {
-    let mut content = String::from("# Managed by `tangent up`. Mode 0600.\n");
-    for (k, v) in vars {
-        content.push_str(&format!("{k}={v}\n"));
-    }
-    let tmp = path.with_extension("tmp");
-    let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        opts.mode(0o600);
-    }
-    let mut file = opts
-        .open(&tmp)
-        .with_context(|| format!("creating {}", tmp.display()))?;
-    file.write_all(content.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-    }
-    fs::rename(&tmp, path).with_context(|| format!("installing {}", path.display()))
 }
 
 /// `tangent up [--provider <name> | --local]`: installs the privileged
@@ -153,23 +271,35 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
     let mac = Mac::new(provider).watched();
     mac::runs_here_as(&mac, "tangent up")?;
 
-    // What a provider's models read is kept for the watcher, which launchd
-    // starts with none of this shell's environment: from here, or from the
-    // 0600 file the last `up` kept.
-    let env_path = dir.join(ENV_FILE);
-    let mut saved_env = fs::read_to_string(&env_path)
-        .map(|t| parse_env(&t))
-        .unwrap_or_default();
+    // Gather provider secrets (from current shell or already in macOS Keychain)
+    // and non-secret settings (like AWS_PROFILE, kept in service.json).
+    let mut pending_secrets: Vec<(String, String)> = Vec::new();
+    let mut nonsecret_env = read_nonsecret_env(&dir);
     if provider.is_some() {
+        let in_keychain = keychain_list();
+        let mut available = BTreeSet::new();
+        for key in &in_keychain {
+            available.insert(key.clone());
+        }
+        for key in nonsecret_env.keys() {
+            available.insert(key.clone());
+        }
         for (var, _) in mac.needs() {
             if let Some(val) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) {
-                saved_env.insert(var.to_string(), val);
+                available.insert(var.to_string());
+                if is_secret_var(var) {
+                    pending_secrets.push((var.to_string(), val));
+                } else {
+                    nonsecret_env.insert(var.to_string(), val);
+                }
             }
         }
         // As `tangent watch mac` asks it: a variable the file has a fallback
         // for, as Bedrock's profile has `default`, is not missing.
         let missing = watch::unset(&mac.config(), &mac.needs(), |name| {
-            saved_env.get(name).map(std::ffi::OsString::from)
+            available
+                .contains(name)
+                .then(|| std::ffi::OsString::from("set"))
         });
         if !missing.is_empty() {
             let lines: Vec<String> = missing
@@ -177,19 +307,18 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
                 .map(|(v, d)| format!("  {v}  ({d})"))
                 .collect();
             bail!(
-                "it reads these from the environment, and they are not set:\n{}",
+                "it reads these from the environment or macOS Keychain, and they are not set:\n{}",
                 lines.join("\n")
             );
         }
         if provider == Some(Provider::Bedrock)
             && init::set("AWS_ACCESS_KEY_ID")
-            && !saved_env.contains_key("AWS_PROFILE")
+            && !nonsecret_env.contains_key("AWS_PROFILE")
         {
             println!(
                 "This shell's AWS keys are not kept: the background watcher signs in with the profile `default` in ~/.aws. Set AWS_PROFILE to name another."
             );
         }
-        write_env_file(&env_path, &saved_env)?;
     }
 
     // Write pipeline config & fetch plugins + sensor + local model if needed.
@@ -210,11 +339,17 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
         }
     }
 
-    write_choice(&dir, provider)?;
-
-    // 1. Ensure `/Applications/Tangent.app` + root LaunchDaemon are installed and running.
+    // 1. Ensure `/Applications/Tangent.app` + root LaunchDaemon are installed and running
+    //    first, so Keychain items are written under `/Applications/Tangent.app`'s own signature.
     let uid = current_uid()?;
     let app_replaced = ensure_sensor_daemon(uid).await?;
+
+    for (var, val) in &pending_secrets {
+        keychain_set(var, val)?;
+    }
+    write_service_state(&dir, provider, provider.is_some().then_some(&nonsecret_env))?;
+    // Remove any legacy plaintext `env` file now that secrets live in Keychain.
+    let _ = fs::remove_file(dir.join(LEGACY_ENV_FILE));
 
     // 2. Install & bootstrap the unprivileged user LaunchAgents (watcher + menu bar).
     let agents_dir = launch_agents_dir()?;
@@ -228,12 +363,7 @@ pub async fn up(provider_flag: Option<Provider>, local_flag: bool) -> Result<()>
     let tangent_bin = std::path::absolute(&tangent_bin).unwrap_or(tangent_bin);
 
     let watch_plist_path = agents_dir.join(format!("{WATCH_LABEL}.plist"));
-    let watch_xml = watch_agent_plist(
-        &tangent_bin,
-        &dir,
-        provider,
-        provider.is_some().then_some(env_path.as_path()),
-    );
+    let watch_xml = watch_agent_plist(&tangent_bin, &dir, provider, provider.is_some());
     let app_plist_path = agents_dir.join(format!("{APP_LABEL}.plist"));
     let app_xml = app_agent_plist(&tangent_shared::sensor::installed_binary(), &dir, &tangent_bin);
 
@@ -364,14 +494,17 @@ pub async fn show_status(as_json: bool) -> Result<()> {
     };
 
     if as_json {
-        let saved = fs::read_to_string(dir.join(ENV_FILE))
-            .map(|t| parse_env(&t))
-            .unwrap_or_default();
+        let nonsecret = read_nonsecret_env(&dir);
+        let in_keychain = keychain_list();
         let choices = choices(read_choice(&dir).flatten(), init::no_inkling(), |var| {
-            std::env::var(var)
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| saved.get(var).filter(|v| !v.trim().is_empty()).cloned())
+            if is_secret_var(var) {
+                (init::set(var) || in_keychain.contains(var)).then(|| "set".to_string())
+            } else {
+                std::env::var(var)
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+                    .or_else(|| nonsecret.get(var).cloned())
+            }
         });
         let auth_error = if alive {
             snap.as_ref().and_then(|s| s.auth_error.clone())
@@ -546,6 +679,9 @@ pub async fn uninstall(purge: bool) -> Result<()> {
         let _ = fs::remove_file(&plist);
     }
 
+    // Remove API keys from the macOS Login Keychain before removing Tangent.app.
+    keychain_clear_all();
+
     let needs_root = Path::new(DAEMON_PLIST).exists()
         || tangent_shared::sensor::installed_app().exists()
         || Path::new(tangent_shared::sensor::DAEMON_APP_DIR).exists()
@@ -571,8 +707,8 @@ pub async fn uninstall(purge: bool) -> Result<()> {
     }
 
     if let Ok(dir) = watch::data_dir("mac") {
-        // The keys are a secret, and nothing reads them once this is gone.
-        let _ = fs::remove_file(dir.join(ENV_FILE));
+        // Also remove any legacy plaintext env file left by an older build.
+        let _ = fs::remove_file(dir.join(LEGACY_ENV_FILE));
         if purge {
             if dir.exists() {
                 fs::remove_dir_all(&dir)
@@ -944,7 +1080,7 @@ pub fn watch_agent_plist(
     tangent_bin: &Path,
     data_dir: &Path,
     provider: Option<Provider>,
-    env_file: Option<&Path>,
+    use_keychain: bool,
 ) -> String {
     let mut args = vec![
         tangent_bin.display().to_string(),
@@ -955,9 +1091,8 @@ pub fn watch_agent_plist(
         args.push("--provider".to_string());
         args.push(provider_name(provider));
     }
-    if let Some(env_file) = env_file {
-        args.push("--env-file".to_string());
-        args.push(env_file.display().to_string());
+    if use_keychain {
+        args.push("--keychain".to_string());
     }
     let daemon_log = xml_escape(&data_dir.join("daemon.log").display().to_string());
     format!(
@@ -1058,11 +1193,11 @@ mod tests {
             Path::new("/opt/homebrew/bin/tangent"),
             Path::new("/Users/a&b/.local/share/tangent/mac"),
             Some(Provider::Bedrock),
-            Some(Path::new("/Users/a&b/.local/share/tangent/mac/env")),
+            true,
         );
         assert!(watch.contains("<string>--provider</string>\n        <string>bedrock</string>"));
-        assert!(watch.contains("<string>--env-file</string>"));
-        assert!(watch.contains("/Users/a&amp;b/.local/share/tangent/mac/env"));
+        assert!(watch.contains("<string>--keychain</string>"));
+        assert!(watch.contains("/Users/a&amp;b/.local/share/tangent/mac/daemon.log"));
 
         let app = app_agent_plist(
             Path::new("/Applications/Tangent.app/Contents/MacOS/tangent-sensor"),
@@ -1074,22 +1209,20 @@ mod tests {
     }
 
     #[test]
-    fn env_file_roundtrips_with_0600_permissions() {
+    fn service_json_stores_nonsecret_env_and_refuses_secrets() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("env");
         let mut vars = BTreeMap::new();
-        vars.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant-test-123".to_string());
-        write_env_file(&path, &vars).unwrap();
+        vars.insert("AWS_PROFILE".to_string(), "prod".to_string());
+        vars.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant-never-on-disk".to_string());
+        write_service_state(dir.path(), Some(Provider::Bedrock), Some(&vars)).unwrap();
 
-        let parsed = parse_env(&fs::read_to_string(&path).unwrap());
-        assert_eq!(parsed.get("ANTHROPIC_API_KEY").map(String::as_str), Some("sk-ant-test-123"));
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
-        }
+        let text = fs::read_to_string(dir.path().join(SERVICE_FILE)).unwrap();
+        assert!(!text.contains("sk-ant-never-on-disk"), "secrets must never touch service.json");
+        assert_eq!(read_choice(dir.path()), Some(Some(Provider::Bedrock)));
+        assert_eq!(
+            read_nonsecret_env(dir.path()).get("AWS_PROFILE").map(String::as_str),
+            Some("prod")
+        );
     }
 
     #[test]
@@ -1165,9 +1298,9 @@ mod tests {
     fn who_judges_persists_in_service_json() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read_choice(dir.path()), None);
-        write_choice(dir.path(), Some(Provider::Bedrock)).unwrap();
+        write_service_state(dir.path(), Some(Provider::Bedrock), None).unwrap();
         assert_eq!(read_choice(dir.path()), Some(Some(Provider::Bedrock)));
-        write_choice(dir.path(), None).unwrap();
+        write_service_state(dir.path(), None, None).unwrap();
         assert_eq!(read_choice(dir.path()), Some(None));
     }
 }
