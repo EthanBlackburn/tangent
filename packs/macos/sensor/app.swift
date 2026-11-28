@@ -208,10 +208,21 @@ enum AppTab: String, CaseIterable {
     case health = "Health"
 }
 
-enum ActivityFilter: String, CaseIterable {
+/// The Activity list's parts, in the order shown. The first two are for a
+/// person to act on; the rest are to look at.
+enum ActivitySection: String, CaseIterable {
+    /// Reviewed, and found malicious or not settled.
     case alerts = "Alerts"
-    case all = "All"
-    case unreviewed = "Unreviewed"
+    /// Not checked: the review failed, or the judge could not be asked.
+    case errored = "Errored"
+    case inReview = "In review"
+    /// Sessions still being gathered, or with the judge.
+    case underway = "In progress"
+    /// Cleared by a review, or answered by the person.
+    case done = "Done"
+
+    /// How many rows are shown before "Show all".
+    static let shown = 6
 }
 
 // MARK: adaptive color tokens
@@ -636,7 +647,9 @@ final class TangentStore: ObservableObject {
     @Published var lastErrorMessage: String?
 
     @Published var selectedTab: AppTab = .activity
-    @Published var filter: ActivityFilter = .alerts
+    /// The sections folded away, and the ones shown past their first rows.
+    @Published var folded: Set<ActivitySection> = [.done]
+    @Published var unfurled: Set<ActivitySection> = []
     @Published var searchText: String = ""
     @Published var selectedEventId: String?
     @Published var keySheetChoice: ModelChoice?
@@ -669,19 +682,23 @@ final class TangentStore: ObservableObject {
         events.filter { $0.kind.isAlert && answered[$0.feedbackKey] == nil }.count
     }
 
-    var filteredEvents: [FlaggedEntry] {
-        let base: [FlaggedEntry]
-        switch filter {
-        case .alerts:
-            base = events.filter { $0.kind.isAlert || $0.kind == .reviewing }
-        case .all:
-            base = events
-        case .unreviewed:
-            base = events.filter { $0.kind.isAlert && answered[$0.feedbackKey] == nil }
+    /// Which part of the list an entry is in: one a person has answered
+    /// is done with, whatever it was.
+    func section(of entry: FlaggedEntry) -> ActivitySection {
+        if answered[entry.feedbackKey] != nil { return .done }
+        switch entry.kind {
+        case .malicious, .unresolved: return .alerts
+        case .failed, .unreviewed: return .errored
+        case .reviewing: return .inReview
+        case .benign: return .done
         }
+    }
+
+    /// The entries the search leaves, newest first.
+    var filteredEvents: [FlaggedEntry] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return base }
-        return base.filter {
+        guard !q.isEmpty else { return events }
+        return events.filter {
             $0.subject.lowercased().contains(q)
                 || $0.who.lowercased().contains(q)
                 || $0.finding.lowercased().contains(q)
@@ -690,11 +707,32 @@ final class TangentStore: ObservableObject {
         }
     }
 
+    func entries(in section: ActivitySection) -> [FlaggedEntry] {
+        filteredEvents.filter { self.section(of: $0) == section }
+    }
+
+    /// The sessions not yet judged, those the search leaves.
+    var underway: [UnderwaySession] {
+        let all = status?.underway ?? []
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return q.isEmpty ? all : all.filter { $0.entry.lowercased().contains(q) }
+    }
+
+    /// The entry shown when none is chosen: the first there is to act on,
+    /// then one in review, and only then one that is done.
+    private var firstEvent: FlaggedEntry? {
+        let rows = filteredEvents
+        for section in [ActivitySection.alerts, .errored, .inReview, .done] {
+            if let first = rows.first(where: { self.section(of: $0) == section }) { return first }
+        }
+        return nil
+    }
+
     var selectedEvent: FlaggedEntry? {
         if let id = selectedEventId, let found = filteredEvents.first(where: { $0.id == id }) {
             return found
         }
-        return filteredEvents.first
+        return firstEvent
     }
 
     func reloadHistory() {
@@ -705,7 +743,7 @@ final class TangentStore: ObservableObject {
                 guard let self else { return }
                 self.events = loaded
                 if self.selectedEventId == nil {
-                    self.selectedEventId = self.filteredEvents.first?.id
+                    self.selectedEventId = self.firstEvent?.id
                 }
             }
         }
@@ -713,7 +751,6 @@ final class TangentStore: ObservableObject {
 
     func selectAlert(matchingSubjectOrTs ts: String, subject: String) {
         selectedTab = .activity
-        filter = .alerts
         if let hit = events.first(where: { (!ts.isEmpty && $0.ts == ts) || (!subject.isEmpty && ($0.subject == subject || $0.who == subject)) }) {
             selectedEventId = hit.id
         } else {
@@ -726,7 +763,7 @@ final class TangentStore: ObservableObject {
                     if let hit = loaded.first(where: { (!ts.isEmpty && $0.ts == ts) || (!subject.isEmpty && ($0.subject == subject || $0.who == subject)) }) {
                         self.selectedEventId = hit.id
                     } else {
-                        self.selectedEventId = self.filteredEvents.first?.id
+                        self.selectedEventId = self.firstEvent?.id
                     }
                 }
             }
@@ -1054,100 +1091,166 @@ private struct ActivitySidebarList: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Search + clean pill filter bar
-            VStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 11.5))
-                        .foregroundColor(Theme.inkTertiary)
-                    TextField("Search findings, paths…", text: $store.searchText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.ink)
-                    if !store.searchText.isEmpty {
-                        Button { store.searchText = "" } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 11.5))
-                                .foregroundColor(Theme.inkTertiary)
-                        }
-                        .buttonStyle(.plain)
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11.5))
+                    .foregroundColor(Theme.inkTertiary)
+                TextField("Search", text: $store.searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.ink)
+                if !store.searchText.isEmpty {
+                    Button { store.searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11.5))
+                            .foregroundColor(Theme.inkTertiary)
                     }
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(Theme.surface.opacity(0.75))
-                .cornerRadius(7)
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.hairline, lineWidth: 1))
-
-                HStack(spacing: 4) {
-                    ForEach(ActivityFilter.allCases, id: \.self) { f in
-                        let active = (store.filter == f)
-                        Button {
-                            store.filter = f
-                        } label: {
-                            Text(f.rawValue)
-                                .font(.system(size: 11.5, weight: active ? .semibold : .regular))
-                                .foregroundColor(active ? Theme.ink : Theme.inkSecondary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 4)
-                                .background(active ? Theme.surface : Color.clear)
-                                .cornerRadius(5.5)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 5.5)
-                                        .stroke(active ? Theme.hairlineStrong : Color.clear, lineWidth: 1)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(2)
-                .background(Theme.surface.opacity(0.4))
-                .cornerRadius(7)
             }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(Theme.surface.opacity(0.75))
+            .cornerRadius(7)
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.hairline, lineWidth: 1))
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
 
-            let rows = store.filteredEvents
-            if rows.isEmpty {
-                VStack(spacing: 6) {
-                    Spacer()
-                    Text(store.searchText.isEmpty ? emptyCaption : "No matches")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundColor(Theme.inkSecondary)
-                    if let s = store.status, store.isAlive, store.searchText.isEmpty {
-                        Text("\(s.checked) session\(s.checked == 1 ? "" : "s") checked")
-                            .font(.system(size: 11.5).monospacedDigit())
-                            .foregroundColor(Theme.inkTertiary)
-                    }
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 3) {
-                        ForEach(rows) { entry in
-                            SidebarActivityRow(
-                                entry: entry,
-                                isSelected: store.selectedEvent?.id == entry.id,
-                                answer: store.answered[entry.feedbackKey],
-                                blocked: store.authError != nil
-                            )
-                            .onTapGesture { store.selectedEventId = entry.id }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 3) {
+                    ForEach(ActivitySection.allCases, id: \.self) { section in
+                        if section == .underway {
+                            underwaySection
+                        } else {
+                            entrySection(section)
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 10)
                 }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 10)
             }
         }
     }
 
-    private var emptyCaption: String {
-        switch store.filter {
-        case .alerts: return "No alerts"
-        case .unreviewed: return "Everything triaged"
-        case .all: return "Nothing flagged yet"
+    /// A section of alerts or reviews. The alerts are always there, to say
+    /// there are none; another with nothing in it is left out.
+    @ViewBuilder
+    private func entrySection(_ section: ActivitySection) -> some View {
+        let rows = store.entries(in: section)
+        if !rows.isEmpty || section == .alerts {
+            header(section, count: rows.count)
+            if !store.folded.contains(section) {
+                if rows.isEmpty {
+                    Text(store.searchText.isEmpty ? "None" : "No matches")
+                        .font(.system(size: 11.5))
+                        .foregroundColor(Theme.inkTertiary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                }
+                let all = store.unfurled.contains(section)
+                ForEach(all ? rows : Array(rows.prefix(ActivitySection.shown))) { entry in
+                    SidebarActivityRow(
+                        entry: entry,
+                        isSelected: store.selectedEvent?.id == entry.id,
+                        answer: store.answered[entry.feedbackKey],
+                        blocked: store.authError != nil
+                    )
+                    .onTapGesture { store.selectedEventId = entry.id }
+                }
+                showAll(section, count: rows.count)
+            }
         }
+    }
+
+    /// The sessions not yet judged: counted in the header whole, and the
+    /// latest of them named.
+    @ViewBuilder
+    private var underwaySection: some View {
+        let rows = store.underway
+        let total = store.searchText.isEmpty
+            ? (store.status?.grouping ?? 0) + (store.status?.judging ?? 0)
+            : rows.count
+        if store.isAlive, total > 0 {
+            header(.underway, count: total)
+            if !store.folded.contains(.underway) {
+                let all = store.unfurled.contains(.underway)
+                ForEach(all ? rows : Array(rows.prefix(ActivitySection.shown))) { session in
+                    UnderwayRow(session: session)
+                }
+                showAll(.underway, count: rows.count)
+            }
+        }
+    }
+
+    private func header(_ section: ActivitySection, count: Int) -> some View {
+        let folded = store.folded.contains(section)
+        return Button {
+            if folded { store.folded.remove(section) } else { store.folded.insert(section) }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: folded ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundColor(Theme.inkTertiary)
+                    .frame(width: 9)
+                Text(section.rawValue.uppercased())
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .tracking(0.4)
+                    .foregroundColor(Theme.inkSecondary)
+                Spacer(minLength: 4)
+                Text("\(count)")
+                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                    .foregroundColor(count > 0 && (section == .alerts || section == .errored) ? Theme.ink : Theme.inkTertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func showAll(_ section: ActivitySection, count: Int) -> some View {
+        if count > ActivitySection.shown {
+            let all = store.unfurled.contains(section)
+            Button {
+                if all { store.unfurled.remove(section) } else { store.unfurled.insert(section) }
+            } label: {
+                Text(all ? "Show fewer" : "Show all \(count)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.inkSecondary)
+                    .padding(.horizontal, 26)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+/// A session not yet judged, in a line: what it is, and where it is.
+private struct UnderwayRow: View {
+    let session: UnderwaySession
+
+    var body: some View {
+        let name = (session.entry as NSString).lastPathComponent
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Circle()
+                .fill(Theme.inkTertiary)
+                .frame(width: 5, height: 5)
+                .padding(.leading, 1)
+            Text(name.isEmpty ? "Unknown" : name)
+                .font(.system(size: 12))
+                .foregroundColor(Theme.inkSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(session.stage == "judging" ? "judging" : "\(session.events) event\(session.events == 1 ? "" : "s")")
+                .font(.system(size: 10.5).monospacedDigit())
+                .foregroundColor(Theme.inkTertiary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 3)
+        .help(session.entry)
     }
 }
 
@@ -1212,8 +1315,7 @@ private struct SidebarActivityRow: View {
                 Text(entry.summary)
                     .font(.system(size: 11.5))
                     .foregroundColor(Theme.inkSecondary)
-                    .lineLimit(2)
-                    .lineSpacing(1.5)
+                    .lineLimit(1)
 
                 if let answer {
                     let label = answers.first(where: { $0.written == answer })?.button ?? answer
@@ -1221,8 +1323,9 @@ private struct SidebarActivityRow: View {
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundColor(Theme.inkTertiary)
                         .padding(.top, 1)
-                } else if entry.kind == .reviewing {
-                    Text(blocked ? "Not reviewed: the model is refused" : "Reviewing…")
+                } else if entry.kind == .reviewing, blocked {
+                    // its section says it is in review; this, that it is not
+                    Text("Waiting: the model is refused")
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundColor(Theme.amber)
                         .padding(.top, 1)
@@ -1230,7 +1333,7 @@ private struct SidebarActivityRow: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(isSelected ? Theme.selection : Color.clear)

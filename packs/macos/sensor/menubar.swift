@@ -50,6 +50,30 @@ struct AlertItem {
     }
 }
 
+/// A session the watcher has in hand and has not judged: still being
+/// gathered, or with the judge.
+struct UnderwaySession: Identifiable, Equatable {
+    let id: String
+    /// `grouping` or `judging`.
+    let stage: String
+    let entry: String
+    let events: Int
+    let since: String
+
+    static func parse(_ of: [String: Any]) -> UnderwaySession? {
+        guard let stage = of["stage"] as? String else { return nil }
+        let sid = of["id"] as? String ?? ""
+        let window = of["window"] as? String ?? ""
+        return UnderwaySession(
+            id: "\(stage)|\(sid)|\(window)",
+            stage: stage,
+            entry: of["entry"] as? String ?? "",
+            events: of["events"] as? Int ?? 0,
+            since: of["since"] as? String ?? ""
+        )
+    }
+}
+
 struct WatchStatus {
     let state: String
     let pid: Int32?
@@ -73,6 +97,11 @@ struct WatchStatus {
     /// This run's tokens, cost and rate, as the watcher works them out:
     /// numbers by name, a node's output speed under `speed.<node>`.
     let usage: [String: Double]
+    /// Sessions not yet judged: how many are being gathered and how many
+    /// are with the judge, and the latest of them.
+    let grouping: Int
+    let judging: Int
+    let underway: [UnderwaySession]
 
     /// True if the watch process is actually alive right now.
     var isAlive: Bool {
@@ -122,7 +151,11 @@ struct WatchStatus {
                     }
                 }
                 return flat
-            }()
+            }(),
+            grouping: (dict["underway"] as? [String: Any])?["grouping"] as? Int ?? 0,
+            judging: (dict["underway"] as? [String: Any])?["judging"] as? Int ?? 0,
+            underway: ((dict["underway"] as? [String: Any])?["sessions"] as? [[String: Any]] ?? [])
+                .compactMap(UnderwaySession.parse)
         )
     }
 }

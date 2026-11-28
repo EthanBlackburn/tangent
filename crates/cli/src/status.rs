@@ -64,10 +64,7 @@ impl AlertSummary {
                 .get("feedback_file")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-            feedback_line: v
-                .get("feedback_line")
-                .filter(|x| !x.is_null())
-                .cloned(),
+            feedback_line: v.get("feedback_line").filter(|x| !x.is_null()).cloned(),
         })
     }
 
@@ -169,11 +166,18 @@ pub struct Snapshot {
     /// This run's tokens, what they cost and how fast sessions are checked
     /// ([`usage`]), None until a model has answered.
     pub usage: Option<Value>,
+    /// The sessions not yet judged ([`underway`]): still being gathered, or
+    /// with the judge. None until there has been one.
+    pub underway: Option<Value>,
 }
 
 impl Snapshot {
     pub fn to_json(&self) -> Value {
-        let recent: Vec<Value> = self.recent_alerts.iter().map(AlertSummary::to_json).collect();
+        let recent: Vec<Value> = self
+            .recent_alerts
+            .iter()
+            .map(AlertSummary::to_json)
+            .collect();
         json!({
             "state": self.state,
             "pid": self.pid,
@@ -192,6 +196,7 @@ impl Snapshot {
             "judge_seconds": self.judge_seconds.map(|(p50, p95)| json!({"p50": p50, "p95": p95})),
             "review_seconds": self.review_seconds.map(|(p50, p95)| json!({"p50": p50, "p95": p95})),
             "usage": self.usage,
+            "underway": self.underway,
         })
     }
 
@@ -227,6 +232,7 @@ impl Snapshot {
             judge_seconds: spread(v.get("judge_seconds")),
             review_seconds: spread(v.get("review_seconds")),
             usage: v.get("usage").filter(|u| u.is_object()).cloned(),
+            underway: v.get("underway").filter(|u| u.is_object()).cloned(),
         })
     }
 }
@@ -269,6 +275,76 @@ struct TrackerInner {
     /// When `usage` was last written for its own sake: it changes with
     /// every request, and is written at most every [`USAGE_EVERY`].
     usage_written: Option<std::time::Instant>,
+    /// When `underway` was last written: it changes with every record.
+    underway_written: Option<std::time::Instant>,
+}
+
+const UNDERWAY_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How many sessions underway are named; the rest are counted.
+const UNDERWAY_NAMED: usize = 40;
+
+/// The sessions the pipeline has in hand and has not judged, for the app:
+/// how many are still being gathered (`grouping`) and how many are with the
+/// judge (`judging`), and the latest of them by name. A session is one
+/// group of `sessions`' open groups, or what `judge` is asking about of one
+/// session's window: a long one is summed up in parts, each a request, and
+/// is one session here.
+pub fn underway(
+    held: &[tangent_runtime::underway::Underway],
+    sessions: &str,
+    judge: &str,
+) -> Value {
+    use tangent_runtime::underway::Stage;
+    let mut named: Vec<(SystemTime, Value)> = Vec::new();
+    let (mut grouping, mut judging) = (0u64, 0u64);
+    let mut seen = std::collections::HashSet::new();
+    for h in held {
+        let stage = match h.stage {
+            Stage::Grouping if &*h.node == sessions => "grouping",
+            Stage::Asking if &*h.node == judge => "judging",
+            _ => continue,
+        };
+        let session = &h.record["session"];
+        if !seen.insert((
+            stage,
+            session["id"].to_string(),
+            session["window"].to_string(),
+        )) {
+            continue;
+        }
+        match h.stage {
+            Stage::Grouping => grouping += 1,
+            Stage::Asking => judging += 1,
+        }
+        // a group's records so far, or the events its summary counts
+        let events = match h.stage {
+            Stage::Grouping => h.records as u64,
+            Stage::Asking => session["events"].as_u64().unwrap_or(1),
+        };
+        let since = h
+            .since
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        named.push((
+            h.since,
+            json!({
+                "stage": stage,
+                "id": session["id"],
+                "entry": session["entry"],
+                "window": session["window"],
+                "events": events,
+                "since": format_rfc3339(since),
+            }),
+        ));
+    }
+    named.sort_by(|a, b| b.0.cmp(&a.0));
+    let sessions: Vec<Value> = named
+        .into_iter()
+        .take(UNDERWAY_NAMED)
+        .map(|(_, v)| v)
+        .collect();
+    json!({"grouping": grouping, "judging": judging, "sessions": sessions})
 }
 
 const USAGE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -314,7 +390,12 @@ impl Ledger {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok());
         let mut hours = std::collections::BTreeMap::new();
-        for (hour, of) in read.as_ref().and_then(Value::as_object).into_iter().flatten() {
+        for (hour, of) in read
+            .as_ref()
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
             let n = |k: &str| of.get(k).and_then(Value::as_f64).unwrap_or(0.0);
             if let Ok(hour) = hour.parse() {
                 hours.insert(
@@ -366,7 +447,11 @@ impl Ledger {
     /// The 24 hours up to `hour`.
     pub fn day(&self, hour: u64) -> Day {
         let mut day = Day::default();
-        for of in self.hours.range(hour.saturating_sub(23)..=hour).map(|(_, of)| of) {
+        for of in self
+            .hours
+            .range(hour.saturating_sub(23)..=hour)
+            .map(|(_, of)| of)
+        {
             day.cost += of.cost;
             day.tokens += of.tokens;
             day.checked += of.checked;
@@ -465,6 +550,7 @@ impl Tracker {
             judge_seconds: None,
             review_seconds: None,
             usage: None,
+            underway: None,
         };
         let tracker = Self {
             inner: Arc::new(Mutex::new(TrackerInner {
@@ -473,6 +559,7 @@ impl Tracker {
                 answered: None,
                 refused: None,
                 usage_written: None,
+                underway_written: None,
             })),
         };
         tracker.flush();
@@ -546,6 +633,24 @@ impl Tracker {
             return;
         }
         g.usage_written = Some(std::time::Instant::now());
+        g.snapshot.updated_at = now_rfc3339();
+        write_atomic(&g.dir, &g.snapshot);
+    }
+
+    /// The sessions not yet judged ([`underway`]): written when they have
+    /// changed, at most every [`UNDERWAY_EVERY`].
+    pub fn set_underway(&self, underway: Value) {
+        let mut g = self.inner.lock().unwrap();
+        if g.snapshot.underway.as_ref() == Some(&underway) {
+            return;
+        }
+        if g.underway_written
+            .is_some_and(|at| at.elapsed() < UNDERWAY_EVERY)
+        {
+            return;
+        }
+        g.snapshot.underway = Some(underway);
+        g.underway_written = Some(std::time::Instant::now());
         g.snapshot.updated_at = now_rfc3339();
         write_atomic(&g.dir, &g.snapshot);
     }
@@ -747,13 +852,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn what_is_underway_is_the_sessions_being_gathered_and_the_ones_with_the_judge() {
+        use tangent_runtime::underway::{Stage, Underway};
+        let at = |secs: u64| UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        let held = |stage, node: &str, record: Value, records, secs| Underway {
+            stage,
+            node: std::sync::Arc::from(node),
+            record,
+            records,
+            since: at(secs),
+        };
+        let all = [
+            held(
+                Stage::Grouping,
+                "macos_sessions",
+                json!({"session": {"id": "7", "entry": "/bin/zsh", "window": "w"}}),
+                12,
+                100,
+            ),
+            held(
+                Stage::Asking,
+                "judge",
+                json!({"session": {"id": "9", "entry": "Python", "events": 4}}),
+                1,
+                200,
+            ),
+            // a second part of the same session's summary
+            held(
+                Stage::Asking,
+                "judge",
+                json!({"session": {"id": "9", "entry": "Python", "events": 4, "part": 2}}),
+                1,
+                150,
+            ),
+            // an alert waiting for its review, and the reviewer's turn: not sessions to be judged
+            held(
+                Stage::Grouping,
+                "macos_review",
+                json!({"session": {"id": "3"}}),
+                1,
+                300,
+            ),
+            held(Stage::Asking, "reviewer", json!({}), 1, 400),
+        ];
+        let told = underway(&all, "macos_sessions", "judge");
+        assert_eq!(
+            (told["grouping"].as_u64(), told["judging"].as_u64()),
+            (Some(1), Some(1))
+        );
+        let sessions = told["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 2);
+        // the latest first
+        assert_eq!(
+            sessions[0],
+            json!({"stage": "judging", "id": "9", "entry": "Python", "window": null, "events": 4, "since": "1970-01-01T00:03:20Z"})
+        );
+        assert_eq!(sessions[1]["stage"], "grouping");
+        assert_eq!(sessions[1]["events"], 12);
+    }
+
+    #[test]
     fn usage_is_what_the_ledger_measured_brought_to_a_day() {
         use tangent_runtime::inference::price::Tokens;
         use tangent_runtime::InferenceTotals;
         let judge = InferenceTotals {
             requests: 10,
             seconds: 20.0,
-            tokens: Tokens { input: 9000, output: 1000, ..Tokens::default() },
+            tokens: Tokens {
+                input: 9000,
+                output: 1000,
+                ..Tokens::default()
+            },
             cost: 0.01,
             unpriced: 0,
         };
@@ -781,12 +950,23 @@ mod tests {
         near("/activities_per_day", 80.0);
         near("/activities_per_second", 80.0 / 86400.0);
         // a model with no listed price: no cost is said
-        let unknown = InferenceTotals { unpriced: 1, ..judge };
+        let unknown = InferenceTotals {
+            unpriced: 1,
+            ..judge
+        };
         let u = usage(&[("judge", unknown)], &day).unwrap();
-        assert_eq!((&u["priced"], &u["cost_per_day"]), (&json!(false), &Value::Null));
+        assert_eq!(
+            (&u["priced"], &u["cost_per_day"]),
+            (&json!(false), &Value::Null)
+        );
         assert_eq!(u["cost_per_activity"], Value::Null);
         // a first minute is not a day
-        let young = Day { cost: 0.19, tokens: 5e5, checked: 76.0, hours: 0.06 };
+        let young = Day {
+            cost: 0.19,
+            tokens: 5e5,
+            checked: 76.0,
+            hours: 0.06,
+        };
         let u = usage(&[("judge", judge)], &young).unwrap();
         assert_eq!(u["cost_per_day"], Value::Null);
         assert_eq!(u["measuring_seconds_left"], 84.0);
@@ -799,7 +979,15 @@ mod tests {
         ledger.saved = std::time::Instant::now() - LEDGER_EVERY;
         ledger.add(500, 0.5, 1000.0, 4.0, 1800.0);
         let again = Ledger::open(dir.path());
-        assert_eq!(again.day(500), Day { cost: 0.5, tokens: 1000.0, checked: 4.0, hours: 0.5 });
+        assert_eq!(
+            again.day(500),
+            Day {
+                cost: 0.5,
+                tokens: 1000.0,
+                checked: 4.0,
+                hours: 0.5
+            }
+        );
         assert_eq!(again.day(600), Day::default());
     }
 
@@ -885,7 +1073,10 @@ mod tests {
         assert!(snap.needs_fda);
         assert_eq!(next.failed(), None, "it has not failed itself");
         next.set_watching();
-        assert!(!read(dir.path()).unwrap().needs_fda, "and no longer once it watches");
+        assert!(
+            !read(dir.path()).unwrap().needs_fda,
+            "and no longer once it watches"
+        );
 
         tracker.set_stopped();
         let snap = read(dir.path()).unwrap();
@@ -897,8 +1088,12 @@ mod tests {
 
     #[test]
     fn only_an_error_that_names_full_disk_access_asks_for_it() {
-        assert!(looks_like_fda("source mac: not permitted: grant Tangent Full Disk Access"));
-        assert!(!looks_like_fda("opening lake/x.parquet: Operation not permitted (os error 1)"));
+        assert!(looks_like_fda(
+            "source mac: not permitted: grant Tangent Full Disk Access"
+        ));
+        assert!(!looks_like_fda(
+            "opening lake/x.parquet: Operation not permitted (os error 1)"
+        ));
     }
 
     #[test]
@@ -921,9 +1116,15 @@ mod tests {
 
     #[test]
     fn auth_error_detects_provider_rejections_and_tracks_clear() {
-        assert!(looks_like_auth_error("HTTP 401 Unauthorized: invalid x-api-key"));
-        assert!(looks_like_auth_error("ExpiredTokenException: The SSO token has expired"));
-        assert!(looks_like_auth_error("403 Forbidden: INVALID_PAYMENT_INSTRUMENT"));
+        assert!(looks_like_auth_error(
+            "HTTP 401 Unauthorized: invalid x-api-key"
+        ));
+        assert!(looks_like_auth_error(
+            "ExpiredTokenException: The SSO token has expired"
+        ));
+        assert!(looks_like_auth_error(
+            "403 Forbidden: INVALID_PAYMENT_INSTRUMENT"
+        ));
         assert!(!looks_like_auth_error("request timed out after 90s"));
 
         let dir = tempfile::tempdir().unwrap();
