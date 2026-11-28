@@ -44,6 +44,10 @@ pub struct InferenceNode {
     schema: Option<schemars::Schema>,
     /// The model it asks, which every node that names it shares.
     model: Arc<Model>,
+    /// Whether the run has somewhere to keep records: `unreached: hold`
+    /// holds nothing in a run without (a replay), where what is held would
+    /// be lost.
+    keeps: std::sync::atomic::AtomicBool,
 }
 
 fn resolve(config_dir: &Path, file: &Path) -> PathBuf {
@@ -88,6 +92,7 @@ impl InferenceNode {
             prompt,
             schema,
             model,
+            keeps: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -231,6 +236,30 @@ impl InferenceNode {
     /// whose request was not sent: once the run is finishing
     /// ([`crate::stop::Stop`]) a request still waiting for one of the
     /// model's places is left unsent, and the ones out are waited for.
+    /// Tells the node the run keeps what it holds ([`Self::holds`]).
+    pub fn keep(&self, keeps: bool) {
+        self.keeps
+            .store(keeps, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether records the model could not be asked about are held to be
+    /// asked again: `unreached: hold`, in a run that keeps them.
+    pub fn holds(&self) -> bool {
+        self.cfg.unreached == tangent_shared::inference::Unreached::Hold
+            && self.keeps.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether its model's last request went unanswered.
+    pub fn down(&self) -> bool {
+        self.model.down()
+    }
+
+    /// Whether held records may go back to it now: all of them once its
+    /// model answers, and while it is down one request in `every`.
+    pub fn takes_again(&self, every: std::time::Duration) -> bool {
+        !self.model.down() || self.model.probe(every)
+    }
+
     pub async fn annotate_unsent(&self, records: Vec<Value>) -> Vec<Option<Value>> {
         let n = records.len();
         let mut groups: Vec<(String, Vec<(usize, Value)>)> = Vec::new();
@@ -264,7 +293,9 @@ impl InferenceNode {
         let mut slots = vec![None; n];
         for (ids, out) in done {
             for (i, v) in ids.into_iter().zip(out.into_iter().flatten()) {
-                slots[i] = Some(v);
+                // null is a record held for a model that was not reached
+                // (`annotate`): unsent, as one the stop kept back is
+                slots[i] = (!v.is_null()).then_some(v);
             }
         }
         slots
@@ -342,6 +373,17 @@ impl InferenceNode {
                 let mut out = Box::pin(self.annotate(records)).await;
                 out.extend(Box::pin(self.annotate(tail)).await);
                 return out;
+            }
+            // The model was not reached, or would not serve the key: with
+            // `unreached: hold` the records wait to be asked again, and go
+            // on with no error in the answer's place.
+            Err(e) if self.holds() && e.downcast_ref::<model::Unreached>().is_some() => {
+                tracing::warn!(
+                    node = %self.name,
+                    records = n,
+                    "the model was not reached, and the records are held to be asked again: {e:#}"
+                );
+                return vec![Value::Null; n];
             }
             Err(e) => {
                 tracing::warn!(node = %self.name, records = n, "inference failed: {e:#}");
@@ -1033,6 +1075,7 @@ pub(crate) mod stub {
                 max_tokens: 50,
                 temperature: None,
                 extra,
+                unreached: Default::default(),
             },
         }
     }
@@ -1628,6 +1671,65 @@ mod tests {
         assert_eq!(flags, [&json!(true), &json!(false)], "{outs:?}");
         assert_eq!(seen.lock().await.len(), 3, "the two, then each alone");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A model that is not reached: its records go on with the error, or
+    /// with `unreached: hold`, in a run that keeps them, are held unsent to
+    /// be asked again.
+    #[tokio::test]
+    async fn records_whose_model_was_not_reached_are_held_when_asked() {
+        // nothing listens here
+        let url = "http://127.0.0.1:9/v1";
+        let dir = stub::dir("unreached");
+        let passes = stub::config(url).node("judge", &dir).unwrap();
+        let out = passes.annotate_unsent(vec![json!({"id": 1})]).await;
+        let said = out[0].as_ref().expect("it goes on");
+        assert!(said["judge"]["error"].is_string(), "{said}");
+        assert!(passes.down());
+
+        let mut asked = stub::config(url);
+        asked.node.unreached = tangent_shared::inference::Unreached::Hold;
+        let holds = asked.node("judge", &dir).unwrap();
+        // a replay keeps nothing, and holds nothing
+        let out = holds.annotate_unsent(vec![json!({"id": 1})]).await;
+        assert!(out[0].is_some(), "nowhere to keep it: {out:?}");
+        holds.keep(true);
+        let out = holds
+            .annotate_unsent(vec![json!({"id": 1}), json!({"id": 2})])
+            .await;
+        assert_eq!(
+            out,
+            [None, None],
+            "held, with no error in the answer's place"
+        );
+        // down, it takes back one request in a while, and not the rest
+        let every = std::time::Duration::from_secs(60);
+        assert!(holds.down());
+        assert!(holds.takes_again(every), "the one that tries it");
+        assert!(!holds.takes_again(every), "the rest wait behind it");
+        assert!(
+            holds.takes_again(std::time::Duration::ZERO),
+            "and once the while is over"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_refusal_of_the_key_is_told_from_one_of_the_request() {
+        for refused in [
+            "ProviderResponseError: status 403 Forbidden: Model access is denied due to INVALID_PAYMENT_INSTRUMENT",
+            "HTTP 401 Unauthorized: invalid x-api-key",
+            "HttpError: Http client error: An unexpected error occurred. Verify Internet connection or AWS keys",
+            "ExpiredTokenException: the SSO token has expired",
+        ] {
+            assert!(model::refuses_the_key(refused), "{refused}");
+        }
+        for other in [
+            "status 400 Bad Request: prompt is too long",
+            "reply is not JSON: Sure, here is",
+        ] {
+            assert!(!model::refuses_the_key(other), "{other}");
+        }
     }
 
     #[tokio::test]

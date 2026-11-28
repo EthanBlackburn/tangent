@@ -39,12 +39,13 @@ hex = "0.4.3"
 # the Sigstore root it carries, and aws-lc-rs for the signatures, which rustls
 # already brings.
 sigstore-verify = { version = "0.16.0", default-features = false, features = ["aws-lc-rs"] }
+# trust.rs reads macOS's trusted certificates as the models' clients do, and
+# writes them as PEM. attest.rs's tests edit a bundle's statement, which is
+# base64 too.
+rustls-native-certs = "0.8"
+base64 = "0.22"
 # `tangent init`'s two questions: a list to pick several from, and one to pick one.
 
 [[bin]]
 name = "tangent"
 path = "src/main.rs"
-
-[dev-dependencies]
-# attest.rs's tests edit a bundle's statement, which is base64.
-base64 = "0.22"
