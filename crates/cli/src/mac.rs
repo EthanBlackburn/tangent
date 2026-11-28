@@ -111,9 +111,12 @@ fn asks(provider: Provider) -> (&'static str, &'static str, bool) {
 }
 
 /// The pipeline that watches this Mac, for one choice of who judges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mac {
     server: Server,
+    /// The model that judges and the one that reviews, each by the name
+    /// its provider takes. Without them, the provider's two as measured.
+    named: Option<(String, String)>,
     /// Whether the file is tangent's own, which `tangent watch` writes
     /// again at each start, and not one init leaves to be edited.
     watched: bool,
@@ -128,8 +131,21 @@ impl Mac {
         };
         Self {
             server,
+            named: None,
             watched: false,
         }
+    }
+
+    /// This pipeline with the provider's models named, as `--model` names
+    /// them: the judge's, then the reviewer's. A provider's pair is what was
+    /// measured, and one of the two may be a model an account is not served.
+    /// Inkling is the one model that runs here, and takes no other name.
+    pub fn naming(mut self, models: Option<(String, String)>) -> Result<Self> {
+        if models.is_some() && !matches!(self.server, Server::Hosted(_)) {
+            bail!("--model names a provider's models, and goes with --provider");
+        }
+        self.named = models;
+        Ok(self)
     }
 
     /// This pipeline for `tangent watch`, which keeps the file itself.
@@ -147,14 +163,30 @@ impl Mac {
             Server::Hosted(provider) => {
                 let pair = self.server.pair();
                 let (judge, reviewer, measured) = asks(provider);
+                let (label, judge_model, reviewer_model) = match &self.named {
+                    Some((judges, reviews)) => (
+                        format!(
+                            "{judges} judges, {reviews} reviews ({}): not the pair measured on the recorded Mac attacks",
+                            pair.host
+                        ),
+                        init::named(pair.judge_model, judges) + "\n",
+                        init::named(pair.reviewer_model, reviews) + "\n",
+                    ),
+                    None => (
+                        match measured {
+                            true => pair.label.to_string(),
+                            false => {
+                                format!("{}: not measured on the recorded Mac attacks", pair.label)
+                            }
+                        },
+                        pair.judge_model.to_string(),
+                        pair.reviewer_model.to_string(),
+                    ),
+                };
                 Models {
-                    label: match measured {
-                        true => pair.label.to_string(),
-                        false => format!("{}: not measured on the recorded Mac attacks", pair.label),
-                    },
+                    label,
                     entries: format!(
-                        "  judge:\n{}{JUDGE_LIMITS}  reviewer:\n{}{REVIEWER_LIMITS}",
-                        pair.judge_model, pair.reviewer_model
+                        "  judge:\n{judge_model}{JUDGE_LIMITS}  reviewer:\n{reviewer_model}{REVIEWER_LIMITS}"
                     ),
                     names: ("judge", "reviewer"),
                     judge,
@@ -283,6 +315,25 @@ pub fn brief(provider: Option<Provider>) -> (&'static str, &'static str) {
     }
 }
 
+/// [`brief`] with the models `--model` named in place of the pair's, each
+/// without what says where it is served (`us.anthropic.`).
+pub fn brief_of(provider: Option<Provider>, named: Option<&(String, String)>) -> (&'static str, String) {
+    let (who, pair) = brief(provider);
+    let short = |id: &str| {
+        let parts: Vec<&str> = id.splitn(3, '.').collect();
+        let word = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphabetic());
+        match parts[..] {
+            [region, vendor, model] if word(region) && word(vendor) => model.to_string(),
+            _ => id.to_string(),
+        }
+    };
+    match named {
+        Some((judge, reviewer)) if judge == reviewer => (who, short(judge)),
+        Some((judge, reviewer)) => (who, format!("{} + {}", short(judge), short(reviewer))),
+        None => (who, pair.to_string()),
+    }
+}
+
 /// Whether this machine is one the pipeline can watch, with these models:
 /// a Mac, and for Inkling one with Apple Silicon and the memory for it. It
 /// is asked before anything is written or downloaded. Where Inkling is not
@@ -328,8 +379,12 @@ The terminal it runs in needs Full Disk Access (System Settings, Privacy & Secur
 /// `tangent init mac` in `dir`: the files, and the plugins the config
 /// names and the sensor, fetched and checked. A fetch that fails takes the
 /// files with it, so what is left loads or is nothing.
-pub async fn run(dir: &Path, provider: Option<Provider>) -> Result<()> {
-    let mac = Mac::new(provider);
+pub async fn run(
+    dir: &Path,
+    provider: Option<Provider>,
+    models: Option<(String, String)>,
+) -> Result<()> {
+    let mac = Mac::new(provider).naming(models)?;
     runs_here(&mac)?;
     let written = init::write(dir, &mac.files())?;
     let config = dir.join("tangent.yaml");
@@ -384,7 +439,7 @@ mod tests {
 
     /// The files for this choice, in a directory of their own, and the
     /// config as it loads.
-    fn written(mac: Mac) -> (tempfile::TempDir, Config) {
+    fn written(mac: &Mac) -> (tempfile::TempDir, Config) {
         let dir = tempfile::tempdir().unwrap();
         init::write(dir.path(), &mac.files()).unwrap();
         let cfg = Config::load(&dir.path().join("tangent.yaml"))
@@ -410,7 +465,7 @@ mod tests {
     fn the_pipeline_loads_whoever_judges() {
         for provider in ALL {
             for mac in [Mac::new(provider), Mac::new(provider).watched()] {
-                let (_dir, cfg) = written(mac);
+                let (_dir, cfg) = written(&mac);
                 assert_eq!(cfg.warnings(), Vec::<String>::new(), "{mac:?}");
                 let config = mac.config();
                 assert!(!config.contains("{{"), "{mac:?}:\n{config}");
@@ -439,7 +494,7 @@ mod tests {
     /// takes, and the file says which pair was not measured on a Mac.
     #[test]
     fn who_judges_is_inkling_here_or_a_provider_s_pair() {
-        let (_dir, here) = written(Mac::new(None));
+        let (_dir, here) = written(&Mac::new(None));
         assert_eq!(here.models.len(), 1);
         assert!(here.models["inkling"].serve.is_some());
         assert_eq!(here.models["inkling"].concurrency, 1);
@@ -449,7 +504,7 @@ mod tests {
         assert!(Mac::new(None).needs().is_empty());
 
         let claude = Mac::new(Some(Provider::Anthropic));
-        let (_dir, hosted) = written(claude);
+        let (_dir, hosted) = written(&claude);
         assert_eq!(hosted.models.len(), 2);
         assert!(hosted.models.values().all(|m| m.serve.is_none()));
         assert_eq!(hosted.models["judge"].model, "claude-haiku-5-5");
@@ -491,7 +546,7 @@ mod tests {
             ),
         ] {
             let mac = Mac::new(Some(provider));
-            let (_dir, cfg) = written(mac);
+            let (_dir, cfg) = written(&mac);
             assert_eq!(cfg.models["judge"].model, judge);
             assert_eq!(cfg.models["reviewer"].model, reviewer);
             assert_eq!(cfg.models["judge"].concurrency, 16, "{provider:?}");
@@ -515,6 +570,24 @@ mod tests {
     /// Where Inkling is not started, each provider's command is given for
     /// the command that was run, with the one whose key is set first, what
     /// is sent, and which pair was measured.
+    #[test]
+    fn the_models_named_take_the_pair_s_place_and_inkling_takes_no_name() {
+        let named = Some(("us.anthropic.claude-haiku-5-5".to_string(), "us.anthropic.claude-sonnet-5".to_string()));
+        let mac = Mac::new(Some(Provider::Bedrock)).naming(named.clone()).unwrap();
+        let (_dir, cfg) = written(&mac);
+        assert_eq!(cfg.models["judge"].model, "us.anthropic.claude-haiku-5-5");
+        assert_eq!(cfg.models["reviewer"].model, "us.anthropic.claude-sonnet-5");
+        assert!(mac.models().contains("us.anthropic.claude-sonnet-5 reviews"), "{}", mac.models());
+        assert_eq!(
+            brief_of(Some(Provider::Bedrock), named.as_ref()),
+            ("Bedrock", "claude-haiku-5-5 + claude-sonnet-5".to_string())
+        );
+        let one = ("gpt-6.1-terra".to_string(), "gpt-6.1-terra".to_string());
+        assert_eq!(brief_of(Some(Provider::Openai), Some(&one)).1, "gpt-6.1-terra");
+        assert_eq!(brief_of(Some(Provider::Openai), None).1, "GPT-6 Luna + GPT-6.1 Terra");
+        assert!(Mac::new(None).naming(named).is_err());
+    }
+
     #[test]
     fn a_mac_too_small_for_inkling_is_given_each_provider_s_command() {
         let why = "this Mac has 16 GB of memory, and Inkling 2 Mini needs 32";
@@ -541,7 +614,7 @@ mod tests {
     /// with, which is the model's.
     #[test]
     fn the_config_is_what_the_packs_say() {
-        let (_dir, ours) = written(Mac::new(Some(Provider::Anthropic)));
+        let (_dir, ours) = written(&Mac::new(Some(Provider::Anthropic)));
         let theirs = r#"include: [pack:macos, pack:macos/judge, pack:macos/lake, pack:judge/hosted, pack:macos/review]
 sources:
   mac: { type: macos }

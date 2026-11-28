@@ -498,7 +498,7 @@ pub fn models(flag: &str) -> Result<(String, String)> {
 }
 
 /// `block` with its `model` line naming `model`.
-fn named(block: &str, model: &str) -> String {
+pub(crate) fn named(block: &str, model: &str) -> String {
     let name = serde_json::Value::from(model).to_string();
     let lines: Vec<String> = block
         .lines()

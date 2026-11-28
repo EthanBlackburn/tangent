@@ -33,12 +33,28 @@ struct ProviderEnvVar: Identifiable, Hashable {
     }
 }
 
+/// How long an alert may wait before its review is taken for lost: longer
+/// than the slowest review, with the queue ahead of it.
+let reviewsWithin: TimeInterval = 15 * 60
+
+extension ISO8601DateFormatter {
+    /// An RFC 3339 time, with fractional seconds or without.
+    static func flexible(_ text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+}
+
 enum FlaggedKind: String, Hashable {
     case malicious
     case unresolved
     case benign
     case failed
     case reviewing
+    /// Nobody checked it: the judge could not be asked about the session,
+    /// or it flagged it and no review came within any review's time.
+    case unreviewed
 
     var label: String {
         switch self {
@@ -47,17 +63,18 @@ enum FlaggedKind: String, Hashable {
         case .benign: return "Cleared"
         case .failed: return "Review failed"
         case .reviewing: return "Reviewing"
+        case .unreviewed: return "Unchecked"
         }
     }
 
     var isAlert: Bool {
-        self == .malicious || self == .unresolved || self == .failed
+        self == .malicious || self == .unresolved || self == .failed || self == .unreviewed
     }
 
     var dotColor: Color {
         switch self {
         case .malicious: return Theme.crimson
-        case .unresolved, .failed: return Theme.amber
+        case .unresolved, .failed, .unreviewed: return Theme.amber
         case .reviewing: return Theme.inkSecondary
         case .benign: return Color(nsColor: .tertiaryLabelColor)
         }
@@ -67,7 +84,7 @@ enum FlaggedKind: String, Hashable {
         switch self {
         case .malicious: return "exclamationmark.octagon.fill"
         case .unresolved: return "exclamationmark.triangle.fill"
-        case .failed: return "exclamationmark.circle.fill"
+        case .failed, .unreviewed: return "exclamationmark.circle.fill"
         case .reviewing: return "sparkle"
         case .benign: return "checkmark.circle"
         }
@@ -433,15 +450,34 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
             let judgeMark = judge["warrants_investigation"] as? String ?? "flag"
             let judgeNote = cleanInlineText((judge["why"] as? String) ?? (judge["assessment"] as? String) ?? "")
 
+            // A review is over within minutes, with a verdict or an error.
+            // An alert still without one after that was dropped on the way
+            // (the watcher was stopped while it waited), and is not being
+            // reviewed: it is said so, not left "Reviewing" for good.
+            let flaggedAt = ISO8601DateFormatter.flexible(ts)
+            let waited = flaggedAt.map { Date().timeIntervalSince($0) } ?? 0
+            // A session the judge could not be asked about is with the
+            // alerts so that it is seen, and is never reviewed: there is no
+            // verdict to review. It is said at once, with the model's error.
+            let judgeError = cleanInlineText(judge["error"] as? String ?? "")
+            let dropped = !judgeError.isEmpty || waited > reviewsWithin
+            let unreviewedNote = judgeError.isEmpty
+                ? "The judge flagged this session and no review of it was finished, so nobody has looked into it."
+                : "The model could not be asked about this session, so it was never checked. It is not a finding.\n\n\(judgeError)"
             pending.append(FlaggedEntry(
                 id: "alert-\(idx)-\(sid)-\(ts)",
                 ts: ts,
-                kind: .reviewing,
+                kind: dropped ? .unreviewed : .reviewing,
                 subject: subject,
                 who: who,
                 sessionId: sid,
-                summary: firstSentenceSnippet(judgeNote.isEmpty ? "Flagged by judge, awaiting review…" : judgeNote),
-                finding: judgeNote.isEmpty ? "Flagged by the first-pass judge. The reviewer is investigating this session against the local Parquet log." : judgeNote,
+                summary: firstSentenceSnippet(judgeNote.isEmpty
+                    ? (!judgeError.isEmpty ? "Not checked: the model could not be reached"
+                        : (dropped ? "Flagged by judge, never reviewed" : "Flagged by judge, awaiting review…"))
+                    : judgeNote),
+                finding: judgeNote.isEmpty
+                    ? (dropped ? unreviewedNote : "Flagged by the first-pass judge. The reviewer is investigating this session against the local Parquet log.")
+                    : (dropped ? "\(judgeNote)\n\n\(unreviewedNote)" : judgeNote),
                 check: "",
                 judgeMark: judgeMark,
                 judgeNote: judgeNote,
@@ -818,7 +854,7 @@ private struct SidebarColumn: View {
     private var statusWord: String {
         if let busy = store.busyAction { return busy }
         if store.needsFda { return "Needs access" }
-        if store.authError != nil { return "Key rejected" }
+        if let err = store.authError { return AuthProblem(err).short }
         if store.isAlive {
             return store.status?.state == "starting" ? "Starting" : "Watching"
         }
@@ -951,7 +987,8 @@ private struct ActivitySidebarList: View {
                             SidebarActivityRow(
                                 entry: entry,
                                 isSelected: store.selectedEvent?.id == entry.id,
-                                answer: store.answered[entry.feedbackKey]
+                                answer: store.answered[entry.feedbackKey],
+                                blocked: store.authError != nil
                             )
                             .onTapGesture { store.selectedEventId = entry.id }
                         }
@@ -972,10 +1009,44 @@ private struct ActivitySidebarList: View {
     }
 }
 
+/// What a provider's refusal is, in the few words there is room for. Not
+/// every one is a key's: an account that is not sold a model, and an AWS
+/// sign-in that has run out, are refused the same way, and a new key mends
+/// neither.
+struct AuthProblem {
+    /// Two words, for the status pill and a row's badge.
+    let short: String
+    /// The banner's title.
+    let title: String
+    /// Whether saving a key again could mend it.
+    let aKeyMendsIt: Bool
+
+    init(_ error: String) {
+        let e = error.lowercased()
+        if e.contains("sign-in has expired") || e.contains("sso") || e.contains("token has expired") {
+            short = "Sign-in expired"
+            title = "Your AWS sign-in has expired"
+            aKeyMendsIt = false
+        } else if e.contains("payment_instrument") || e.contains("model access is denied")
+            || e.contains("insufficient_quota") || e.contains("credit balance")
+        {
+            short = "Model blocked"
+            title = "Your account is not served this model"
+            aKeyMendsIt = false
+        } else {
+            short = "Key rejected"
+            title = "API key rejected or expired"
+            aKeyMendsIt = true
+        }
+    }
+}
+
 private struct SidebarActivityRow: View {
     let entry: FlaggedEntry
     let isSelected: Bool
     let answer: String?
+    /// Whether the models are refused: a review that waits is not under way.
+    let blocked: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -1009,7 +1080,7 @@ private struct SidebarActivityRow: View {
                         .foregroundColor(Theme.inkTertiary)
                         .padding(.top, 1)
                 } else if entry.kind == .reviewing {
-                    Text("Reviewing…")
+                    Text(blocked ? "Not reviewed: the model is refused" : "Reviewing…")
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundColor(Theme.amber)
                         .padding(.top, 1)
@@ -1117,15 +1188,16 @@ private struct ActionBannerStrip: View {
             }
 
             if let authErr = store.authError {
+                let problem = AuthProblem(authErr)
                 bannerRow(
-                    icon: "key.slash.fill",
+                    icon: problem.aKeyMendsIt ? "key.slash.fill" : "exclamationmark.triangle.fill",
                     tint: Theme.amber,
-                    title: "API key rejected or expired",
+                    title: problem.title,
                     detail: authErr,
-                    buttonTitle: "Update key"
+                    buttonTitle: problem.aKeyMendsIt ? "Update key" : "Models"
                 ) {
                     store.selectedTab = .models
-                    if let current = store.currentChoice, !current.envVars.isEmpty {
+                    if problem.aKeyMendsIt, let current = store.currentChoice, !current.envVars.isEmpty {
                         store.keySheetChoice = current
                     }
                 }
@@ -1281,7 +1353,8 @@ private struct IncidentBriefView: View {
 
                     // Finding — clean open editorial prose with inline monospace paths
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(entry.kind == .reviewing ? "First-pass summary" : "What happened")
+                        Text(entry.kind == .unreviewed ? "Why it is unchecked"
+                            : (entry.kind == .reviewing ? "First-pass summary" : "What happened"))
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundColor(Theme.inkSecondary)
 
@@ -1585,6 +1658,12 @@ private struct ProviderSettingsRow: View {
     let choice: ModelChoice
     @State private var hovered = false
 
+    /// A choice that cannot run on this Mac and has nothing to set that
+    /// would let it (Inkling without the memory): shown, and greyed out.
+    private var unavailable: Bool {
+        !choice.current && !choice.ready && choice.envVars.isEmpty
+    }
+
     var body: some View {
         HStack(spacing: 14) {
             // Selection indicator dot
@@ -1618,7 +1697,16 @@ private struct ProviderSettingsRow: View {
                 if choice.current {
                     if !choice.envVars.isEmpty {
                         let isProfileOnly = choice.envVars.allSatisfy { !$0.secret }
-                        if store.authError != nil {
+                        if let err = store.authError, !AuthProblem(err).aKeyMendsIt {
+                            // no key mends it: it is said, and nothing is offered
+                            Text(AuthProblem(err).short)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundColor(Theme.amber)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(Theme.amber.opacity(0.14))
+                                .clipShape(Capsule())
+                        } else if store.authError != nil {
                             Button("Fix key") {
                                 store.keySheetChoice = choice
                             }
@@ -1659,10 +1747,11 @@ private struct ProviderSettingsRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+        .opacity(unavailable ? 0.4 : 1)
         .background(
             choice.current
                 ? Theme.selection
-                : (hovered ? Theme.selection.opacity(0.45) : Color.clear)
+                : (hovered && !unavailable ? Theme.selection.opacity(0.45) : Color.clear)
         )
         .onHover { hovered = $0 }
     }

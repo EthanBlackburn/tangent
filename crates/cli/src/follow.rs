@@ -458,9 +458,16 @@ pub struct Follow {
     notifier: Option<Notifier>,
     /// Upheld reviews collected since the last `status.json` flush.
     new_alerts: Vec<AlertSummary>,
-    /// Pending `auth_error` update for `status.json`: `Some(Some(msg))` sets,
-    /// `Some(None)` clears after a clean judge or review call.
-    auth_change: Option<Option<String>>,
+    /// What each model last said of its credentials: the judge's, then the
+    /// reviewer's. They are kept apart because they are two models, and one
+    /// can be refused while the other is let in: the judge's clean call does
+    /// not clear what the reviewer was refused for. `status.json` has the
+    /// reviewer's when both are refused.
+    judge_auth: Option<String>,
+    review_auth: Option<String>,
+    /// Whether the judge has answered since the status was last written:
+    /// what its request was refused for while it was tried again is over.
+    judge_answered: bool,
     status: Option<Tracker>,
 }
 
@@ -498,7 +505,9 @@ impl Follow {
             notes: Vec::new(),
             notifier,
             new_alerts: Vec::new(),
-            auth_change: None,
+            judge_auth: None,
+            review_auth: None,
+            judge_answered: false,
             status,
         }
     }
@@ -619,10 +628,11 @@ impl Follow {
             let err = text(&record, &["judge", "error"]);
             if !err.is_empty() {
                 if status::looks_like_auth_error(&err) {
-                    self.auth_change = Some(Some(err));
+                    self.judge_auth = Some(err);
                 }
             } else if record.get("judge").is_some() {
-                self.auth_change = Some(None);
+                self.judge_auth = None;
+                self.judge_answered = true;
             }
         }
         let alerts: Vec<Value> = self.alerts.lines().into_iter().filter_map(parsed).collect();
@@ -654,10 +664,10 @@ impl Follow {
             let rev_err = text(&record, &["review", "error"]);
             if !rev_err.is_empty() {
                 if status::looks_like_auth_error(&rev_err) {
-                    self.auth_change = Some(Some(rev_err));
+                    self.review_auth = Some(rev_err);
                 }
             } else {
-                self.auth_change = Some(None);
+                self.review_auth = None;
             }
             let ids = self.resolve(&record);
             lines.extend(review(&record, &ids, self.style));
@@ -686,12 +696,13 @@ impl Follow {
         if let Some(status) = &self.status {
             let alerts = std::mem::take(&mut self.new_alerts);
             status.update(self.judged, self.flagged, self.pending.len() as u64, alerts);
-            if let Some(change) = self.auth_change.take() {
-                status.set_auth_error(change);
+            // It writes nothing when this is what the file already has.
+            status.set_auth_error(self.review_auth.clone().or_else(|| self.judge_auth.clone()));
+            if std::mem::take(&mut self.judge_answered) {
+                status.set_refused(None);
             }
         } else {
             self.new_alerts.clear();
-            self.auth_change = None;
         }
         for note in self.notes.drain(..) {
             if let Some(notifier) = &self.notifier {
@@ -1161,5 +1172,43 @@ mod tests {
         append(&dir.path().join("verdicts.ndjson"), &format!("{ok}\n"));
         follow.say(false);
         assert_eq!(status::read(dir.path()).unwrap().auth_error, None);
+    }
+
+    #[test]
+    fn a_judge_that_is_let_in_does_not_clear_what_the_reviewer_was_refused_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let tracker = Tracker::start(dir.path(), "hosted", "Claude Haiku 5.5 + Sonnet 5.5");
+        tracker.set_watching();
+        let mut follow = Follow::with_style(dir.path(), None, None, Some(tracker), Style::plain());
+        let judged = json!({
+            "session": {"entry": "/bin/zsh"},
+            "judge": {"warrants_investigation": "pass"}
+        });
+        let refused = json!({
+            "session": {"entry": "/bin/zsh"},
+            "source": "macos_review",
+            "judge": {"warrants_investigation": "look"},
+            "review": {"error": "status 403 Forbidden: INVALID_PAYMENT_INSTRUMENT"}
+        });
+        append(&dir.path().join("reviews.ndjson"), &format!("{refused}\n"));
+        append(&dir.path().join("verdicts.ndjson"), &format!("{judged}\n"));
+        follow.say(false);
+        let said = || status::read(dir.path()).unwrap().auth_error;
+        assert_eq!(said().as_deref(), Some("status 403 Forbidden: INVALID_PAYMENT_INSTRUMENT"));
+
+        // and it stays through the judge's later clean calls
+        append(&dir.path().join("verdicts.ndjson"), &format!("{judged}\n"));
+        follow.say(false);
+        assert!(said().is_some(), "the reviewer is still refused");
+
+        let reviewed = json!({
+            "session": {"entry": "/bin/zsh"},
+            "source": "macos_review",
+            "judge": {"warrants_investigation": "look"},
+            "review": {"verdict": "dismissed", "finding": "nothing"}
+        });
+        append(&dir.path().join("reviews.ndjson"), &format!("{reviewed}\n"));
+        follow.say(false);
+        assert_eq!(said(), None);
     }
 }

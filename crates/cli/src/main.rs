@@ -82,6 +82,13 @@ enum Watch {
         /// attacks
         #[arg(long, value_enum)]
         provider: Option<init::Provider>,
+        /// Other models than the provider's pair, by the exact name each
+        /// takes: one judges and reviews, and two with a comma are the
+        /// judge's, then the reviewer's. For a model of the pair your
+        /// account is not served
+        /// (--model us.anthropic.claude-haiku-5-5,us.anthropic.claude-sonnet-5)
+        #[arg(long, requires = "provider")]
+        model: Option<String>,
     },
 }
 
@@ -216,6 +223,12 @@ enum Commands {
         /// Switch back to local Inkling 2 Mini on Apple Silicon (32 GB+ RAM).
         #[arg(long)]
         local: bool,
+        /// Other models than the provider's pair, as `tangent watch mac
+        /// --model` has it: the judge's, then the reviewer's, with a comma.
+        /// It is remembered with the provider, and a `--provider` without it
+        /// is that provider's pair again
+        #[arg(long, conflicts_with = "local")]
+        model: Option<String>,
     },
 
     /// Pause background Mac watching (zero sudo; sensor drops to 0% CPU).
@@ -440,8 +453,11 @@ async fn main() -> Result<()> {
             init::run(Path::new("."), sources, server, models).await?
         }
         Commands::Init {
-            watch: Watch::Mac { provider },
-        } => mac::run(Path::new("."), provider).await?,
+            watch: Watch::Mac { provider, model },
+        } => {
+            let models = model.as_deref().map(init::models).transpose()?;
+            mac::run(Path::new("."), provider, models).await?
+        }
 
         Commands::Watch {
             watch:
@@ -464,7 +480,7 @@ async fn main() -> Result<()> {
             watch::cloud(sources, server, models, no_notify).await?
         }
         Commands::Watch {
-            watch: Some(Watch::Mac { provider }),
+            watch: Some(Watch::Mac { provider, model }),
             no_notify,
             keychain,
             ..
@@ -472,7 +488,8 @@ async fn main() -> Result<()> {
             if keychain {
                 service::load_keychain_env(&watch::data_dir("mac")?)?;
             }
-            watch::mac(provider, no_notify).await?
+            let models = model.as_deref().map(init::models).transpose()?;
+            watch::mac(provider, models, no_notify).await?
         }
         Commands::Watch {
             watch: None,
@@ -491,7 +508,14 @@ async fn main() -> Result<()> {
             watch::config(config, once, no_notify).await?
         }
 
-        Commands::Up { provider, local } => service::up(provider, local).await?,
+        Commands::Up {
+            provider,
+            local,
+            model,
+        } => {
+            let models = model.as_deref().map(init::models).transpose()?;
+            service::up(provider, local, models).await?
+        }
         Commands::Down { all } => service::down(all).await?,
         Commands::Status { json } => service::show_status(json).await?,
         Commands::Uninstall { purge } => service::uninstall(purge).await?,
@@ -704,8 +728,12 @@ mod tests {
             assert!(parses(&["mac", "--provider", "bedrock"]));
             assert!(!parses(&["mac", "--hosted"]), "a provider is named");
             assert!(
-                !parses(&["mac", "--provider", "openai", "--model", "gpt-6-luna"]),
-                "a Mac's models are its provider's pair"
+                parses(&["mac", "--provider", "openai", "--model", "gpt-6-luna"]),
+                "a provider's models are named where an account is not served its pair"
+            );
+            assert!(
+                !parses(&["mac", "--model", "gpt-6-luna"]),
+                "Inkling is the one model that runs here"
             );
             assert!(
                 !parses(&["mac", "--sources", "okta"]),

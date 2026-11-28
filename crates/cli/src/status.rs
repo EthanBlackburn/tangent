@@ -226,6 +226,13 @@ pub struct Tracker {
 struct TrackerInner {
     dir: PathBuf,
     snapshot: Snapshot,
+    /// What the judge's and the reviewer's answers last said of their
+    /// credentials, from `Follow`.
+    answered: Option<String>,
+    /// What a request that is being tried again was refused for. A judge
+    /// that is refused tries for minutes before it answers at all, and until
+    /// then there is no answer to read it from.
+    refused: Option<String>,
 }
 
 impl Tracker {
@@ -262,6 +269,8 @@ impl Tracker {
             inner: Arc::new(Mutex::new(TrackerInner {
                 dir: dir.to_path_buf(),
                 snapshot,
+                answered: None,
+                refused: None,
             })),
         };
         tracker.flush();
@@ -275,6 +284,8 @@ impl Tracker {
         g.snapshot.error = None;
         g.snapshot.needs_fda = false;
         g.snapshot.auth_error = None;
+        g.answered = None;
+        g.refused = None;
         g.snapshot.updated_at = now_rfc3339();
         write_atomic(&g.dir, &g.snapshot);
     }
@@ -284,6 +295,22 @@ impl Tracker {
     /// judge or review calls.
     pub fn set_auth_error(&self, err: Option<String>) {
         let mut g = self.inner.lock().unwrap();
+        g.answered = err;
+        Self::say_auth(&mut g);
+    }
+
+    /// What the judge's request, which is being tried again, was refused
+    /// for, or `None` once the judge has answered.
+    pub fn set_refused(&self, err: Option<String>) {
+        let mut g = self.inner.lock().unwrap();
+        g.refused = err;
+        Self::say_auth(&mut g);
+    }
+
+    /// `auth_error` is what an answer said, or else what a request still
+    /// being tried was refused for. It is written when it changes.
+    fn say_auth(g: &mut TrackerInner) {
+        let err = g.answered.clone().or_else(|| g.refused.clone());
         if g.snapshot.auth_error == err {
             return;
         }
@@ -325,6 +352,8 @@ impl Tracker {
         g.snapshot.error = None;
         g.snapshot.needs_fda = false;
         g.snapshot.auth_error = None;
+        g.answered = None;
+        g.refused = None;
         g.snapshot.updated_at = now_rfc3339();
         write_atomic(&g.dir, &g.snapshot);
     }
@@ -574,6 +603,24 @@ mod tests {
     fn only_an_error_that_names_full_disk_access_asks_for_it() {
         assert!(looks_like_fda("source mac: not permitted: grant Tangent Full Disk Access"));
         assert!(!looks_like_fda("opening lake/x.parquet: Operation not permitted (os error 1)"));
+    }
+
+    #[test]
+    fn a_request_still_being_tried_says_what_it_was_refused_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let tracker = Tracker::start(dir.path(), "hosted", "Claude Haiku 5.5 + Sonnet 5.5");
+        tracker.set_watching();
+        let said = || read(dir.path()).unwrap().auth_error;
+        tracker.set_refused(Some("AWS sign-in has expired".to_string()));
+        // `Follow` has read no answer, and says so each second
+        tracker.set_auth_error(None);
+        assert_eq!(said().as_deref(), Some("AWS sign-in has expired"));
+        // an answer's own word is the one shown
+        tracker.set_auth_error(Some("403 Forbidden".to_string()));
+        assert_eq!(said().as_deref(), Some("403 Forbidden"));
+        tracker.set_auth_error(None);
+        tracker.set_refused(None);
+        assert_eq!(said(), None);
     }
 
     #[test]
