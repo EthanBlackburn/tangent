@@ -144,8 +144,12 @@ from a reader of the lake. One longer than that is kept by its start and
 its end with what is between counted. A key in its vendor's own format
 (`ghp_…`, `sk-ant-…`, `AKIA…`, a JSON Web Token) is taken out before the
 record is built, and its start stays, which says whose it is:
-`ghp_[secret: 36 bytes]`. Nothing else on a line is taken out: a password,
-or a value under a name like `--token` or `PASSWORD=`, is kept as written.
+`ghp_[secret: 36 bytes]`. So is a password a program was given as its own
+argument after a flag named for one (`-password`, `--admin-password`,
+`--password=…`), when it is one word with no space, slash or shell syntax
+in it: `profiles validate -user admin -password [secret: 17 bytes]`.
+Nothing else on a line is taken out: a value under a name like `--token`
+or `PASSWORD=`, and a password in a shell's line, are kept as written.
 Whoever writes the line picks the name, so taking out what follows one
 would hide a command put there (`src/secrets.rs`). About 800 bytes a record.
 
