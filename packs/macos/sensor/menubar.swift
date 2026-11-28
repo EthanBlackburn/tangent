@@ -65,11 +65,26 @@ struct WatchStatus {
     let error: String?
     let needsFda: Bool
     let authError: String?
+    /// How long the models take in this run, in seconds, the median and
+    /// the 95th percentile: the judge a request, and an alert from flagged
+    /// to its review's verdict. Nil until there is one.
+    let judgeSeconds: (p50: Double, p95: Double)?
+    let reviewSeconds: (p50: Double, p95: Double)?
+    /// This run's tokens, cost and rate, as the watcher works them out:
+    /// numbers by name, a node's output speed under `speed.<node>`.
+    let usage: [String: Double]
 
     /// True if the watch process is actually alive right now.
     var isAlive: Bool {
         guard state == "watching" || state == "starting", let pid, pid > 0 else { return false }
         return Darwin.kill(pid, 0) == 0 || errno == EPERM
+    }
+
+    private static func spread(_ value: Any?) -> (p50: Double, p95: Double)? {
+        guard let of = value as? [String: Any],
+              let p50 = (of["p50"] as? NSNumber)?.doubleValue,
+              let p95 = (of["p95"] as? NSNumber)?.doubleValue else { return nil }
+        return (p50, p95)
     }
 
     static func load(from dir: String) -> WatchStatus? {
@@ -95,7 +110,19 @@ struct WatchStatus {
             recentAlerts: recent,
             error: dict["error"] as? String,
             needsFda: dict["needs_fda"] as? Bool ?? false,
-            authError: dict["auth_error"] as? String
+            authError: dict["auth_error"] as? String,
+            judgeSeconds: spread(dict["judge_seconds"]),
+            reviewSeconds: spread(dict["review_seconds"]),
+            usage: {
+                var flat: [String: Double] = [:]
+                for (key, value) in dict["usage"] as? [String: Any] ?? [:] {
+                    if let n = value as? NSNumber, !(value is Bool) { flat[key] = n.doubleValue }
+                    for (node, speed) in value as? [String: Any] ?? [:] {
+                        if let n = speed as? NSNumber { flat["speed.\(node)"] = n.doubleValue }
+                    }
+                }
+                return flat
+            }()
         )
     }
 }

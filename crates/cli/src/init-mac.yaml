@@ -76,6 +76,7 @@ plugins:
       lake: lake                 # table `lake` is what sink `lake` has written
     data: /                      # the records' paths are absolute. It reads only a file a record gives a reason to, never credentials or transcripts
     group_by: [session.id, session.window]
+    workers: 3                   # three reviews at once: a review takes a minute or two, and alerts come in bursts
     expire_after_ms: 10000       # the lake has a record once it is written, so no alert waits for a file
     config:
       model: reviewer

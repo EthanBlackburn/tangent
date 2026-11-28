@@ -458,6 +458,13 @@ pub struct Follow {
     notifier: Option<Notifier>,
     /// Upheld reviews collected since the last `status.json` flush.
     new_alerts: Vec<AlertSummary>,
+    /// The seconds from each alert of this run being flagged to its
+    /// review's verdict, its wait for a reviewer included.
+    reviewed: Vec<f64>,
+    /// When this run began to follow: what its rates are over.
+    began: Instant,
+    /// The same for the alerts the review being read settles.
+    settled: Vec<f64>,
     /// What each model last said of its credentials: the judge's, then the
     /// reviewer's. They are kept apart because they are two models, and one
     /// can be refused while the other is let in: the judge's clean call does
@@ -505,6 +512,9 @@ impl Follow {
             notes: Vec::new(),
             notifier,
             new_alerts: Vec::new(),
+            reviewed: Vec::new(),
+            began: Instant::now(),
+            settled: Vec::new(),
             judge_auth: None,
             review_auth: None,
             judge_answered: false,
@@ -537,6 +547,7 @@ impl Follow {
                     };
                     if hit {
                         matched.push(waiting.id);
+                        self.settled.push(waiting.since.elapsed().as_secs_f64());
                     } else {
                         rest.push(waiting);
                     }
@@ -662,6 +673,7 @@ impl Follow {
                 continue;
             }
             let rev_err = text(&record, &["review", "error"]);
+            let answered = rev_err.is_empty();
             if !rev_err.is_empty() {
                 if status::looks_like_auth_error(&rev_err) {
                     self.review_auth = Some(rev_err);
@@ -669,7 +681,13 @@ impl Follow {
             } else {
                 self.review_auth = None;
             }
+            self.settled.clear();
             let ids = self.resolve(&record);
+            // an alert of this run whose review gave a verdict: one from
+            // before it was not seen flagged, and has no time to count
+            if answered {
+                self.reviewed.extend(self.settled.drain(..));
+            }
             lines.extend(review(&record, &ids, self.style));
             self.notes.extend(note(&record, &self.dir));
             self.new_alerts
@@ -694,6 +712,19 @@ impl Follow {
             println!("{line}");
         }
         if let Some(status) = &self.status {
+            // the judge's from the runtime's own count of its requests
+            status.set_usage(status::usage(
+                &[
+                    ("judge", tangent_runtime::inference_totals("judge")),
+                    ("reviewer", tangent_runtime::inference_totals("reviewer")),
+                ],
+                self.judged,
+                self.began.elapsed().as_secs_f64(),
+            ));
+            status.set_timing(
+                status::percentiles(&tangent_runtime::inference_recent("judge")),
+                status::percentiles(&self.reviewed),
+            );
             let alerts = std::mem::take(&mut self.new_alerts);
             status.update(self.judged, self.flagged, self.pending.len() as u64, alerts);
             // It writes nothing when this is what the file already has.

@@ -205,6 +205,7 @@ struct FlaggedEntry: Identifiable, Equatable {
 enum AppTab: String, CaseIterable {
     case activity = "Activity"
     case models = "Models & Keys"
+    case health = "Health"
 }
 
 enum ActivityFilter: String, CaseIterable {
@@ -806,6 +807,8 @@ struct TangentAppView: View {
                             ActivityDetailStage(store: store)
                         case .models:
                             ModelsAndKeysStage(store: store)
+                        case .health:
+                            HealthStage(store: store)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -871,6 +874,17 @@ private struct SidebarColumn: View {
                             shortcutKey: "2"
                         ) {
                             store.selectedTab = .models
+                        }
+
+                        SidebarNavButton(
+                            title: "Health",
+                            symbol: "heart.text.square",
+                            badgeCount: store.needsFda || (store.isAlive && !sensorConnected()) ? 1 : 0,
+                            badgeColor: Theme.amber,
+                            isSelected: store.selectedTab == .health,
+                            shortcutKey: "3"
+                        ) {
+                            store.selectedTab = .health
                         }
                     }
                 }
@@ -1223,6 +1237,24 @@ private struct SidebarActivityRow: View {
         )
         .contentShape(Rectangle())
     }
+}
+
+/// A count as it is read: `940`, `5.2k`, `1.3M`.
+func counted(_ n: Double) -> String {
+    if n < 1000 { return String(Int(n.rounded())) }
+    return n < 1e6 ? String(format: "%.1fk", n / 1e3) : String(format: "%.1fM", n / 1e6)
+}
+
+/// USD as it is read: cents when there are some, else to four places.
+func dollars(_ usd: Double) -> String {
+    String(format: usd >= 0.1 ? "$%.2f" : "$%.4f", usd)
+}
+
+/// Seconds as they are read: `3.2s`, `48s`, `1m 25s`.
+func spokenSeconds(_ seconds: Double) -> String {
+    if seconds < 10 { return String(format: "%.1fs", seconds) }
+    let whole = Int(seconds.rounded())
+    return whole < 60 ? "\(whole)s" : "\(whole / 60)m \(whole % 60)s"
 }
 
 private struct ModelsSidebarSummary: View {
@@ -1838,6 +1870,126 @@ private struct QuietEmptyStage: View {
             return "Tangent has checked \(s.checked) session\(s.checked == 1 ? "" : "s") with no confirmed threats. Trigger a safe simulation to see an alert land here in real time."
         }
         return "Flagged sessions and confirmed reviews appear here as Tangent watches your Mac."
+    }
+}
+
+// MARK: Tab 3 Stage — Health: is it running, and how fast
+
+/// Whether the sensor's socket is there for the watcher to read.
+func sensorConnected() -> Bool {
+    let dir = ProcessInfo.processInfo.environment["TANGENT_SENSOR_SOCKET_DIR"] ?? "/var/run/tangent"
+    return FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent("es.sock"))
+}
+
+private struct HealthStage: View {
+    @ObservedObject var store: TangentStore
+
+    var body: some View {
+        let s = store.status
+        let alive = store.isAlive
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                Text("Health")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(Theme.ink)
+
+                group("Running") {
+                    row("Watcher", alive ? "Watching" : "Paused", alive ? Theme.emerald : Theme.inkTertiary)
+                    if alive, let since = s?.startedAt.flatMap(ISO8601DateFormatter.flexible) {
+                        row("Since", since.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    row("Sensor", sensorConnected() ? "Connected" : "Not connected",
+                        sensorConnected() ? Theme.emerald : Theme.amber)
+                    if store.needsFda {
+                        row("Full Disk Access", "Needed", Theme.amber)
+                    }
+                    if let err = store.authError {
+                        row("Models", AuthProblem(err).short, Theme.amber)
+                    } else if alive {
+                        row("Models", "Answering", Theme.emerald)
+                    }
+                }
+
+                if alive, let s {
+                    group("This run") {
+                        row("Sessions checked", "\(s.checked)")
+                        row("Flagged", "\(s.flagged)")
+                        row("Being reviewed", "\(s.pending)")
+                    }
+                    group("Speed · median, 95th percentile") {
+                        row("First pass", spread(s.judgeSeconds))
+                        row("Flagged to verdict", spread(s.reviewSeconds))
+                    }
+                    if !s.usage.isEmpty {
+                        let u = s.usage
+                        group("Tokens and cost · this run") {
+                            row("Output speed", ["judge", "reviewer"].compactMap { node in
+                                u["speed.\(node)"].map { "\(node) \(Int($0.rounded())) tok/s" }
+                            }.joined(separator: "  ·  "))
+                            row("Tokens per activity", u["tokens_per_activity"].map(counted) ?? "–")
+                            row("Cost per activity", u["cost_per_activity"].map(dollars) ?? "no listed price")
+                            row("Cost per day", u["cost_per_day"].map(dollars) ?? "no listed price")
+                        }
+                        group("Activity · at this run's rate") {
+                            row("Per second", u["activities_per_second"].map { String(format: "%.2f", $0) } ?? "–")
+                            row("Per day", u["activities_per_day"].map(counted) ?? "–")
+                        }
+                    }
+                }
+
+                HStack(spacing: 16) {
+                    link("Open watch log", "doc.text") { store.onOpenLog?() }
+                    link("Open data folder", "folder") { store.onOpenFolder?() }
+                    link("Copy diagnostics", "doc.on.doc") { store.onCopyStatus?() }
+                }
+            }
+            .frame(maxWidth: 560, alignment: .leading)
+            .padding(.horizontal, 36)
+            .padding(.top, 34)
+            .padding(.bottom, 32)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func spread(_ of: (p50: Double, p95: Double)?) -> String {
+        of.map { "\(spokenSeconds($0.p50))  ·  \(spokenSeconds($0.p95))" } ?? "–"
+    }
+
+    private func group<Rows: View>(_ title: String, @ViewBuilder _ rows: () -> Rows) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(Theme.inkTertiary)
+            VStack(spacing: 0) { rows() }
+                .background(Theme.surface)
+                .cornerRadius(10)
+        }
+    }
+
+    private func row(_ name: String, _ value: String, _ dot: Color? = nil) -> some View {
+        HStack(spacing: 8) {
+            Text(name)
+                .foregroundColor(Theme.inkSecondary)
+            Spacer()
+            if let dot {
+                Circle().fill(dot).frame(width: 7, height: 7)
+            }
+            Text(value)
+                .foregroundColor(Theme.ink)
+                .monospacedDigit()
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private func link(_ title: String, _ symbol: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 12))
+                .foregroundColor(Theme.inkSecondary)
+        }
+        .buttonStyle(.plain)
     }
 }
 

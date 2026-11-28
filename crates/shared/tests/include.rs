@@ -1215,6 +1215,7 @@ fn every_path_field_is_rebased() {
         inference: _,
         drop_on_error: _,
         group_by: _,
+        workers: _,
         max_events: _,
         expire_after_ms: _,
         max_age_ms: _,

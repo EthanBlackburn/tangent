@@ -505,6 +505,155 @@ pub async fn down(all: bool) -> Result<()> {
 
 /// `tangent status [--json]`: instant, zero-sudo view of the background Mac
 /// watcher, sensor daemon, menu bar, and recent alerts.
+/// Seconds as they are read: `3.2s`, `48s`, `1m 25s`.
+fn spoken(seconds: f64) -> String {
+    if seconds < 10.0 {
+        return format!("{seconds:.1}s");
+    }
+    let whole = seconds.round() as u64;
+    if whole < 60 {
+        format!("{whole}s")
+    } else {
+        format!("{}m {}s", whole / 60, whole % 60)
+    }
+}
+
+/// A count as it is read: `940`, `5.2k`, `1.3M`.
+fn counted(n: f64) -> String {
+    if n < 1000.0 {
+        format!("{n:.0}")
+    } else if n < 1e6 {
+        format!("{:.1}k", n / 1e3)
+    } else {
+        format!("{:.1}M", n / 1e6)
+    }
+}
+
+/// USD as it is read: cents when there are some, else to four places.
+fn dollars(usd: f64) -> String {
+    if usd >= 0.1 {
+        format!("${usd:.2}")
+    } else {
+        format!("${usd:.4}")
+    }
+}
+
+/// What `tangent health` says, and whether all of it is well: each line a
+/// name and its value, a line that needs attention marked.
+fn health_lines(
+    snap: Option<&status::Snapshot>,
+    alive: bool,
+    sensor: bool,
+) -> (bool, Vec<(&'static str, String, bool)>) {
+    let mut lines = Vec::new();
+    let watcher = match snap {
+        Some(s) if alive => format!(
+            "{} since {}",
+            s.state,
+            s.started_at.as_deref().unwrap_or("?")
+        ),
+        Some(s) if s.state == "error" => {
+            format!("stopped: {}", s.error.as_deref().unwrap_or("unknown error"))
+        }
+        _ => "not running (tangent up starts it)".to_string(),
+    };
+    lines.push(("Watcher", watcher, !alive));
+    let connected = if sensor { "connected" } else { "not connected" };
+    lines.push(("Sensor", connected.to_string(), !sensor));
+    let Some(s) = snap.filter(|_| alive) else {
+        return (false, lines);
+    };
+    if s.needs_fda {
+        lines.push(("Access", "needs Full Disk Access".to_string(), true));
+    }
+    match &s.auth_error {
+        Some(e) => lines.push(("Models", e.clone(), true)),
+        None => lines.push(("Models", format!("answering ({})", s.models), false)),
+    }
+    lines.push((
+        "This run",
+        format!(
+            "{} sessions checked · {} flagged · {} being reviewed",
+            s.checked, s.flagged, s.pending
+        ),
+        false,
+    ));
+    let spread = |of: Option<(f64, f64)>| match of {
+        Some((p50, p95)) => format!("{} median · {} 95th percentile", spoken(p50), spoken(p95)),
+        None => "none yet".to_string(),
+    };
+    lines.push(("First pass", spread(s.judge_seconds), false));
+    lines.push(("Flagged to verdict", spread(s.review_seconds), false));
+    if let Some(u) = &s.usage {
+        let n = |k: &str| u.pointer(k).and_then(Value::as_f64);
+        let speed: Vec<String> = [("judge", "/output_tokens_per_second/judge"), ("reviewer", "/output_tokens_per_second/reviewer")]
+            .iter()
+            .filter_map(|(name, k)| n(k).map(|v| format!("{name} {v:.0} tok/s")))
+            .collect();
+        if !speed.is_empty() {
+            lines.push(("Output speed", speed.join(" · "), false));
+        }
+        if let Some(v) = n("/tokens_per_activity") {
+            lines.push(("Tokens per activity", counted(v), false));
+        }
+        let unpriced = || "unknown: a model has no listed price".to_string();
+        lines.push((
+            "Cost per activity",
+            n("/cost_per_activity").map_or_else(unpriced, dollars),
+            false,
+        ));
+        lines.push((
+            "Cost per day",
+            n("/cost_per_day").map_or_else(unpriced, |v| format!("{} at this run's rate", dollars(v))),
+            false,
+        ));
+        if let (Some(second), Some(day)) = (n("/activities_per_second"), n("/activities_per_day")) {
+            lines.push(("Activities", format!("{second:.2}/s · {}/day", counted(day)), false));
+        }
+    }
+    (lines.iter().all(|(_, _, wrong)| !wrong), lines)
+}
+
+/// `tangent health`: says whether the Mac's watch is working and how fast,
+/// and whether all of it is well.
+pub fn health(as_json: bool) -> Result<bool> {
+    let dir = watch::data_dir("mac")?;
+    let snap = status::read(&dir);
+    let sensor = listening(&tangent_shared::sensor::es_socket(
+        &tangent_shared::sensor::daemon_dir(),
+    ));
+    let alive = snap.as_ref().is_some_and(|s| {
+        (s.state == "watching" || s.state == "starting") && s.pid.is_some_and(pid_alive)
+    });
+    let (healthy, lines) = health_lines(snap.as_ref(), alive, sensor);
+    if as_json {
+        let spread = |of: Option<(f64, f64)>| of.map(|(p50, p95)| json!({"p50": p50, "p95": p95}));
+        let s = snap.as_ref().filter(|_| alive);
+        let out = json!({
+            "healthy": healthy,
+            "watching": alive,
+            "sensor_connected": sensor,
+            "needs_fda": s.is_some_and(|s| s.needs_fda),
+            "auth_error": s.and_then(|s| s.auth_error.clone()),
+            "started_at": s.and_then(|s| s.started_at.clone()),
+            "models": s.map(|s| s.models.clone()),
+            "checked": s.map(|s| s.checked),
+            "flagged": s.map(|s| s.flagged),
+            "reviewing": s.map(|s| s.pending),
+            "first_pass_seconds": s.and_then(|s| spread(s.judge_seconds)),
+            "flagged_to_verdict_seconds": s.and_then(|s| spread(s.review_seconds)),
+            "usage": s.and_then(|s| s.usage.clone()),
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(healthy);
+    }
+    println!("Tangent is {}", if healthy { "healthy" } else { "not healthy" });
+    for (name, value, wrong) in lines {
+        println!("{} {name:<19} {value}", if wrong { "!" } else { " " });
+    }
+    Ok(healthy)
+}
+
 pub async fn show_status(as_json: bool) -> Result<()> {
     let dir = watch::data_dir("mac")?;
     let snap = status::read(&dir);
@@ -1213,6 +1362,47 @@ pub fn app_agent_plist(sensor_bin: &Path, data_dir: &Path, tangent_bin: &Path) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_is_well_only_when_every_line_is() {
+        let snap = |edit: &dyn Fn(&mut Value)| {
+            let mut v = json!({"state": "watching", "pid": 1, "started_at": "2026-11-28T13:00:00Z",
+                "models": "a + b", "checked": 7, "flagged": 1, "pending": 1,
+                "judge_seconds": {"p50": 2.3, "p95": 4.5}});
+            edit(&mut v);
+            status::Snapshot::from_json(&v).unwrap()
+        };
+        let well = snap(&|_| {});
+        let (healthy, lines) = health_lines(Some(&well), true, true);
+        assert!(healthy, "{lines:?}");
+        let said = |name: &str| lines.iter().find(|l| l.0 == name).unwrap().1.clone();
+        assert_eq!(said("First pass"), "2.3s median · 4.5s 95th percentile");
+        assert_eq!(said("Flagged to verdict"), "none yet");
+
+        // a watcher that is not running, a sensor that is not there, a
+        // model that is refused: each is not well
+        assert!(!health_lines(Some(&well), false, true).0);
+        assert!(!health_lines(Some(&well), true, false).0);
+        assert!(!health_lines(None, false, true).0);
+        let refused = snap(&|v| v["auth_error"] = json!("Your AWS sign-in has expired."));
+        let (healthy, lines) = health_lines(Some(&refused), true, true);
+        assert!(!healthy);
+        assert!(lines.iter().any(|l| l.0 == "Models" && l.2));
+        assert_eq!((spoken(48.4), spoken(85.0)), ("48s".into(), "1m 25s".into()));
+
+        let used = snap(&|v| {
+            v["usage"] = json!({"output_tokens_per_second": {"judge": 84.6}, "tokens_per_activity": 5234.0,
+                "cost_per_activity": 0.0041, "cost_per_day": 2.4,
+                "activities_per_second": 0.118, "activities_per_day": 10195.0})
+        });
+        let (_, lines) = health_lines(Some(&used), true, true);
+        let said = |name: &str| lines.iter().find(|l| l.0 == name).unwrap().1.clone();
+        assert_eq!(said("Output speed"), "judge 85 tok/s");
+        assert_eq!(said("Tokens per activity"), "5.2k");
+        assert_eq!(said("Cost per activity"), "$0.0041");
+        assert_eq!(said("Cost per day"), "$2.40 at this run's rate");
+        assert_eq!(said("Activities"), "0.12/s · 10.2k/day");
+    }
 
     #[test]
     fn plists_escape_xml_and_include_expected_arguments() {

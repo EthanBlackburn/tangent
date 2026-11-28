@@ -280,6 +280,28 @@ impl Model {
     /// what it replies is the reply, a decline of its own included. A run
     /// that is stopping asks no one else.
     pub async fn send(&self, node: &str, request: CompletionRequest) -> Result<CompletionResponse> {
+        let began = std::time::Instant::now();
+        let reply = self.answer(node, request).await;
+        if let Ok(reply) = &reply {
+            let n = |of: Option<u64>| of.unwrap_or(0);
+            let (read, write) = (
+                n(reply.usage.cached_input_tokens),
+                n(reply.usage.cache_creation_input_tokens),
+            );
+            let tokens = super::price::Tokens {
+                // `input_tokens` is every token of the prompt
+                input: n(reply.usage.input_tokens).saturating_sub(read + write),
+                cache_read: read,
+                cache_write: write,
+                output: n(reply.usage.output_tokens),
+            };
+            let cost = super::price::Price::of(&self.cfg).map(|price| price.cost(&tokens));
+            crate::inference_took(node, began.elapsed().as_secs_f64(), &tokens, cost);
+        }
+        reply
+    }
+
+    async fn answer(&self, node: &str, request: CompletionRequest) -> Result<CompletionResponse> {
         let reply = self.ask(&self.client, node, &request).await?;
         let declined = reply.finish_reason() == Some(FinishReason::ContentFilter);
         match &self.fallback {
