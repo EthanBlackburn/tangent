@@ -1585,6 +1585,12 @@ private struct ProviderSettingsRow: View {
     let choice: ModelChoice
     @State private var hovered = false
 
+    /// A choice that cannot run on this Mac and has nothing to set that
+    /// would let it (Inkling without the memory): shown, and greyed out.
+    private var unavailable: Bool {
+        !choice.current && !choice.ready && choice.envVars.isEmpty
+    }
+
     var body: some View {
         HStack(spacing: 14) {
             // Selection indicator dot
@@ -1659,10 +1665,11 @@ private struct ProviderSettingsRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+        .opacity(unavailable ? 0.4 : 1)
         .background(
             choice.current
                 ? Theme.selection
-                : (hovered ? Theme.selection.opacity(0.45) : Color.clear)
+                : (hovered && !unavailable ? Theme.selection.opacity(0.45) : Color.clear)
         )
         .onHover { hovered = $0 }
     }
