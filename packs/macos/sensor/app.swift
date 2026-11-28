@@ -33,12 +33,27 @@ struct ProviderEnvVar: Identifiable, Hashable {
     }
 }
 
+/// How long an alert may wait before its review is taken for lost: longer
+/// than the slowest review, with the queue ahead of it.
+let reviewsWithin: TimeInterval = 15 * 60
+
+extension ISO8601DateFormatter {
+    /// An RFC 3339 time, with fractional seconds or without.
+    static func flexible(_ text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+}
+
 enum FlaggedKind: String, Hashable {
     case malicious
     case unresolved
     case benign
     case failed
     case reviewing
+    /// Flagged, and no review of it came: it waited past any review's time.
+    case unreviewed
 
     var label: String {
         switch self {
@@ -47,17 +62,18 @@ enum FlaggedKind: String, Hashable {
         case .benign: return "Cleared"
         case .failed: return "Review failed"
         case .reviewing: return "Reviewing"
+        case .unreviewed: return "Not reviewed"
         }
     }
 
     var isAlert: Bool {
-        self == .malicious || self == .unresolved || self == .failed
+        self == .malicious || self == .unresolved || self == .failed || self == .unreviewed
     }
 
     var dotColor: Color {
         switch self {
         case .malicious: return Theme.crimson
-        case .unresolved, .failed: return Theme.amber
+        case .unresolved, .failed, .unreviewed: return Theme.amber
         case .reviewing: return Theme.inkSecondary
         case .benign: return Color(nsColor: .tertiaryLabelColor)
         }
@@ -67,7 +83,7 @@ enum FlaggedKind: String, Hashable {
         switch self {
         case .malicious: return "exclamationmark.octagon.fill"
         case .unresolved: return "exclamationmark.triangle.fill"
-        case .failed: return "exclamationmark.circle.fill"
+        case .failed, .unreviewed: return "exclamationmark.circle.fill"
         case .reviewing: return "sparkle"
         case .benign: return "checkmark.circle"
         }
@@ -433,15 +449,25 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
             let judgeMark = judge["warrants_investigation"] as? String ?? "flag"
             let judgeNote = cleanInlineText((judge["why"] as? String) ?? (judge["assessment"] as? String) ?? "")
 
+            // A review is over within minutes, with a verdict or an error.
+            // An alert still without one after that was dropped on the way
+            // (the watcher was stopped while it waited), and is not being
+            // reviewed: it is said so, not left "Reviewing" for good.
+            let flaggedAt = ISO8601DateFormatter.flexible(ts)
+            let waited = flaggedAt.map { Date().timeIntervalSince($0) } ?? 0
+            let dropped = waited > reviewsWithin
+            let unreviewedNote = "The judge flagged this session and no review of it was finished, so nobody has looked into it."
             pending.append(FlaggedEntry(
                 id: "alert-\(idx)-\(sid)-\(ts)",
                 ts: ts,
-                kind: .reviewing,
+                kind: dropped ? .unreviewed : .reviewing,
                 subject: subject,
                 who: who,
                 sessionId: sid,
-                summary: firstSentenceSnippet(judgeNote.isEmpty ? "Flagged by judge, awaiting review…" : judgeNote),
-                finding: judgeNote.isEmpty ? "Flagged by the first-pass judge. The reviewer is investigating this session against the local Parquet log." : judgeNote,
+                summary: firstSentenceSnippet(judgeNote.isEmpty ? (dropped ? "Flagged by judge, never reviewed" : "Flagged by judge, awaiting review…") : judgeNote),
+                finding: judgeNote.isEmpty
+                    ? (dropped ? unreviewedNote : "Flagged by the first-pass judge. The reviewer is investigating this session against the local Parquet log.")
+                    : (dropped ? "\(judgeNote)\n\n\(unreviewedNote)" : judgeNote),
                 check: "",
                 judgeMark: judgeMark,
                 judgeNote: judgeNote,
@@ -1317,7 +1343,7 @@ private struct IncidentBriefView: View {
 
                     // Finding — clean open editorial prose with inline monospace paths
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(entry.kind == .reviewing ? "First-pass summary" : "What happened")
+                        Text(entry.kind == .reviewing || entry.kind == .unreviewed ? "First-pass summary" : "What happened")
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundColor(Theme.inkSecondary)
 
