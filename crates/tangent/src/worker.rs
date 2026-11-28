@@ -671,7 +671,14 @@ async fn run_inference(
         }
     }
     if !unsent.is_empty() {
-        tracing::info!(node = %name, records = unsent.len(), "not sent to the model: the run is stopping");
+        match stop.finishing() {
+            true => {
+                tracing::info!(node = %name, records = unsent.len(), "not sent to the model: the run is stopping");
+            }
+            false => {
+                tracing::info!(node = %name, records = unsent.len(), "held for a model that was not reached");
+            }
+        }
     }
     Ok((
         if frame.is_empty() {
@@ -1236,6 +1243,110 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A judge whose model is not reached holds its record, which goes on
+    /// to no sink with an error, and is asked again until the model answers:
+    /// then it is judged, reaches the sink and is forgotten.
+    #[tokio::test]
+    async fn a_record_held_for_a_model_is_asked_again_until_it_answers() {
+        struct ToWorker(mpsc::Sender<(Group, Done)>, Arc<Router>);
+        #[async_trait::async_trait]
+        impl crate::group::Dispatch for ToWorker {
+            async fn dispatch(&self, group: Group) -> Result<()> {
+                let n = group.records.len();
+                self.1.in_flight_counter().fetch_add(n, Ordering::AcqRel);
+                let done = Done(self.1.in_flight_counter(), n);
+                self.0.send((group, done)).await.ok().context("the worker is gone")
+            }
+        }
+
+        let dir = stub::dir("held");
+        let source = NodeRef::Source {
+            name: Arc::from("actors"),
+        };
+        let judge = NodeRef::Inference {
+            name: Arc::from("judge"),
+        };
+        let sink_name: Arc<str> = Arc::from("out");
+        let sink = Arc::new(RecordingSink::default());
+        let sink_manager = Arc::new(SinkManager::for_test(
+            vec![(sink_name.clone(), sink.clone() as Arc<dyn Sink>)],
+            1,
+        ));
+        let mut outs: HashMap<NodeRef, Vec<NodeRef>> = HashMap::default();
+        outs.insert(source.clone(), vec![judge.clone()]);
+        outs.insert(judge.clone(), vec![NodeRef::Sink { name: sink_name }]);
+        let router = Arc::new(Router::new(outs, Arc::clone(&sink_manager)));
+        let kept: Arc<dyn StateStore> =
+            Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
+        let pending = Pending::new(kept);
+
+        // The model fails a "flaky" request twice with a 500, then answers.
+        let (url, seen) = stub::model().await;
+        let stop = Stop::default();
+        let mut asked = stub::config(&url);
+        asked.node.unreached = tangent_shared::inference::Unreached::Hold;
+        let nodes = asked.nodes_until("judge", &dir, &stop).unwrap();
+        nodes["judge"].keep(true);
+        let (groups_tx, groups) = mpsc::channel(4);
+        let (tx, rx) = mpsc::channel(4);
+        let running = tokio::spawn(
+            worker(&router, Arc::clone(&nodes), &stop, &pending, rx, groups).run(),
+        );
+        let ack = Arc::new(CountingAck::default());
+        router.in_flight_counter().fetch_add(1, Ordering::AcqRel);
+        tx.send(Record {
+            payload: BytesMut::from("{\"id\":1,\"msg\":\"flaky bad link\"}\n"),
+            ack: Some(ack.clone() as Arc<dyn Ack>),
+            from: source.clone(),
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while pending.saved().await.unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the record is held");
+        assert!(nodes["judge"].down());
+        assert!(sink.writes.lock().await.is_empty(), "no error goes on in its place");
+
+        let again = crate::dag::ask_again(
+            Arc::clone(&nodes),
+            Arc::clone(&pending),
+            Arc::new(ToWorker(groups_tx.clone(), Arc::clone(&router))),
+            stop.clone(),
+            Duration::from_millis(40),
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let judged = !sink.writes.lock().await.is_empty();
+                if judged && pending.saved().await.unwrap().is_empty() && router.in_flight() == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("it is judged once the model answers");
+        again.abort();
+        assert_eq!(seen.lock().await.len(), 3, "asked once, and twice again");
+        assert!(!nodes["judge"].down());
+        let writes = sink.writes.lock().await;
+        let lines: Vec<Value> = writes
+            .iter()
+            .flat_map(|w| w.lines())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 1, "judged once: {lines:?}");
+        assert_eq!(lines[0]["judge"]["flag"], true, "{lines:?}");
+        drop(writes);
+        drop((tx, groups_tx));
+        let _ = again.await;
+        running.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A worker of no plugins over `router`, as a run builds one.
     fn worker(
         router: &Arc<Router>,
@@ -1357,6 +1468,7 @@ mod tests {
                 done: Arc::new(Forget {
                     pending: Arc::clone(&pending),
                     key,
+                    out: None,
                 }),
                 saved: true,
             };

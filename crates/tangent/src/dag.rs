@@ -55,6 +55,9 @@ pub struct DagRuntime {
     pending: Option<Arc<Pending>>,
     /// The task handing back what the last stop saved.
     resume: Option<tokio::task::JoinHandle<()>>,
+    /// The task asking again for what the inference nodes hold
+    /// (`unreached: hold`); none in a run that keeps nothing.
+    asks_again: Option<tokio::task::JoinHandle<()>>,
     /// The enrichment tables every plugin on every worker reads, here so a
     /// test can count what holds them; the engines keep them alive.
     #[cfg(test)]
@@ -130,6 +133,10 @@ impl DagRuntime {
         // nowhere to keep it.
         let pending = (consumers.is_some() && !cfg.runtime.state.read_only)
             .then(|| Pending::new(Arc::clone(&store)));
+        // `unreached: hold` holds only where what is held is kept.
+        for node in models.values() {
+            node.keep(pending.is_some());
+        }
         let (engines, components) = load(
             &cfg,
             &plugins,
@@ -235,6 +242,15 @@ impl DagRuntime {
             Some(pending) => resume(&cfg, pending, &router, &pool).await?,
             None => None,
         };
+        let asks_again = pending.as_ref().map(|pending| {
+            ask_again(
+                Arc::clone(&models),
+                Arc::clone(pending),
+                Arc::clone(&pool) as Arc<dyn Dispatch>,
+                stop.clone(),
+                ASKS_AGAIN_EVERY,
+            )
+        });
 
         // Last, after everything that can fail, so a failed build leaves no
         // task holding the store (and SQLite's lock with it). Expired
@@ -269,6 +285,7 @@ impl DagRuntime {
             stop,
             pending,
             resume,
+            asks_again,
             #[cfg(test)]
             tables,
         })
@@ -314,11 +331,12 @@ impl DagRuntime {
             stop,
             pending,
             resume,
+            asks_again,
             ..
         } = self;
 
         // Saved records not yet handed back stay saved.
-        if let Some(task) = resume {
+        for task in [resume, asks_again].into_iter().flatten() {
             task.abort();
             let _ = task.await;
         }
@@ -465,6 +483,7 @@ async fn resume(
                 done: Arc::new(Forget {
                     pending: Arc::clone(&pending),
                     key,
+                    out: None,
                 }),
                 saved: true,
             };
@@ -474,6 +493,83 @@ async fn resume(
             }
         }
     })))
+}
+
+/// How often what an inference node holds for a model that was not reached
+/// (`unreached: hold`) is asked again.
+const ASKS_AGAIN_EVERY: Duration = Duration::from_secs(60);
+
+/// Asks again, each minute, for what the inference nodes hold: records
+/// whose model was not reached, kept where a stop's are. While a node's
+/// model is still down one request of its is tried, the oldest, and the rest
+/// wait behind it: an outage of hours is not hundreds of requests a minute.
+/// Once the model answers, they all go. A request that fails again is held
+/// again, under a new key, and the old one is forgotten with its walk.
+pub(crate) fn ask_again(
+    nodes: Nodes,
+    pending: Arc<Pending>,
+    pool: Arc<dyn Dispatch>,
+    stop: Stop,
+    every: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // The keys handed back and not yet through their node.
+        let mut out: HashMap<String, std::sync::Weak<()>> = HashMap::new();
+        loop {
+            tokio::time::sleep(every).await;
+            if stop.finishing() {
+                return;
+            }
+            out.retain(|_, held| held.strong_count() > 0);
+            let saved = match pending.saved().await {
+                Ok(saved) => saved,
+                Err(e) => {
+                    tracing::warn!("what is held for a model could not be read: {e:#}");
+                    continue;
+                }
+            };
+            // A node whose model is down, and has a request of its out.
+            let mut trying: std::collections::HashSet<Arc<str>> = std::collections::HashSet::new();
+            for (key, _) in out.iter() {
+                if let Some(s) = saved.iter().find(|s| s.key == *key) {
+                    if let NodeRef::Inference { name } = &s.node {
+                        trying.insert(Arc::clone(name));
+                    }
+                }
+            }
+            for Saved { key, node, records } in saved {
+                let NodeRef::Inference { name } = &node else {
+                    continue;
+                };
+                let Some(asks) = nodes.get(name) else {
+                    continue;
+                };
+                if !asks.holds() || out.contains_key(&key) {
+                    continue;
+                }
+                if asks.down() && !trying.insert(Arc::clone(name)) {
+                    continue;
+                }
+                let held = Arc::new(());
+                out.insert(key.clone(), Arc::downgrade(&held));
+                let group = Group {
+                    node,
+                    records,
+                    context: 0,
+                    done: Arc::new(Forget {
+                        pending: Arc::clone(&pending),
+                        key,
+                        out: Some(held),
+                    }),
+                    saved: true,
+                };
+                if let Err(e) = pool.dispatch(group).await {
+                    tracing::warn!("held records could not reach a worker, and stay held: {e:#}");
+                    break;
+                }
+            }
+        }
+    })
 }
 
 /// Saves the records of every group still open, or waiting behind its key's
@@ -938,6 +1034,7 @@ mod tests {
             stop: Stop::default(),
             pending: None,
             resume: None,
+            asks_again: None,
             tables: Default::default(),
         };
 
@@ -1068,6 +1165,7 @@ mod tests {
             stop: Stop::default(),
             pending: None,
             resume: None,
+            asks_again: None,
             tables: Default::default(),
         };
         (runtime, through)
@@ -1331,6 +1429,7 @@ sinks:
             stop: Stop::default(),
             pending: None,
             resume: None,
+            asks_again: None,
             tables: Default::default(),
         };
         let down = AtomicBool::new(false);

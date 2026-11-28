@@ -427,6 +427,9 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
     // Add recent unsettled Tier 1 alerts at the top as `Reviewing`.
     let alertsPath = (dir as NSString).appendingPathComponent("alerts.ndjson")
     if let text = try? String(contentsOfFile: alertsPath, encoding: .utf8) {
+        // Read once, and only if a session the judge could not be asked
+        // about is among them: when each session was last judged.
+        var judgedAt: [String: String]? = nil
         let recentAlertLines = text.split(separator: "\n").suffix(40).reversed()
         var pending: [FlaggedEntry] = []
         var seenPending = Set<String>()
@@ -460,6 +463,12 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
             // alerts so that it is seen, and is never reviewed: there is no
             // verdict to review. It is said at once, with the model's error.
             let judgeError = cleanInlineText(judge["error"] as? String ?? "")
+            // One the judge has answered for since is no longer unchecked:
+            // its answer covers the session so far, and it is not shown.
+            if !judgeError.isEmpty {
+                if judgedAt == nil { judgedAt = lastJudged(dir: dir) }
+                if let later = judgedAt?[sid], later > ts { continue }
+            }
             let dropped = !judgeError.isEmpty || waited > reviewsWithin
             let unreviewedNote = judgeError.isEmpty
                 ? "The judge flagged this session and no review of it was finished, so nobody has looked into it."
@@ -491,6 +500,31 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
     }
 
     return entries
+}
+
+/// When each session was last judged with an answer, by its id, from the end
+/// of verdicts.ndjson: the last few megabytes, which is hours of a Mac's
+/// sessions. The file has every verdict there has been and is not read whole.
+private func lastJudged(dir: String) -> [String: String] {
+    let path = (dir as NSString).appendingPathComponent("verdicts.ndjson")
+    guard let file = FileHandle(forReadingAtPath: path) else { return [:] }
+    defer { try? file.close() }
+    let size = (try? file.seekToEnd()) ?? 0
+    let tail: UInt64 = 4 << 20
+    try? file.seek(toOffset: size > tail ? size - tail : 0)
+    guard let data = try? file.readToEnd() else { return [:] }
+    var judged: [String: String] = [:]
+    // the first line may be the end of one cut in two, and does not parse
+    for raw in data.split(separator: UInt8(ascii: "\n")) {
+        guard let obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+              let judge = obj["judge"] as? [String: Any], judge["error"] == nil,
+              let session = obj["session"] as? [String: Any],
+              let sid = session["id"] as? String, !sid.isEmpty,
+              let ts = obj["ts"] as? String
+        else { continue }
+        if ts > (judged[sid] ?? "") { judged[sid] = ts }
+    }
+    return judged
 }
 
 // MARK: shared observable store

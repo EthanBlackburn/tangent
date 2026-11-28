@@ -102,6 +102,7 @@ inference:
     group_by: [_norm.org, _norm.actor]
     batch_bytes: {{batch_bytes}}
     encoding: { type: ndjson }   # a summary is sent as it is, a JSON line
+    unreached: hold              # a model that is not reached, or will not serve the key: its sessions wait and are asked again
 
   # The reviewer settles what the judge marked. It has no inputs: plugin
   # macos_review holds the conversation with it.

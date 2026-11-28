@@ -123,6 +123,10 @@ fn read(value: &StateValue) -> Result<(NodeRef, Vec<JsonLogView>)> {
 pub struct Forget {
     pub pending: Arc<Pending>,
     pub key: String,
+    /// Held for as long as the records are on their way through the node:
+    /// whoever handed them back sees by it that they are still out, and
+    /// does not hand them back twice.
+    pub out: Option<Arc<()>>,
 }
 
 #[async_trait]

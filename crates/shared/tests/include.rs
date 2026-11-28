@@ -1242,6 +1242,7 @@ fn every_path_field_is_rebased() {
         max_tokens: _,
         temperature: _,
         extra: _,
+        unreached: _,
     } = judge;
     let TableConfig {
         kind: _,

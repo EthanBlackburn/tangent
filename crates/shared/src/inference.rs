@@ -66,6 +66,33 @@ pub struct InferenceConfig {
     /// `reasoning_effort: low` for gpt-oss. These win over what the node sets.
     #[serde(default)]
     pub extra: Map<String, Value>,
+
+    /// What becomes of records whose request never got an answer to read:
+    /// the model could not be reached (no reply, a dropped connection, a
+    /// 429 or a 5xx, every try) or would not serve the key (a 401, a 403,
+    /// a sign-in that has run out). `pass`, the default, sends them on with
+    /// the error where the answer would be. `hold` keeps them in the state
+    /// store and asks again each minute until the model answers, so an
+    /// outage leaves nothing unjudged: they go on late, and in the order
+    /// they are answered. A reply that cannot be read is an error either
+    /// way, since asking again gets the same.
+    #[serde(default, skip_serializing_if = "Unreached::is_pass")]
+    pub unreached: Unreached,
+}
+
+/// [`InferenceConfig::unreached`].
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Unreached {
+    #[default]
+    Pass,
+    Hold,
+}
+
+impl Unreached {
+    fn is_pass(&self) -> bool {
+        *self == Unreached::Pass
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
