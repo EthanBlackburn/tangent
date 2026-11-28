@@ -454,12 +454,14 @@ async fn resume(
             _ => None,
         };
         match grouper {
-            // In a group they are where they were when the stop came.
-            Some(grouper) => {
+            // In a group they are where they were when the stop came. Not
+            // those of a call to be made again (`attempts`): they are a
+            // group already, and go to the plugin as they are.
+            Some(grouper) if saved.tries == 0 => {
                 grouper.add(saved.records).await?;
                 pending.forget(&saved.key).await?;
             }
-            None => walks.push(saved),
+            _ => walks.push(saved),
         }
     }
     if records > 0 {
@@ -470,7 +472,13 @@ async fn resume(
     }
     let (pending, pool) = (Arc::clone(pending), Arc::clone(pool));
     Ok(Some(tokio::spawn(async move {
-        for Saved { key, node, records } in walks {
+        for Saved {
+            key,
+            node,
+            records,
+            tries,
+        } in walks
+        {
             let group = Group {
                 node,
                 records,
@@ -480,6 +488,7 @@ async fn resume(
                     key,
                 }),
                 saved: true,
+                tries,
             };
             if let Err(e) = Dispatch::dispatch(pool.as_ref(), group).await {
                 tracing::warn!("saved records could not reach a worker, and stay saved: {e:#}");
@@ -647,6 +656,7 @@ fn load(
                 sinks: kept.collect(),
             };
 
+            engines[i].set_attempts(name, plugin_cfg.attempts);
             components[i].push((
                 Arc::clone(name),
                 engines[i]

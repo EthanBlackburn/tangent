@@ -148,7 +148,8 @@ pub struct Worker {
 const ASKS_AGAIN_EVERY: Duration = Duration::from_secs(60);
 
 /// The way back for records an inference node holds because its model was
-/// not reached (`unreached: hold`). The worker that held them sends them to
+/// not reached (`unreached: hold`), and for those of a plugin's call that
+/// ended unanswered (`attempts`). The worker that held them sends them to
 /// their node again after a while, as a group through the workers' queues:
 /// they wait there as any group does, and a model that is still down holds
 /// them again. They are kept where a stop's are meanwhile, so a start in
@@ -166,30 +167,32 @@ pub(crate) struct Again {
 }
 
 impl Again {
-    /// Sends what is saved under `key` back through inference node `name`,
-    /// in `every` from now: or later, while its model is down and another
-    /// request is the one trying it. A run that stops first leaves the
-    /// records saved for the next start.
-    fn later(self: &Arc<Self>, name: &Arc<str>, key: String) {
-        let (again, name) = (Arc::clone(self), Arc::clone(name));
+    /// Sends what is saved under `key` back through `node`, in `every` from
+    /// now: or later, for an inference node whose model is down while
+    /// another request is the one trying it. A run that stops first leaves
+    /// the records saved for the next start.
+    fn later(self: &Arc<Self>, node: &NodeRef, key: String) {
+        let (again, node) = (Arc::clone(self), node.clone());
         tokio::spawn(async move {
             loop {
                 let slept = tokio::time::sleep(again.every);
                 if again.stop.unless_finishing(slept).await.is_none() {
                     return;
                 }
-                let Some(node) = again.nodes.get(&name) else {
-                    return;
-                };
-                if !node.takes_again(again.every) {
-                    continue;
+                if let NodeRef::Inference { name } = &node {
+                    let Some(asks) = again.nodes.get(name) else {
+                        return;
+                    };
+                    if !asks.takes_again(again.every) {
+                        continue;
+                    }
                 }
                 let saved = match again.pending.one(&key).await {
                     Ok(Some(saved)) => saved,
                     // forgotten: a start's hand-back took it through
                     Ok(None) => return,
                     Err(e) => {
-                        tracing::warn!(node = %name, "what is held for the model could not be read: {e:#}");
+                        tracing::warn!(?node, "what is held could not be read: {e:#}");
                         continue;
                     }
                 };
@@ -202,11 +205,15 @@ impl Again {
                         key,
                     }),
                     saved: true,
+                    tries: saved.tries,
                 };
                 let queues: Vec<_> = again.queues.iter().filter_map(|q| q.upgrade()).collect();
                 let start = again.rr.fetch_add(1, Ordering::Relaxed);
                 if let Err(e) = send_group(&queues, start, &again.in_flight, group).await {
-                    tracing::warn!(node = %name, "held records could not reach a worker, and stay held: {e:#}");
+                    tracing::warn!(
+                        ?node,
+                        "held records could not reach a worker, and stay held: {e:#}"
+                    );
                 }
                 return;
             }
@@ -472,6 +479,18 @@ impl Worker {
                                     }
                                     Vec::new()
                                 }
+                                _ if try_again(
+                                    &self.pending,
+                                    &self.again,
+                                    &self.stop,
+                                    to,
+                                    &ran,
+                                    0,
+                                )
+                                .await =>
+                                {
+                                    Vec::new()
+                                }
                                 _ => ran.out,
                             }
                         }
@@ -538,6 +557,23 @@ impl Worker {
                     }
                     return Ok(());
                 }
+                if try_again(
+                    &self.pending,
+                    &self.again,
+                    &self.stop,
+                    &g.node,
+                    &ran,
+                    g.tries,
+                )
+                .await
+                {
+                    // the entry of the try before is done with: the new
+                    // one stands for the records now
+                    if g.saved {
+                        let _ = g.done.ack().await;
+                    }
+                    return Ok(());
+                }
                 ran.out
             }
             NodeRef::Inference { name } => {
@@ -566,7 +602,10 @@ impl Worker {
     /// those wait for the next start.
     fn ask_again(&self, name: &Arc<str>, key: String) {
         if let (Some(again), false) = (&self.again, self.stop.finishing()) {
-            again.later(name, key);
+            let node = NodeRef::Inference {
+                name: Arc::clone(name),
+            };
+            again.later(&node, key);
         }
     }
 
@@ -632,9 +671,14 @@ impl Worker {
             }
             // The stop kept a turn of this call from the model.
             let cut = m.store.data_mut().take_cut();
+            // Its last request of a model or the lake went unanswered: with
+            // `attempts` the records may go through it again.
+            let unanswered = m.store.data_mut().take_unreached() && m.attempts > 1;
+            let attempts = m.attempts;
             let ran = |out: Frames| Ran {
                 out,
                 cut: cut.then(|| group.clone()),
+                unanswered: unanswered.then(|| (attempts, group.clone())),
             };
 
             GUEST_LATENCY
@@ -698,6 +742,53 @@ impl Worker {
     }
 }
 
+/// Whether a plugin's call that ended unanswered is to be made again
+/// (`attempts`): its records, with which it has now been made `tries`
+/// times and once more, are saved and go back through `node` in a
+/// while, and what the call wrote is to be left out. Not the last try,
+/// whose output goes on whatever it is; nor in a run that is stopping
+/// or keeps nothing. A free function for the reason [`run_inference`] is
+/// one.
+async fn try_again(
+    pending: &Option<Arc<Pending>>,
+    again: &Option<Arc<Again>>,
+    stop: &Stop,
+    node: &NodeRef,
+    ran: &Ran,
+    tries: usize,
+) -> bool {
+    let Some((attempts, records)) = &ran.unanswered else {
+        return false;
+    };
+    let (Some(pending), Some(again)) = (pending, again) else {
+        return false;
+    };
+    if tries + 1 >= *attempts || stop.finishing() {
+        return false;
+    }
+    match pending.save_tried(node, records, tries + 1).await {
+        Ok(Some(key)) => {
+            tracing::info!(
+                ?node,
+                records = records.len(),
+                tried = tries + 1,
+                of = attempts,
+                "the call ended unanswered, and is made again in a while"
+            );
+            again.later(node, key);
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(
+                ?node,
+                "could not be saved to try again, and goes on as it is: {e:#}"
+            );
+            false
+        }
+    }
+}
+
 /// Records kept from a model, by the stop or because it was not reached,
 /// saved for `node` until they are handed back: the key they are under.
 /// None when there is nowhere to save them, or the save failed: the walk
@@ -733,11 +824,18 @@ struct Ran {
     /// the model: `out` is then what it made of a conversation cut short,
     /// which a run that can save the records leaves out.
     cut: Option<Vec<JsonLogView>>,
+    /// The plugin's `attempts` and the records it took, when the call's
+    /// last request of a model or of the lake went unanswered.
+    unanswered: Option<(usize, Vec<JsonLogView>)>,
 }
 
 impl Ran {
     fn out(out: Frames) -> Self {
-        Self { out, cut: None }
+        Self {
+            out,
+            cut: None,
+            unanswered: None,
+        }
     }
 }
 
@@ -1466,6 +1564,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A plugin's call that ended unanswered is made again while it has
+    /// tries left: its records are saved with the count and come back as a
+    /// group for the plugin, and the last try is left to go on as it is.
+    #[tokio::test]
+    async fn a_call_that_ended_unanswered_is_made_again_until_its_tries_are_spent() {
+        let store: Arc<dyn StateStore> =
+            Arc::new(crate::state::lru::LruStore::new(StateConfig::default()).unwrap());
+        let pending = Some(Pending::new(store));
+        let (queue, mut groups) = mpsc::channel(4);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let stop = Stop::default();
+        let again = Some(Arc::new(Again {
+            pending: Arc::clone(pending.as_ref().unwrap()),
+            nodes: Nodes::default(),
+            queues: vec![queue.downgrade()],
+            rr: AtomicUsize::new(0),
+            in_flight: Arc::clone(&in_flight),
+            stop: stop.clone(),
+            every: Duration::from_millis(20),
+        }));
+        let review = NodeRef::Plugin {
+            name: Arc::from("review"),
+        };
+        let alert = JsonLogView::from_bytes(BytesMut::from("{\"id\":1}")).unwrap();
+        let ran = |attempts| Ran {
+            out: vec![BytesMut::from("{\"review\":{\"error\":\"no reply\"}}\n")],
+            cut: None,
+            unanswered: Some((attempts, vec![alert.clone()])),
+        };
+
+        // answered, or a plugin that asks once: it goes on as it is
+        assert!(!try_again(&pending, &again, &stop, &review, &Ran::out(Vec::new()), 0).await);
+        // the first of three tries: saved, and back in a while
+        assert!(try_again(&pending, &again, &stop, &review, &ran(3), 0).await);
+        let held = pending.as_ref().unwrap().saved().await.unwrap();
+        assert_eq!((held.len(), held[0].tries), (1, 1));
+        let (back, _done) = tokio::time::timeout(Duration::from_secs(5), groups.recv())
+            .await
+            .expect("it comes back")
+            .unwrap();
+        assert_eq!((back.node.clone(), back.records.len()), (review.clone(), 1));
+        assert!(back.saved);
+        assert_eq!(back.tries, 1);
+        // the second: again
+        assert!(try_again(&pending, &again, &stop, &review, &ran(3), back.tries).await);
+        // the third is the last: what it wrote goes on
+        assert!(!try_again(&pending, &again, &stop, &review, &ran(3), 2).await);
+        // and a run that is stopping tries nothing again
+        stop.finish();
+        assert!(!try_again(&pending, &again, &stop, &review, &ran(3), 0).await);
+    }
+
     /// A worker of no plugins over `router`, as a run builds one.
     fn worker(
         router: &Arc<Router>,
@@ -1576,7 +1726,13 @@ mod tests {
         let (groups_tx, groups) = mpsc::channel(1);
         let (tx, rx) = mpsc::channel(1);
         let next = tokio::spawn(worker(&router, nodes, &stop, &pending, rx, groups).run());
-        for Saved { key, node, records } in saved {
+        for Saved {
+            key,
+            node,
+            records,
+            tries,
+        } in saved
+        {
             let done = Done(router.in_flight_counter(), records.len());
             router
                 .in_flight_counter()
@@ -1590,6 +1746,7 @@ mod tests {
                     key,
                 }),
                 saved: true,
+                tries,
             };
             groups_tx.send((group, done)).await.ok().unwrap();
         }

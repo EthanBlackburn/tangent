@@ -67,6 +67,16 @@ pub struct PluginConfig {
     #[serde(default = "default_true")]
     pub drop_on_error: bool,
 
+    /// How many times in all a call is made whose last request of a model
+    /// or of the lake went unanswered for a reason another time may not
+    /// have: the model was not reached or would not serve the key, a query
+    /// ran out of time. Its records are kept in the state store and go
+    /// through the plugin again a minute later, and what the failed call
+    /// wrote is left out; the last try's output goes on whatever it is. 1,
+    /// the default, is once. More needs a state store the run can write.
+    #[serde(default = "default_attempts")]
+    pub attempts: usize,
+
     /// Records reaching the plugin wait in a group per value of these
     /// fields, and the plugin gets a group at a time, on workers of its own.
     /// Empty: no grouping.
@@ -103,6 +113,10 @@ const fn default_true() -> bool {
     true
 }
 
+const fn default_attempts() -> usize {
+    1
+}
+
 /// A group closes after 30 s with no new record.
 const fn default_expire_after_ms() -> u64 {
     30_000
@@ -122,6 +136,7 @@ impl Default for PluginConfig {
             tables: BTreeMap::new(),
             inference: Vec::new(),
             drop_on_error: true,
+            attempts: default_attempts(),
             group_by: Vec::new(),
             workers: None,
             max_events: None,

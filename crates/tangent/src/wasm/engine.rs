@@ -42,6 +42,9 @@ pub struct WasmEngine {
     /// Plugins whose records go on unchanged when a call fails
     /// (`plugins.<name>.drop_on_error: false`).
     pass_on_error: HashSet<Arc<str>>,
+    /// How many times a plugin's call is made (`plugins.<name>.attempts`),
+    /// where it is more than once.
+    attempts: HashMap<Arc<str>, usize>,
     disable_remote_calls: bool,
 }
 
@@ -83,6 +86,7 @@ impl WasmEngine {
             plugin_models: HashMap::new(),
             stop,
             pass_on_error: HashSet::new(),
+            attempts: HashMap::new(),
         })
     }
 
@@ -130,6 +134,17 @@ impl WasmEngine {
 
     pub fn drops_on_error(&self, name: &str) -> bool {
         !self.pass_on_error.contains(name)
+    }
+
+    /// `name`'s calls are made up to `attempts` times.
+    pub fn set_attempts(&mut self, name: &Arc<str>, attempts: usize) {
+        if attempts > 1 {
+            self.attempts.insert(Arc::clone(name), attempts);
+        }
+    }
+
+    pub fn attempts(&self, name: &str) -> usize {
+        self.attempts.get(name).copied().unwrap_or(1)
     }
 
     pub fn make_store(&self, component_name: &Arc<str>) -> Result<Store<HostEngine>> {

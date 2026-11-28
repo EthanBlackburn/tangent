@@ -80,6 +80,9 @@ pub struct HostEngine {
     /// A turn of this call was not sent, or was ended, by the stop: what
     /// the plugin made of its records is not what it would have.
     cut: bool,
+    /// The call's latest request of a model or of the lake went unanswered
+    /// for a reason another time may not have ([`Self::take_unreached`]).
+    unreached: bool,
     /// If true, short-circuit remote calls with successful empty responses,
     /// and fail a model's turn rather than ask for it.
     pub disable_remote_calls: bool,
@@ -113,6 +116,7 @@ impl HostEngine {
             models,
             stop,
             cut: false,
+            unreached: false,
             disable_remote_calls,
         }
     }
@@ -128,6 +132,15 @@ impl HostEngine {
     /// which it asks once per call.
     pub fn take_cut(&mut self) -> bool {
         std::mem::take(&mut self.cut)
+    }
+
+    /// Whether the call just ended made its last request of a model or of
+    /// the lake in vain, for a reason another time may not have: the model
+    /// was not reached or would not serve the key, the query ran out of
+    /// time or of files to open. A request answered after one that was not
+    /// clears it: the plugin went on. Asked once per call.
+    pub fn take_unreached(&mut self) -> bool {
+        std::mem::take(&mut self.unreached)
     }
 
     /// A TTL the guest asked for, cut to `max_ttl_ms`. None (the default,
@@ -319,10 +332,16 @@ impl tangent::logs::model::Host for HostEngine {
             return Err("tangent is stopping: the turn was not sent".into());
         }
         match self.stop.unless_ended(model.chat(&request)).await {
-            Some(Ok(reply)) => Ok(reply),
+            Some(Ok(reply)) => {
+                self.unreached = false;
+                Ok(reply)
+            }
             // One that failed as the run began to stop was not sent, waiting
             // for the model's place, or was not sent again.
             Some(Err(e)) => {
+                self.unreached = e
+                    .downcast_ref::<crate::inference::model::Unreached>()
+                    .is_some();
                 self.cut = self.stop.finishing();
                 Err(format!("{e:#}"))
             }
@@ -369,8 +388,20 @@ impl tangent::logs::lake::Host for HostEngine {
         )
         .await
         {
-            Ok(rows) => rows.map_err(|e| format!("{e:#}")),
-            Err(_) => Err(format!("the query ran over {wait} ms")),
+            Ok(Ok(rows)) => {
+                self.unreached = false;
+                Ok(rows)
+            }
+            Ok(Err(e)) => {
+                let said = format!("{e:#}");
+                // the files could not be opened, not the statement read
+                self.unreached = said.contains("Too many open files");
+                Err(said)
+            }
+            Err(_) => {
+                self.unreached = true;
+                Err(format!("the query ran over {wait} ms"))
+            }
         }
     }
 }
@@ -1240,6 +1271,33 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.contains("not among this plugin's `inference`"), "{e}");
+    }
+
+    /// A turn whose model is not reached marks the call unanswered, for a
+    /// plugin with `attempts` to be given its records again.
+    #[tokio::test]
+    async fn a_turn_whose_model_is_not_reached_marks_the_call_unanswered() {
+        use crate::inference::stub;
+        use tangent::logs::model::Host as _;
+        let dir = stub::dir("chat-unreached");
+        // nothing listens here
+        let nodes = stub::config("http://127.0.0.1:9/v1")
+            .nodes("reviewer", &dir)
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = sqlite(tmp.path());
+        let mut on = guest(&store);
+        on.models = nodes;
+        on.disable_remote_calls = false;
+        assert!(!on.take_unreached());
+        let request = r#"{"messages": [{"role": "user", "text": "hello"}]}"#;
+        on.chat("reviewer".into(), request.into())
+            .await
+            .unwrap_err();
+        assert!(!on.take_cut(), "not the stop's doing");
+        assert!(on.take_unreached(), "the call is marked, once");
+        assert!(!on.take_unreached());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A stop ends a turn the model has not answered, and a runtime told to

@@ -18,6 +18,9 @@ pub struct MapperCtx {
     pub selectors: Vec<CompiledSelector>,
     /// A failed call's records are dropped; false passes them on.
     pub drop_on_error: bool,
+    /// How many times in all a call that ended on a model or a lake that
+    /// did not answer is made.
+    pub attempts: usize,
 }
 
 pub struct Mappers {
@@ -66,6 +69,7 @@ impl Mappers {
             proc,
             selectors,
             drop_on_error: engine.drops_on_error(name),
+            attempts: engine.attempts(name),
         })
     }
 }
