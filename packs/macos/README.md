@@ -395,7 +395,12 @@ and the record whole beside them. `read_file` reads a file on the Mac
 `malicious`, `benign` or `unresolved` (the log cannot settle it, and the
 finding says what is missing); and `check`, what to look at or undo first.
 The alert goes on with its review, with the SQL it ran, the files it read and the
-tokens it took; examples/macos writes them to `reviews.ndjson`.
+tokens it took; examples/macos writes them to `reviews.ndjson`. `steps` is
+how the review went, a turn each: the reasoning the model showed
+(`thinking`), what it said, and each query or file it asked for with the
+start of what came back. While a review runs, `tangent watch mac` writes the
+same turns as they happen to `agent.ndjson`, which the app shows under an
+alert being reviewed.
 
 An alert's own records are the table's once the sink has written them,
 before it seals their file. The plugin is grouped by an alert's session and

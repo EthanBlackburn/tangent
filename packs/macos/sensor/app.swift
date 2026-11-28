@@ -91,6 +91,93 @@ enum FlaggedKind: String, Hashable {
     }
 }
 
+/// One thing the reviewer asked for in a turn, and the start of what it got.
+struct ReviewCall: Equatable {
+    let tool: String
+    /// the SQL of a query, the path of a file read
+    let asked: String
+    let result: String
+    let failed: Bool
+}
+
+/// One turn of a review: the reasoning the reviewer showed, what it said,
+/// and what it asked for.
+struct ReviewStep: Equatable {
+    var thinking: String
+    var said: String
+    var calls: [ReviewCall]
+}
+
+private func reviewCall(tool: String, arguments: [String: Any], result: String, failed: Bool) -> ReviewCall {
+    ReviewCall(
+        tool: tool,
+        asked: (arguments["sql"] as? String) ?? (arguments["path"] as? String) ?? "",
+        result: result,
+        failed: failed
+    )
+}
+
+/// A finished review's turns, as its record keeps them (`steps`).
+func reviewSteps(record obj: [String: Any]) -> [ReviewStep] {
+    (obj["steps"] as? [[String: Any]] ?? []).map { step in
+        ReviewStep(
+            thinking: step["thinking"] as? String ?? "",
+            said: step["said"] as? String ?? "",
+            calls: (step["calls"] as? [[String: Any]] ?? []).map {
+                reviewCall(tool: $0["tool"] as? String ?? "", arguments: $0,
+                           result: $0["result"] as? String ?? "", failed: $0["failed"] as? Bool ?? false)
+            }
+        )
+    }
+}
+
+/// The turns of reviews in progress, by session and window, from the end of
+/// agent.ndjson, which the watcher writes a line to as each turn happens.
+/// Only the conversation last begun for a key: one begun again starts over.
+func liveReviewSteps(dir: String) -> [String: [ReviewStep]] {
+    let path = (dir as NSString).appendingPathComponent("agent.ndjson")
+    guard let file = FileHandle(forReadingAtPath: path) else { return [:] }
+    defer { try? file.close() }
+    let size = (try? file.seekToEnd()) ?? 0
+    let tail: UInt64 = 2 << 20
+    try? file.seek(toOffset: size > tail ? size - tail : 0)
+    guard let data = try? file.readToEnd() else { return [:] }
+    var live: [String: [ReviewStep]] = [:]
+    for raw in data.split(separator: UInt8(ascii: "\n")) {
+        guard let obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+              let key = obj["trace"] as? String else { continue }
+        switch obj["kind"] as? String ?? "" {
+        case "asked":
+            if obj["first"] as? Bool == true { live[key] = [] }
+        case "turn":
+            let calls = (obj["calls"] as? [[String: Any]] ?? []).map {
+                reviewCall(tool: $0["name"] as? String ?? "", arguments: $0["arguments"] as? [String: Any] ?? [:],
+                           result: "", failed: false)
+            }
+            live[key, default: []].append(ReviewStep(
+                thinking: obj["thinking"] as? String ?? "", said: obj["said"] as? String ?? "", calls: calls))
+        case "results":
+            // what the last turn's calls were given back, in their order
+            guard var steps = live[key], var last = steps.popLast() else { continue }
+            let results = obj["results"] as? [[String: Any]] ?? []
+            last.calls = last.calls.enumerated().map { i, call in
+                guard i < results.count else { return call }
+                return ReviewCall(tool: call.tool, asked: call.asked,
+                                  result: results[i]["text"] as? String ?? "",
+                                  failed: results[i]["failed"] as? Bool ?? false)
+            }
+            steps.append(last)
+            live[key] = steps
+        case "error":
+            live[key, default: []].append(ReviewStep(
+                thinking: "", said: "The model failed: \(obj["error"] as? String ?? "")", calls: []))
+        default:
+            continue
+        }
+    }
+    return live
+}
+
 struct FlaggedEntry: Identifiable, Equatable {
     let id: String
     let ts: String
@@ -106,9 +193,12 @@ struct FlaggedEntry: Identifiable, Equatable {
     let feedbackKey: String
     let feedbackFile: String?
     let feedbackLineJSON: String?
+    /// The reviewer's turns: a finished review's, or one in progress so far.
+    var steps: [ReviewStep] = []
 
     static func == (lhs: FlaggedEntry, rhs: FlaggedEntry) -> Bool {
         lhs.id == rhs.id && lhs.kind == rhs.kind && lhs.ts == rhs.ts && lhs.finding == rhs.finding
+            && lhs.steps == rhs.steps
     }
 }
 
@@ -419,7 +509,8 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
                 judgeNote: judgeNote,
                 feedbackKey: feedbackKey,
                 feedbackFile: feedbackFile,
-                feedbackLineJSON: feedbackLineJSON
+                feedbackLineJSON: feedbackLineJSON,
+                steps: reviewSteps(record: obj)
             ))
         }
     }
@@ -430,6 +521,7 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
         // Read once, and only if a session the judge could not be asked
         // about is among them: when each session was last judged.
         var judgedAt: [String: String]? = nil
+        let live = liveReviewSteps(dir: dir)
         let recentAlertLines = text.split(separator: "\n").suffix(40).reversed()
         var pending: [FlaggedEntry] = []
         var seenPending = Set<String>()
@@ -492,7 +584,8 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
                 judgeNote: judgeNote,
                 feedbackKey: "\(sid)|\(ts)",
                 feedbackFile: nil,
-                feedbackLineJSON: nil
+                feedbackLineJSON: nil,
+                steps: dropped ? [] : (live["\(sid)|\(window)"] ?? [])
             ))
             if pending.count >= 15 { break }
         }
@@ -1438,6 +1531,11 @@ private struct IncidentBriefView: View {
                         .padding(.top, 22)
                     }
 
+                    if !entry.steps.isEmpty || entry.kind == .reviewing {
+                        InvestigationView(steps: entry.steps, live: entry.kind == .reviewing)
+                            .padding(.top, 22)
+                    }
+
                     // Collapsible Tier 1 Judge note
                     if !entry.judgeNote.isEmpty && entry.judgeNote != entry.finding {
                         VStack(alignment: .leading, spacing: 8) {
@@ -1567,6 +1665,117 @@ private struct IncidentBriefView: View {
         NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+    }
+}
+
+/// How a review went: each turn's reasoning, then what the reviewer asked
+/// the log or read, each opening to the start of what came back. Open while
+/// the review is in progress, closed under a finished one.
+private struct InvestigationView: View {
+    let steps: [ReviewStep]
+    let live: Bool
+    @State private var shown: Bool? = nil
+    @State private var opened = Set<String>()
+
+    private var asked: Int { steps.reduce(0) { $0 + $1.calls.filter { $0.tool != "report" }.count } }
+
+    var body: some View {
+        let open = shown ?? live
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { shown = !open }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: open ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Investigation")
+                        .font(.system(size: 12, weight: .medium))
+                    if asked > 0 {
+                        Text("(\(asked) \(asked == 1 ? "lookup" : "lookups"))")
+                            .font(.system(size: 11.5))
+                            .foregroundColor(Theme.inkTertiary)
+                    }
+                    Spacer()
+                }
+                .foregroundColor(Theme.inkSecondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if open {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(steps.enumerated()), id: \.offset) { i, step in
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach([step.thinking, step.said].filter { !$0.isEmpty }, id: \.self) { text in
+                                Text(text)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.inkSecondary)
+                                    .lineSpacing(4)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            ForEach(Array(step.calls.enumerated()), id: \.offset) { j, call in
+                                if call.tool != "report" {
+                                    callRow(call, id: "\(i)-\(j)")
+                                }
+                            }
+                        }
+                    }
+                    if live {
+                        HStack(spacing: 7) {
+                            ProgressView().controlSize(.small)
+                            Text(steps.isEmpty ? "Starting…" : "Working…")
+                                .font(.system(size: 12))
+                                .foregroundColor(Theme.inkTertiary)
+                        }
+                    }
+                }
+                .padding(.leading, 16)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func callRow(_ call: ReviewCall, id: String) -> some View {
+        let isOpen = opened.contains(id)
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                if isOpen { opened.remove(id) } else { opened.insert(id) }
+            } label: {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: call.failed ? "exclamationmark.triangle"
+                        : (call.tool == "read_file" ? "doc.text" : "magnifyingglass"))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundColor(call.failed ? Theme.crimson : Theme.inkTertiary)
+                        .frame(width: 13)
+                        .padding(.top, 2)
+                    Text(call.asked.isEmpty ? call.tool : call.asked)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundColor(Theme.ink)
+                        .lineLimit(isOpen ? nil : 2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isOpen && !call.result.isEmpty {
+                ScrollView(.horizontal) {
+                    Text(call.result)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(Theme.inkSecondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .padding(.bottom, 6)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .cornerRadius(8)
     }
 }
 

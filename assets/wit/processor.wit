@@ -102,7 +102,7 @@ interface model {
   /// One turn with inference node `node`. `request` is JSON:
   ///
   ///   {"messages": [...], "tools": [{"name", "description", "parameters"}],
-  ///    "cache": true}
+  ///    "cache": true, "trace": "..."}
   ///
   /// A message is `{"role": "user", "text": "..."}`; or, ahead of the
   /// others, `{"role": "system", "text": "..."}`, which is added to the
@@ -111,15 +111,20 @@ interface model {
   /// "text", "error": false}]}` with each call's `id` and `name` as the reply
   /// gave them, or a reply's `message` sent back as it came. `parameters` is
   /// a JSON Schema. `cache` asks the provider to keep the prompt so far for
-  /// the next turn, where it can.
+  /// the next turn, where it can. `trace` names the conversation, and has
+  /// its turns told as they happen: each a line of JSON logged at target
+  /// `tangent::agent` with the trace (what the last calls were given back,
+  /// then the turn or its error), which `tangent watch mac` writes to
+  /// `agent.ndjson`. It is not sent to the model.
   ///
   /// The reply is JSON:
   ///
-  ///   {"message": {...}, "text": "...", "calls": [{"id", "name",
+  ///   {"message": {...}, "text": "...", "thinking": "...", "calls": [{"id", "name",
   ///    "arguments": {...}}], "stop": "tool_use", "usage": {"input_tokens",
   ///    "output_tokens", ...}}
   ///
-  /// `message` is the model's turn, to append to `messages` whole; `stop` is
+  /// `message` is the model's turn, to append to `messages` whole;
+  /// `thinking` the reasoning it showed, empty when it showed none; `stop` is
   /// `stop`, `tool_use` when there are `calls` to run, or `length` when
   /// `max_tokens` cut the text short. An error is a request that is not as
   /// above, or a turn the model did not finish: no reply after the model's
