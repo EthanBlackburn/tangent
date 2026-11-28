@@ -578,7 +578,8 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
                     : judgeNote),
                 finding: judgeNote.isEmpty
                     ? (dropped ? unreviewedNote : "Flagged by the first-pass judge. The reviewer is investigating this session against the local Parquet log.")
-                    : (dropped ? "\(judgeNote)\n\n\(unreviewedNote)" : judgeNote),
+                    // the judge's note is shown once, under its own heading
+                    : (dropped ? unreviewedNote : judgeNote),
                 check: "",
                 judgeMark: judgeMark,
                 judgeNote: judgeNote,
@@ -1400,7 +1401,10 @@ private struct IncidentBriefView: View {
     @ObservedObject var store: TangentStore
     let entry: FlaggedEntry
     @State private var copied = false
-    @State private var showJudgeNote = false
+    /// nil: as the entry has it, open under one nobody reviewed, where the
+    /// judge's note is all there is to read
+    @State private var judgeNoteShown: Bool? = nil
+    private var showJudgeNote: Bool { judgeNoteShown ?? (entry.kind == .unreviewed) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1541,7 +1545,7 @@ private struct IncidentBriefView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Button {
                                 withAnimation(.easeOut(duration: 0.15)) {
-                                    showJudgeNote.toggle()
+                                    judgeNoteShown = !showJudgeNote
                                 }
                             } label: {
                                 HStack(spacing: 6) {
