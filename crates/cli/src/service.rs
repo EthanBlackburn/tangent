@@ -518,6 +518,26 @@ fn spoken(seconds: f64) -> String {
     }
 }
 
+/// A count as it is read: `940`, `5.2k`, `1.3M`.
+fn counted(n: f64) -> String {
+    if n < 1000.0 {
+        format!("{n:.0}")
+    } else if n < 1e6 {
+        format!("{:.1}k", n / 1e3)
+    } else {
+        format!("{:.1}M", n / 1e6)
+    }
+}
+
+/// USD as it is read: cents when there are some, else to four places.
+fn dollars(usd: f64) -> String {
+    if usd >= 0.1 {
+        format!("${usd:.2}")
+    } else {
+        format!("${usd:.4}")
+    }
+}
+
 /// What `tangent health` says, and whether all of it is well: each line a
 /// name and its value, a line that needs attention marked.
 fn health_lines(
@@ -564,6 +584,33 @@ fn health_lines(
     };
     lines.push(("First pass", spread(s.judge_seconds), false));
     lines.push(("Flagged to verdict", spread(s.review_seconds), false));
+    if let Some(u) = &s.usage {
+        let n = |k: &str| u.pointer(k).and_then(Value::as_f64);
+        let speed: Vec<String> = [("judge", "/output_tokens_per_second/judge"), ("reviewer", "/output_tokens_per_second/reviewer")]
+            .iter()
+            .filter_map(|(name, k)| n(k).map(|v| format!("{name} {v:.0} tok/s")))
+            .collect();
+        if !speed.is_empty() {
+            lines.push(("Output speed", speed.join(" · "), false));
+        }
+        if let Some(v) = n("/tokens_per_activity") {
+            lines.push(("Tokens per activity", counted(v), false));
+        }
+        let unpriced = || "unknown: a model has no listed price".to_string();
+        lines.push((
+            "Cost per activity",
+            n("/cost_per_activity").map_or_else(unpriced, dollars),
+            false,
+        ));
+        lines.push((
+            "Cost per day",
+            n("/cost_per_day").map_or_else(unpriced, |v| format!("{} at this run's rate", dollars(v))),
+            false,
+        ));
+        if let (Some(second), Some(day)) = (n("/activities_per_second"), n("/activities_per_day")) {
+            lines.push(("Activities", format!("{second:.2}/s · {}/day", counted(day)), false));
+        }
+    }
     (lines.iter().all(|(_, _, wrong)| !wrong), lines)
 }
 
@@ -595,6 +642,7 @@ pub fn health(as_json: bool) -> Result<bool> {
             "reviewing": s.map(|s| s.pending),
             "first_pass_seconds": s.and_then(|s| spread(s.judge_seconds)),
             "flagged_to_verdict_seconds": s.and_then(|s| spread(s.review_seconds)),
+            "usage": s.and_then(|s| s.usage.clone()),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(healthy);
@@ -1341,6 +1389,19 @@ mod tests {
         assert!(!healthy);
         assert!(lines.iter().any(|l| l.0 == "Models" && l.2));
         assert_eq!((spoken(48.4), spoken(85.0)), ("48s".into(), "1m 25s".into()));
+
+        let used = snap(&|v| {
+            v["usage"] = json!({"output_tokens_per_second": {"judge": 84.6}, "tokens_per_activity": 5234.0,
+                "cost_per_activity": 0.0041, "cost_per_day": 2.4,
+                "activities_per_second": 0.118, "activities_per_day": 10195.0})
+        });
+        let (_, lines) = health_lines(Some(&used), true, true);
+        let said = |name: &str| lines.iter().find(|l| l.0 == name).unwrap().1.clone();
+        assert_eq!(said("Output speed"), "judge 85 tok/s");
+        assert_eq!(said("Tokens per activity"), "5.2k");
+        assert_eq!(said("Cost per activity"), "$0.0041");
+        assert_eq!(said("Cost per day"), "$2.40 at this run's rate");
+        assert_eq!(said("Activities"), "0.12/s · 10.2k/day");
     }
 
     #[test]

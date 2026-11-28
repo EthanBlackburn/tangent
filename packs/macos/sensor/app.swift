@@ -1239,6 +1239,17 @@ private struct SidebarActivityRow: View {
     }
 }
 
+/// A count as it is read: `940`, `5.2k`, `1.3M`.
+func counted(_ n: Double) -> String {
+    if n < 1000 { return String(Int(n.rounded())) }
+    return n < 1e6 ? String(format: "%.1fk", n / 1e3) : String(format: "%.1fM", n / 1e6)
+}
+
+/// USD as it is read: cents when there are some, else to four places.
+func dollars(_ usd: Double) -> String {
+    String(format: usd >= 0.1 ? "$%.2f" : "$%.4f", usd)
+}
+
 /// Seconds as they are read: `3.2s`, `48s`, `1m 25s`.
 func spokenSeconds(_ seconds: Double) -> String {
     if seconds < 10 { return String(format: "%.1fs", seconds) }
@@ -1908,6 +1919,21 @@ private struct HealthStage: View {
                     group("Speed · median, 95th percentile") {
                         row("First pass", spread(s.judgeSeconds))
                         row("Flagged to verdict", spread(s.reviewSeconds))
+                    }
+                    if !s.usage.isEmpty {
+                        let u = s.usage
+                        group("Tokens and cost · this run") {
+                            row("Output speed", ["judge", "reviewer"].compactMap { node in
+                                u["speed.\(node)"].map { "\(node) \(Int($0.rounded())) tok/s" }
+                            }.joined(separator: "  ·  "))
+                            row("Tokens per activity", u["tokens_per_activity"].map(counted) ?? "–")
+                            row("Cost per activity", u["cost_per_activity"].map(dollars) ?? "no listed price")
+                            row("Cost per day", u["cost_per_day"].map(dollars) ?? "no listed price")
+                        }
+                        group("Activity · at this run's rate") {
+                            row("Per second", u["activities_per_second"].map { String(format: "%.2f", $0) } ?? "–")
+                            row("Per day", u["activities_per_day"].map(counted) ?? "–")
+                        }
                     }
                 }
 

@@ -49,9 +49,54 @@ impl Default for RuntimeOptions {
 /// How many of a node's requests [`inference_recent`] keeps.
 const RECENT: usize = 500;
 
-/// A model's request answered in `seconds`, counted for `node`.
-pub(crate) fn inference_took(node: &str, seconds: f64) {
+/// What a node's requests have come to in this process.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InferenceTotals {
+    pub requests: u64,
+    /// The seconds the requests took together.
+    pub seconds: f64,
+    pub tokens: inference::price::Tokens,
+    /// What the tokens cost, in USD: of the requests whose model has a
+    /// price ([`inference::price`]).
+    pub cost: f64,
+    /// The requests whose model has no price, which `cost` leaves out.
+    pub unpriced: u64,
+}
+
+/// A model's request answered in `seconds`, counted for `node` with its
+/// tokens and what they cost, when its model has a price.
+pub(crate) fn inference_took(
+    node: &str,
+    seconds: f64,
+    tokens: &inference::price::Tokens,
+    cost: Option<f64>,
+) {
     INFERENCE_SECONDS.with_label_values(&[node]).observe(seconds);
+    for (kind, n) in [
+        ("input", tokens.input),
+        ("cache_read", tokens.cache_read),
+        ("cache_write", tokens.cache_write),
+        ("output", tokens.output),
+    ] {
+        INFERENCE_TOKENS.with_label_values(&[node, kind]).inc_by(n);
+    }
+    if let Some(cost) = cost {
+        INFERENCE_COST.with_label_values(&[node]).inc_by(cost);
+    }
+    {
+        let mut totals = INFERENCE_TOTALS.lock();
+        let of = totals.entry(node.to_string()).or_default();
+        of.requests += 1;
+        of.seconds += seconds;
+        of.tokens.input += tokens.input;
+        of.tokens.cache_read += tokens.cache_read;
+        of.tokens.cache_write += tokens.cache_write;
+        of.tokens.output += tokens.output;
+        match cost {
+            Some(cost) => of.cost += cost,
+            None => of.unpriced += 1,
+        }
+    }
     let mut recent = INFERENCE_RECENT.lock();
     let of = recent.entry(node.to_string()).or_default();
     if of.len() == RECENT {
@@ -70,7 +115,31 @@ pub fn inference_recent(node: &str) -> Vec<f64> {
         .unwrap_or_default()
 }
 
+/// What `node`'s requests have come to in this process.
+pub fn inference_totals(node: &str) -> InferenceTotals {
+    INFERENCE_TOTALS.lock().get(node).copied().unwrap_or_default()
+}
+
 lazy_static::lazy_static! {
+    static ref INFERENCE_TOTALS: parking_lot::Mutex<std::collections::HashMap<String, InferenceTotals>> =
+        parking_lot::Mutex::new(std::collections::HashMap::new());
+
+    /// The tokens of a node's requests, by kind: `input` (neither read from
+    /// a cache nor written to one), `cache_read`, `cache_write`, `output`.
+    pub static ref INFERENCE_TOKENS: IntCounterVec = register_int_counter_vec!(
+        "tangent_inference_tokens_total",
+        "Tokens of model requests, by inference node and kind",
+        &["node", "kind"]
+    ).unwrap();
+
+    /// What a node's requests cost at its provider's listed prices, for the
+    /// models that have one.
+    pub static ref INFERENCE_COST: prometheus::CounterVec = prometheus::register_counter_vec!(
+        "tangent_inference_cost_usd_total",
+        "Listed cost of model requests in USD, by inference node",
+        &["node"]
+    ).unwrap();
+
     pub static ref GUEST_LATENCY: HistogramVec = register_histogram_vec!(
         "tangent_guest_seconds",
         "WASM guest call latency (sec)",

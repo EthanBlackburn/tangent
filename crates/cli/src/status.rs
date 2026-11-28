@@ -166,6 +166,9 @@ pub struct Snapshot {
     /// for a reviewer included.
     pub judge_seconds: Option<(f64, f64)>,
     pub review_seconds: Option<(f64, f64)>,
+    /// This run's tokens, what they cost and how fast sessions are checked
+    /// ([`usage`]), None until a model has answered.
+    pub usage: Option<Value>,
 }
 
 impl Snapshot {
@@ -188,6 +191,7 @@ impl Snapshot {
             "auth_error": self.auth_error,
             "judge_seconds": self.judge_seconds.map(|(p50, p95)| json!({"p50": p50, "p95": p95})),
             "review_seconds": self.review_seconds.map(|(p50, p95)| json!({"p50": p50, "p95": p95})),
+            "usage": self.usage,
         })
     }
 
@@ -222,6 +226,7 @@ impl Snapshot {
                 .map(str::to_string),
             judge_seconds: spread(v.get("judge_seconds")),
             review_seconds: spread(v.get("review_seconds")),
+            usage: v.get("usage").filter(|u| u.is_object()).cloned(),
         })
     }
 }
@@ -261,6 +266,56 @@ struct TrackerInner {
     /// that is refused tries for minutes before it answers at all, and until
     /// then there is no answer to read it from.
     refused: Option<String>,
+    /// When `usage` was last written for its own sake: it changes with
+    /// every request, and is written at most every [`USAGE_EVERY`].
+    usage_written: Option<std::time::Instant>,
+}
+
+const USAGE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// This run's tokens, cost and rate, as `status.json` has them. `nodes` is
+/// each inference node's name and totals, `checked` the sessions judged and
+/// `seconds` how long the run has been going.
+///
+/// - `tokens`: every token of every request.
+/// - `output_tokens_per_second`: by node, its output tokens over the time
+///   its requests took.
+/// - `tokens_per_activity`, `cost_per_activity`: over the sessions checked,
+///   the judge's requests and the reviews together.
+/// - `cost`, `cost_per_day`: USD at the providers' listed prices, and the
+///   same at this run's rate for a day. `priced` is false when a model has
+///   no listed price, and then the costs are left out.
+/// - `activities_per_second`, `activities_per_day`: sessions checked, at
+///   this run's rate.
+pub fn usage(
+    nodes: &[(&str, tangent_runtime::InferenceTotals)],
+    checked: u64,
+    seconds: f64,
+) -> Option<Value> {
+    let requests: u64 = nodes.iter().map(|(_, t)| t.requests).sum();
+    if requests == 0 || seconds <= 0.0 {
+        return None;
+    }
+    let tokens: u64 = nodes.iter().map(|(_, t)| t.tokens.all()).sum();
+    let cost: f64 = nodes.iter().map(|(_, t)| t.cost).sum();
+    let priced = nodes.iter().all(|(_, t)| t.unpriced == 0);
+    let per = |n: f64| (checked > 0).then(|| n / checked as f64);
+    let speed: serde_json::Map<String, Value> = nodes
+        .iter()
+        .filter(|(_, t)| t.seconds > 0.0)
+        .map(|(name, t)| (name.to_string(), json!(t.tokens.output as f64 / t.seconds)))
+        .collect();
+    Some(json!({
+        "tokens": tokens,
+        "output_tokens_per_second": speed,
+        "tokens_per_activity": per(tokens as f64),
+        "priced": priced,
+        "cost": priced.then_some(cost),
+        "cost_per_day": priced.then(|| cost / seconds * 86400.0),
+        "cost_per_activity": per(cost).filter(|_| priced),
+        "activities_per_second": checked as f64 / seconds,
+        "activities_per_day": checked as f64 / seconds * 86400.0,
+    }))
 }
 
 impl Tracker {
@@ -294,6 +349,7 @@ impl Tracker {
             auth_error: None,
             judge_seconds: None,
             review_seconds: None,
+            usage: None,
         };
         let tracker = Self {
             inner: Arc::new(Mutex::new(TrackerInner {
@@ -301,6 +357,7 @@ impl Tracker {
                 snapshot,
                 answered: None,
                 refused: None,
+                usage_written: None,
             })),
         };
         tracker.flush();
@@ -358,6 +415,22 @@ impl Tracker {
         }
         g.snapshot.judge_seconds = judge;
         g.snapshot.review_seconds = review;
+        g.snapshot.updated_at = now_rfc3339();
+        write_atomic(&g.dir, &g.snapshot);
+    }
+
+    /// This run's tokens, cost and rate ([`usage`]): written with whatever
+    /// is written next, and for its own sake every [`USAGE_EVERY`].
+    pub fn set_usage(&self, usage: Option<Value>) {
+        let mut g = self.inner.lock().unwrap();
+        if g.snapshot.usage == usage {
+            return;
+        }
+        g.snapshot.usage = usage;
+        if g.usage_written.is_some_and(|at| at.elapsed() < USAGE_EVERY) {
+            return;
+        }
+        g.usage_written = Some(std::time::Instant::now());
         g.snapshot.updated_at = now_rfc3339();
         write_atomic(&g.dir, &g.snapshot);
     }
@@ -557,6 +630,47 @@ fn format_rfc3339(unix_secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_is_per_activity_and_per_day_at_the_run_s_rate() {
+        use tangent_runtime::inference::price::Tokens;
+        use tangent_runtime::InferenceTotals;
+        let judge = InferenceTotals {
+            requests: 10,
+            seconds: 20.0,
+            tokens: Tokens { input: 9000, output: 1000, ..Tokens::default() },
+            cost: 0.01,
+            unpriced: 0,
+        };
+        let reviewer = InferenceTotals {
+            requests: 2,
+            seconds: 50.0,
+            tokens: Tokens { cache_read: 85_000, output: 5000, ..Tokens::default() },
+            cost: 0.09,
+            unpriced: 0,
+        };
+        assert_eq!(usage(&[("judge", InferenceTotals::default())], 0, 60.0), None);
+        // an hour's run: 20 sessions checked
+        let u = usage(&[("judge", judge), ("reviewer", reviewer)], 20, 3600.0).unwrap();
+        let near = |k: &str, want: f64| {
+            let got = u.pointer(k).and_then(Value::as_f64).unwrap();
+            assert!((got - want).abs() < 1e-9, "{k}: {got} != {want}");
+        };
+        assert_eq!(u["tokens"], 100_000);
+        near("/output_tokens_per_second/judge", 50.0);
+        near("/output_tokens_per_second/reviewer", 100.0);
+        near("/tokens_per_activity", 5000.0);
+        near("/cost", 0.10);
+        near("/cost_per_day", 2.40);
+        near("/cost_per_activity", 0.005);
+        near("/activities_per_second", 20.0 / 3600.0);
+        near("/activities_per_day", 480.0);
+        // a model with no listed price: no cost is said
+        let unknown = InferenceTotals { unpriced: 1, ..reviewer };
+        let u = usage(&[("judge", judge), ("reviewer", unknown)], 20, 3600.0).unwrap();
+        assert_eq!((&u["priced"], &u["cost"], &u["cost_per_day"]), (&json!(false), &Value::Null, &Value::Null));
+        assert_eq!(u["cost_per_activity"], Value::Null);
+    }
 
     #[test]
     fn the_median_and_the_95th_are_seconds_there_were() {

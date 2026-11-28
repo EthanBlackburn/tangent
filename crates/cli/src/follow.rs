@@ -461,6 +461,8 @@ pub struct Follow {
     /// The seconds from each alert of this run being flagged to its
     /// review's verdict, its wait for a reviewer included.
     reviewed: Vec<f64>,
+    /// When this run began to follow: what its rates are over.
+    began: Instant,
     /// The same for the alerts the review being read settles.
     settled: Vec<f64>,
     /// What each model last said of its credentials: the judge's, then the
@@ -511,6 +513,7 @@ impl Follow {
             notifier,
             new_alerts: Vec::new(),
             reviewed: Vec::new(),
+            began: Instant::now(),
             settled: Vec::new(),
             judge_auth: None,
             review_auth: None,
@@ -710,6 +713,14 @@ impl Follow {
         }
         if let Some(status) = &self.status {
             // the judge's from the runtime's own count of its requests
+            status.set_usage(status::usage(
+                &[
+                    ("judge", tangent_runtime::inference_totals("judge")),
+                    ("reviewer", tangent_runtime::inference_totals("reviewer")),
+                ],
+                self.judged,
+                self.began.elapsed().as_secs_f64(),
+            ));
             status.set_timing(
                 status::percentiles(&tangent_runtime::inference_recent("judge")),
                 status::percentiles(&self.reviewed),

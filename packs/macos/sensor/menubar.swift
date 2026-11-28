@@ -70,6 +70,9 @@ struct WatchStatus {
     /// to its review's verdict. Nil until there is one.
     let judgeSeconds: (p50: Double, p95: Double)?
     let reviewSeconds: (p50: Double, p95: Double)?
+    /// This run's tokens, cost and rate, as the watcher works them out:
+    /// numbers by name, a node's output speed under `speed.<node>`.
+    let usage: [String: Double]
 
     /// True if the watch process is actually alive right now.
     var isAlive: Bool {
@@ -109,7 +112,17 @@ struct WatchStatus {
             needsFda: dict["needs_fda"] as? Bool ?? false,
             authError: dict["auth_error"] as? String,
             judgeSeconds: spread(dict["judge_seconds"]),
-            reviewSeconds: spread(dict["review_seconds"])
+            reviewSeconds: spread(dict["review_seconds"]),
+            usage: {
+                var flat: [String: Double] = [:]
+                for (key, value) in dict["usage"] as? [String: Any] ?? [:] {
+                    if let n = value as? NSNumber, !(value is Bool) { flat[key] = n.doubleValue }
+                    for (node, speed) in value as? [String: Any] ?? [:] {
+                        if let n = speed as? NSNumber { flat["speed.\(node)"] = n.doubleValue }
+                    }
+                }
+                return flat
+            }()
         )
     }
 }

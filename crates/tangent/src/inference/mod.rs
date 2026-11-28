@@ -31,6 +31,7 @@ use tangent_shared::inference::{Encoding, InferenceConfig};
 use tangent_shared::models::{ModelConfig, ModelKind};
 
 mod model;
+pub mod price;
 pub mod serve;
 pub use model::Model;
 
