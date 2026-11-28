@@ -394,7 +394,8 @@ const MEASURED_LEAST: f64 = 5.0 / 60.0;
 /// - `output_tokens_per_second`: by node, its output tokens over the time
 ///   its requests took, in this run.
 /// - `measured_hours`: how much of the last 24 hours a watch was running,
-///   which the rest are worked out from, once it is five minutes.
+///   which the rest are worked out from once it is five minutes; until
+///   then they are left out and `measuring_seconds_left` says how long.
 /// - `tokens_per_activity`, `cost_per_activity`: over the sessions checked,
 ///   the judge's requests and the reviews together.
 /// - `cost_per_day`: USD at the providers' listed prices, what was spent
@@ -420,7 +421,9 @@ pub fn usage(nodes: &[(&str, tangent_runtime::InferenceTotals)], day: &Day) -> O
     Some(json!({
         "tokens": tokens,
         "output_tokens_per_second": speed,
-        "measured_hours": measured.then_some(day.hours),
+        "measured_hours": day.hours,
+        // how long until there is enough to work a day out from
+        "measuring_seconds_left": (!measured).then(|| ((MEASURED_LEAST - day.hours) * 3600.0).ceil()),
         "tokens_per_activity": per(day.tokens),
         "priced": priced,
         "cost_per_day": a_day(day.cost).filter(|_| priced),
@@ -773,6 +776,7 @@ mod tests {
         near("/measured_hours", 6.0);
         near("/tokens_per_activity", 5000.0);
         near("/cost_per_day", 2.0);
+        assert_eq!(u["measuring_seconds_left"], Value::Null);
         near("/cost_per_activity", 0.025);
         near("/activities_per_day", 80.0);
         near("/activities_per_second", 80.0 / 86400.0);
@@ -784,7 +788,8 @@ mod tests {
         // a first minute is not a day
         let young = Day { cost: 0.19, tokens: 5e5, checked: 76.0, hours: 0.06 };
         let u = usage(&[("judge", judge)], &young).unwrap();
-        assert_eq!((&u["cost_per_day"], &u["measured_hours"]), (&Value::Null, &Value::Null));
+        assert_eq!(u["cost_per_day"], Value::Null);
+        assert_eq!(u["measuring_seconds_left"], 84.0);
     }
 
     #[test]
