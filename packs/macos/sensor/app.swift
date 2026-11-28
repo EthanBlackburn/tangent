@@ -52,7 +52,8 @@ enum FlaggedKind: String, Hashable {
     case benign
     case failed
     case reviewing
-    /// Flagged, and no review of it came: it waited past any review's time.
+    /// Nobody checked it: the judge could not be asked about the session,
+    /// or it flagged it and no review came within any review's time.
     case unreviewed
 
     var label: String {
@@ -62,7 +63,7 @@ enum FlaggedKind: String, Hashable {
         case .benign: return "Cleared"
         case .failed: return "Review failed"
         case .reviewing: return "Reviewing"
-        case .unreviewed: return "Not reviewed"
+        case .unreviewed: return "Unchecked"
         }
     }
 
@@ -455,8 +456,14 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
             // reviewed: it is said so, not left "Reviewing" for good.
             let flaggedAt = ISO8601DateFormatter.flexible(ts)
             let waited = flaggedAt.map { Date().timeIntervalSince($0) } ?? 0
-            let dropped = waited > reviewsWithin
-            let unreviewedNote = "The judge flagged this session and no review of it was finished, so nobody has looked into it."
+            // A session the judge could not be asked about is with the
+            // alerts so that it is seen, and is never reviewed: there is no
+            // verdict to review. It is said at once, with the model's error.
+            let judgeError = cleanInlineText(judge["error"] as? String ?? "")
+            let dropped = !judgeError.isEmpty || waited > reviewsWithin
+            let unreviewedNote = judgeError.isEmpty
+                ? "The judge flagged this session and no review of it was finished, so nobody has looked into it."
+                : "The model could not be asked about this session, so it was never checked. It is not a finding.\n\n\(judgeError)"
             pending.append(FlaggedEntry(
                 id: "alert-\(idx)-\(sid)-\(ts)",
                 ts: ts,
@@ -464,7 +471,10 @@ func loadFlaggedHistory(in dir: String, maxEntries: Int = 400) -> [FlaggedEntry]
                 subject: subject,
                 who: who,
                 sessionId: sid,
-                summary: firstSentenceSnippet(judgeNote.isEmpty ? (dropped ? "Flagged by judge, never reviewed" : "Flagged by judge, awaiting review…") : judgeNote),
+                summary: firstSentenceSnippet(judgeNote.isEmpty
+                    ? (!judgeError.isEmpty ? "Not checked: the model could not be reached"
+                        : (dropped ? "Flagged by judge, never reviewed" : "Flagged by judge, awaiting review…"))
+                    : judgeNote),
                 finding: judgeNote.isEmpty
                     ? (dropped ? unreviewedNote : "Flagged by the first-pass judge. The reviewer is investigating this session against the local Parquet log.")
                     : (dropped ? "\(judgeNote)\n\n\(unreviewedNote)" : judgeNote),
@@ -1343,7 +1353,8 @@ private struct IncidentBriefView: View {
 
                     // Finding — clean open editorial prose with inline monospace paths
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(entry.kind == .reviewing || entry.kind == .unreviewed ? "First-pass summary" : "What happened")
+                        Text(entry.kind == .unreviewed ? "Why it is unchecked"
+                            : (entry.kind == .reviewing ? "First-pass summary" : "What happened"))
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundColor(Theme.inkSecondary)
 
