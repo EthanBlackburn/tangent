@@ -1244,6 +1244,7 @@ fn every_path_field_is_rebased() {
         temperature: _,
         extra: _,
         unreached: _,
+        cache: _,
     } = judge;
     let TableConfig {
         kind: _,

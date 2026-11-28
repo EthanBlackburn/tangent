@@ -5890,8 +5890,6 @@ dependencies = [
 [[package]]
 name = "rig-bedrock"
 version = "0.45.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82934ebd6e5f646415652a784a5303209f099aa3299c92957d9294467913757a"
 dependencies = [
  "async-stream",
  "aws-config",

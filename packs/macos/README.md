@@ -461,13 +461,13 @@ for the kept groups only, never a file's content or a connection's), that
 the judge's answer is a lead and not a finding, and that the days before
 show what is routine on this Mac.
 
-The alert is in the conversation's first message, with the columns. A model
-on Bedrock that thinks keeps only the brief cached between its turns, so a
-review's input costs about 1.7 times what it would with the alert kept too.
-`alert_with_prompt: true` in the plugin's `config` puts the alert beside the
-brief, where it is cached, which brings the cost back; it also gives text an
-attacker wrote the standing of the brief, which is why it is not the
-default.
+The alert is in the conversation's first message, with the columns, and the
+provider keeps the conversation so far for each next turn, on Bedrock too
+(tangent's rig-bedrock places the checkpoint after a turn with thinking in
+it, which 0.45.0 would not: vendor/rig-bedrock). `alert_with_prompt: true`
+in the plugin's `config` puts the alert beside the brief instead; it gives
+text an attacker wrote the standing of the brief, which is why it is not the
+default, and with the conversation kept it saves nothing.
 
 `tangent watch` puts each review that stands to the Mac's owner, as a
 notification: one called `malicious`, with a sound, or `unresolved`,

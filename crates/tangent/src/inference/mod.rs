@@ -49,6 +49,9 @@ pub struct InferenceNode {
     /// holds nothing in a run without (a replay), where what is held would
     /// be lost.
     keeps: std::sync::atomic::AtomicBool,
+    /// Whether the provider has refused a conversation its cache
+    /// checkpoint: its turns are then asked without one.
+    uncached: std::sync::atomic::AtomicBool,
 }
 
 fn resolve(config_dir: &Path, file: &Path) -> PathBuf {
@@ -57,6 +60,14 @@ fn resolve(config_dir: &Path, file: &Path) -> PathBuf {
     } else {
         config_dir.join(file)
     }
+}
+
+/// Whether a provider's error is its refusal of a cache checkpoint, which
+/// the same request without one would not get.
+fn refuses_the_cache(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    (e.contains("cachepoint") || e.contains("cache_control") || e.contains("cache point") || e.contains("cache checkpoint"))
+        && (e.contains("400") || e.contains("validation") || e.contains("invalid"))
 }
 
 /// The log target a traced conversation's turns are told at
@@ -113,6 +124,7 @@ impl InferenceNode {
             schema,
             model,
             keeps: std::sync::atomic::AtomicBool::new(false),
+            uncached: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -198,15 +210,21 @@ impl InferenceNode {
         if let Some(t) = self.cfg.temperature {
             turn = turn.temperature(t);
         }
-        if request.get("cache").and_then(Value::as_bool) == Some(true) {
-            // where the provider can: one that cannot at this point of
-            // the conversation answers uncached
+        if !self.cfg.extra.is_empty() {
+            turn = turn.additional_params(Value::Object(self.cfg.extra.clone()));
+        }
+        // The conversation so far is kept by the provider for the next turn
+        // where it can be: the client leaves the checkpoint out where it
+        // knows the provider has none, and a provider that refuses the one
+        // it is sent is asked again without, from then on.
+        let uncached = &self.uncached;
+        let plain = turn.clone();
+        let mut cached = request.get("cache").and_then(Value::as_bool) == Some(true)
+            && !uncached.load(std::sync::atomic::Ordering::Relaxed);
+        if cached {
             turn = turn
                 .cache(CacheRetention::Short)
                 .on_unsupported(OnUnsupported::Ignore);
-        }
-        if !self.cfg.extra.is_empty() {
-            turn = turn.additional_params(Value::Object(self.cfg.extra.clone()));
         }
         // A turn with neither text nor a call (a model that thought and
         // stopped, a server that dropped what it wrote) is asked for again as
@@ -223,7 +241,19 @@ impl InferenceNode {
                 if self.model.stop().finishing() {
                     bail!("tangent is stopping: the turn was not sent");
                 }
-                self.model.send(&self.name, turn.clone()).await?
+                match self.model.send(&self.name, turn.clone()).await {
+                    Err(e) if cached && refuses_the_cache(&format!("{e:#}")) => {
+                        tracing::warn!(
+                            node = %self.name,
+                            "the provider refused the conversation's cache checkpoint, asking without it: {e:#}"
+                        );
+                        uncached.store(true, std::sync::atomic::Ordering::Relaxed);
+                        cached = false;
+                        turn = plain.clone();
+                        self.model.send(&self.name, turn.clone()).await?
+                    }
+                    reply => reply?,
+                }
             };
             // A call the client kept as an item it does not understand is the
             // call it is ([`tool_call`]); the turn then goes back with it so.
@@ -619,7 +649,28 @@ impl InferenceNode {
 
     /// The reply as a JSON object.
     async fn ask(&self, user: String, n: usize) -> Result<Value> {
-        let reply = self.model.send(&self.name, self.request(user, n)).await?;
+        let request = self.request(user, n);
+        let uncached = &self.uncached;
+        let cached = self.cfg.cache && !uncached.load(std::sync::atomic::Ordering::Relaxed);
+        let reply = if cached {
+            let kept = request
+                .clone()
+                .cache(CacheRetention::Short)
+                .on_unsupported(OnUnsupported::Ignore);
+            match self.model.send(&self.name, kept).await {
+                Err(e) if refuses_the_cache(&format!("{e:#}")) => {
+                    tracing::warn!(
+                        node = %self.name,
+                        "the provider refused the prompt's cache checkpoint, asking without it: {e:#}"
+                    );
+                    uncached.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.model.send(&self.name, request).await?
+                }
+                reply => reply?,
+            }
+        } else {
+            self.model.send(&self.name, request).await?
+        };
         // Reasoning comes back as its own block, so the text is the answer.
         let text = reply.text();
         if text.trim().is_empty() {
@@ -1154,6 +1205,7 @@ pub(crate) mod stub {
                 temperature: None,
                 extra,
                 unreached: Default::default(),
+                cache: false,
             },
         }
     }
@@ -1441,6 +1493,16 @@ mod tests {
     /// A plugin's conversation (`model.chat`): the model calls a tool, the
     /// plugin sends the reply's message back with the call's result, and the
     /// model answers.
+    #[test]
+    fn a_refused_cache_checkpoint_is_told_from_other_errors() {
+        assert!(refuses_the_cache(
+            "ProviderResponseError: status 400 Bad Request: ValidationException: cachePoint is not allowed after reasoningContent"
+        ));
+        assert!(refuses_the_cache("HTTP 400: invalid_request_error: cache_control cannot be set here"));
+        assert!(!refuses_the_cache("status 403 Forbidden: Model access is denied"));
+        assert!(!refuses_the_cache("status 429: too many requests"));
+    }
+
     #[tokio::test]
     async fn a_conversation_calls_a_tool_and_takes_its_result() {
         let (url, seen) = stub::model().await;
