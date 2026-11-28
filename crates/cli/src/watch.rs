@@ -204,7 +204,11 @@ pub async fn mac(
     let mac = Mac::new(provider).naming(named)?.watched();
     mac::runs_here(&mac)?;
     needed(&mac.config(), &mac.needs())?;
-    let mode = if provider.is_some() { "hosted" } else { "local" };
+    let mode = if provider.is_some() {
+        "hosted"
+    } else {
+        "local"
+    };
     let models = format!("{pair} · {who}");
     start(Pipeline {
         what: "mac",
@@ -406,7 +410,11 @@ fn stop_this_process() {
     #[cfg(unix)]
     {
         let _ = std::process::Command::new("/bin/sh")
-            .args(["-c", "kill -TERM \"$0\"; sleep 2; kill -TERM \"$0\" 2>/dev/null", &std::process::id().to_string()])
+            .args([
+                "-c",
+                "kill -TERM \"$0\"; sleep 2; kill -TERM \"$0\" 2>/dev/null",
+                &std::process::id().to_string(),
+            ])
             .stdin(std::process::Stdio::null())
             .spawn();
     }
@@ -510,6 +518,65 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Ready {
     }
 }
 
+/// A review as it goes: each turn the runtime tells of a traced conversation
+/// (`tangent_runtime::inference::TRACE`), a line in `agent.ndjson` with the
+/// time, which the app reads a review in progress from. The reviews keep
+/// their own turns, so the file starts over once it is large.
+struct Told(Mutex<std::fs::File>);
+
+const TOLD: &str = "agent.ndjson";
+const TOLD_MOST: u64 = 8 << 20;
+
+impl Told {
+    fn in_dir(dir: &Path) -> Option<Self> {
+        let path = dir.join(TOLD);
+        let large = std::fs::metadata(&path).is_ok_and(|m| m.len() > TOLD_MOST);
+        OpenOptions::new()
+            .create(true)
+            .append(!large)
+            .write(true)
+            .truncate(large)
+            .open(path)
+            .ok()
+            .map(|file| Self(Mutex::new(file)))
+    }
+}
+
+/// A told turn with its time, as its line; None when it is not JSON.
+fn told(line: &str, at: &str) -> Option<String> {
+    let mut line: serde_json::Value = serde_json::from_str(line).ok()?;
+    line.as_object_mut()?.insert("ts".into(), at.into());
+    Some(format!("{line}\n"))
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Told {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target() != tangent_runtime::inference::TRACE {
+            return;
+        }
+        struct Line(String);
+        impl tracing::field::Visit for Line {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "line" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        let mut line = Line(String::new());
+        event.record(&mut line);
+        if let Some(line) = told(&line.0, &crate::status::now_rfc3339()) {
+            use std::io::Write as _;
+            if let Ok(mut file) = self.0.lock() {
+                let _ = file.write_all(line.as_bytes());
+            }
+        }
+    }
+}
+
 /// Routes runtime logs to `watch.log` in `dir` (info+) and only errors to
 /// stderr, when `RUST_LOG` was not set (otherwise `main` already initialized
 /// stderr tracing and `try_init` is a no-op).
@@ -530,12 +597,17 @@ fn init_logging(dir: &Path, ready: Option<Ready>) -> Option<PathBuf> {
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
                 .with_writer(Mutex::new(file))
-                .with_filter(EnvFilter::new("info"))
+                // a traced turn is `agent.ndjson`'s ([`Told`])
+                .with_filter(EnvFilter::new(format!(
+                    "info,{}=off",
+                    tangent_runtime::inference::TRACE
+                )))
         });
     let logged = file_layer.is_some();
     let _ = tracing_subscriber::registry()
         .with(stderr)
         .with(file_layer)
+        .with(Told::in_dir(dir))
         .with(ready)
         .try_init();
     logged.then_some(path)
@@ -711,6 +783,16 @@ async fn signalled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_told_turn_is_a_line_with_its_time() {
+        let line = told(r#"{"kind":"turn","trace":"501|w"}"#, "2026-11-28T12:00:00Z").unwrap();
+        let read: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(read["ts"], "2026-11-28T12:00:00Z");
+        assert_eq!(read["trace"], "501|w");
+        assert!(line.ends_with('\n'));
+        assert!(told("not json", "t").is_none());
+    }
 
     #[test]
     fn a_judge_tried_again_says_why_only_when_it_is_its_credentials() {

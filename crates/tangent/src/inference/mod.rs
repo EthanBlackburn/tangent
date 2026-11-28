@@ -58,6 +58,25 @@ fn resolve(config_dir: &Path, file: &Path) -> PathBuf {
     }
 }
 
+/// The log target a traced conversation's turns are told at
+/// ([`InferenceNode::chat`]).
+pub const TRACE: &str = "tangent::agent";
+
+/// The most of a text a traced turn tells.
+const TOLD: usize = 1500;
+
+/// `text` cut at [`TOLD`].
+fn cut(text: &str) -> String {
+    match text.char_indices().nth(TOLD) {
+        None => text.to_string(),
+        Some((at, _)) => format!(
+            "{}\n[cut: {} more characters]",
+            &text[..at],
+            text[at..].chars().count()
+        ),
+    }
+}
+
 impl InferenceNode {
     pub fn new(
         name: Arc<str>,
@@ -103,8 +122,54 @@ impl InferenceNode {
     /// did not finish is the error: one it failed or refused, one with
     /// neither text nor a call after `retries` more tries, one `max_tokens`
     /// cut with a call in it.
+    ///
+    /// A request with a `trace` (a name for its conversation, the plugin's
+    /// to choose) is one whose turns are told as they happen, each a line of
+    /// JSON logged at target [`TRACE`]: `results` as a turn is asked (what
+    /// the model's last calls were given back, cut), then `turn` (the
+    /// reasoning the model showed, what it said and its calls) or `error`.
     pub async fn chat(&self, request: &str) -> Result<String> {
-        let request: Value = serde_json::from_str(request).context("the request is not JSON")?;
+        let asked: Value = serde_json::from_str(request).context("the request is not JSON")?;
+        let Some(trace) = asked.get("trace").and_then(Value::as_str) else {
+            return self.turn(asked).await;
+        };
+        let tell = |mut line: Value| {
+            line["trace"] = json!(trace);
+            line["node"] = json!(self.name);
+            tracing::info!(target: TRACE, line = %line);
+        };
+        let last = asked["messages"].as_array().and_then(|m| m.last());
+        match last.and_then(|m| m["results"].as_array()) {
+            Some(results) => tell(
+                json!({"kind": "results", "results": results.iter().map(|r| {
+                json!({"name": r["name"], "text": cut(r["text"].as_str().unwrap_or("")),
+                       "failed": r["error"] == true})
+            }).collect::<Vec<_>>()}),
+            ),
+            // the conversation's first turn, or one asked for again
+            None => tell(
+                json!({"kind": "asked", "first": asked["messages"].as_array().is_some_and(|m| m.len() <= 2)}),
+            ),
+        }
+        let reply = self.turn(asked.clone()).await;
+        match &reply {
+            Ok(reply) => {
+                let reply: Value = serde_json::from_str(reply).unwrap_or_default();
+                tell(
+                    json!({"kind": "turn", "thinking": cut(reply["thinking"].as_str().unwrap_or("")),
+                            "said": cut(reply["text"].as_str().unwrap_or("")),
+                            "calls": reply["calls"].as_array().map(|calls| calls.iter().map(|c| {
+                                json!({"name": c["name"], "arguments": c["arguments"]})
+                            }).collect::<Vec<_>>())}),
+                );
+            }
+            Err(e) => tell(json!({"kind": "error", "error": format!("{e:#}")})),
+        }
+        reply
+    }
+
+    /// One turn of [`Self::chat`], its request read.
+    async fn turn(&self, request: Value) -> Result<String> {
         let said = request
             .get("messages")
             .and_then(Value::as_array)
@@ -205,6 +270,17 @@ impl InferenceNode {
             _ if calls.is_empty() => "stop",
             _ => "tool_use",
         };
+        // the reasoning the model showed before the turn, for whoever reads
+        // how a conversation went: a model that shows none has none here
+        let thinking: Vec<String> = content
+            .iter()
+            .filter_map(|block| match block {
+                AssistantContent::Reasoning(r) if !r.text.trim().is_empty() => {
+                    Some(r.text.trim().to_string())
+                }
+                _ => None,
+            })
+            .collect();
         let message = if content == reply.choice {
             reply.message()
         } else {
@@ -214,6 +290,7 @@ impl InferenceNode {
         Ok(json!({
             "message": message,
             "text": text,
+            "thinking": thinking.join("\n\n"),
             "calls": calls,
             "stop": stop,
             "usage": reply.usage,
@@ -1395,6 +1472,8 @@ mod tests {
         assert_eq!(second["text"], "done");
         assert_eq!(second["stop"], "stop");
         assert_eq!(second["calls"], json!([]));
+        // no reasoning shown is none told
+        assert_eq!(second["thinking"], "");
 
         // what the model was sent: the prompt as the system message, the
         // call it made, and the result under the call's id
@@ -1406,6 +1485,16 @@ mod tests {
         let result = messages.iter().find(|m| m["role"] == "tool").unwrap();
         assert_eq!(result["tool_call_id"], "call_1");
         assert!(stub::text(&result["content"]).contains("| 3 |"), "{result}");
+        drop(bodies);
+
+        // a traced turn is the same turn, and the trace is not the model's
+        let traced = node
+            .chat(&json!({"messages": [asked], "tools": tools, "trace": "501|w"}).to_string())
+            .await
+            .unwrap();
+        let traced: Value = serde_json::from_str(&traced).unwrap();
+        assert_eq!(traced["calls"][0]["name"], "query");
+        assert!(!seen.lock().await.last().unwrap().contains("501|w"));
     }
 
     /// Bedrock's `"type": "tool_use"` on a call, which the client keeps as

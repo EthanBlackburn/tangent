@@ -27,8 +27,9 @@
 //! - `report` gives the answer.
 //!
 //! Each alert goes on with `review` (`verdict`: malicious, benign or
-//! unresolved, with `finding` and `check`), the SQL the model ran and what
-//! the review took. A review that fails (the model's content filter stops
+//! unresolved, with `finding` and `check`), the SQL the model ran, its turns
+//! in order (`steps`: the reasoning it showed, each query or file it asked
+//! for and the start of what came back) and what the review took. A review that fails (the model's content filter stops
 //! it, which what an attack leaves in a log can set off; no report within
 //! the queries allowed; tangent stopping) is an `error` in `review`, and the
 //! alert stands.
@@ -67,6 +68,8 @@ export!(Component);
 const RESULT_LIMIT: usize = 12_000;
 /// Rows of one query's result, and characters of one cell: a record whole
 /// or a long command line is cut there, and the `query` tool says so.
+/// The most of a result or a file a step keeps for whoever reads the review.
+const STEP_LIMIT: usize = 1500;
 const ROWS: u32 = 500;
 const CELL: u32 = 2000;
 const QUERY_MS: u32 = 30_000;
@@ -304,6 +307,59 @@ fn shown(mut text: String) -> String {
     text
 }
 
+/// `text` cut at [`STEP_LIMIT`], for a step.
+fn kept(text: &str) -> String {
+    match text.char_indices().nth(STEP_LIMIT) {
+        None => text.to_string(),
+        Some((cut, _)) => format!(
+            "{}\n[cut: {} more characters]",
+            &text[..cut],
+            text[cut..].chars().count()
+        ),
+    }
+}
+
+/// One turn of a review as it is kept: the reasoning the model showed
+/// (`thinking`) and what it said beside its calls (`said`), each only when
+/// there was some, and each call with what it was given back, cut.
+fn step(reply: &Value, calls: &[Value], results: &[Value]) -> Value {
+    let mut step = Map::new();
+    for (key, from) in [("thinking", "thinking"), ("said", "text")] {
+        let text = reply[from].as_str().unwrap_or("").trim();
+        if !text.is_empty() {
+            step.insert(key.into(), json!(kept(text)));
+        }
+    }
+    let did: Vec<Value> = calls
+        .iter()
+        .zip(results)
+        .map(|(call, result)| {
+            let mut did = Map::new();
+            did.insert("tool".into(), call["name"].clone());
+            for key in ["sql", "path"] {
+                if let Some(given) = call["arguments"].get(key) {
+                    did.insert(key.into(), given.clone());
+                }
+            }
+            // a report is the review's answer, which the record has whole
+            if call["name"] != "report" || result["error"] == true {
+                did.insert(
+                    "result".into(),
+                    json!(kept(result["text"].as_str().unwrap_or(""))),
+                );
+            }
+            if result["error"] == true {
+                did.insert("failed".into(), json!(true));
+            }
+            Value::Object(did)
+        })
+        .collect();
+    if !did.is_empty() {
+        step.insert("calls".into(), json!(did));
+    }
+    Value::Object(step)
+}
+
 /// What a review took.
 #[derive(Default)]
 struct Took {
@@ -334,7 +390,7 @@ impl Took {
 }
 
 /// The model's review of one alert: its report or `{"error"}`, the SQL it
-/// ran, and what it took. `converse` is one turn with the model (the request
+/// ran, what it took, and its turns in order ([`step`]). `converse` is one turn with the model (the request
 /// and the reply as `model.chat` has them); `run_query` the model's SQL on
 /// the view, the text to show and whether it ran. `read`, a path's text and
 /// whether it was read, is the `read_file` tool, left out when None; a read
@@ -347,7 +403,7 @@ fn review(
     mut run_query: impl FnMut(&str) -> (String, bool),
     mut read: Option<&mut dyn FnMut(&str) -> (String, bool)>,
     mut converse: impl FnMut(&Value) -> Result<Value, String>,
-) -> (Value, Vec<String>, Took) {
+) -> (Value, Vec<String>, Took, Vec<Value>) {
     let mut first = first_message(alert, held);
     if read.is_some() {
         first = format!("{}\n\n{first}", FILES_BRIEF.trim_end());
@@ -363,18 +419,24 @@ fn review(
     };
     let mut took = Took::default();
     let mut ran: Vec<String> = Vec::new();
+    let mut steps: Vec<Value> = Vec::new();
     // queries and reads asked for, which `max_queries` bounds together
     let mut spent = 0;
     let mut nudged = 0;
     while (took.calls as usize) < max_queries + 6 {
         let reply = match converse(&json!({"messages": messages, "tools": tools, "cache": true})) {
             Ok(reply) => reply,
-            Err(e) => return (json!({"error": e}), ran, took),
+            Err(e) => return (json!({"error": e}), ran, took, steps),
         };
         took.calls += 1;
         took.add(&reply["usage"]);
         if reply["message"].is_null() {
-            return (json!({"error": "the model gave an empty turn"}), ran, took);
+            return (
+                json!({"error": "the model gave an empty turn"}),
+                ran,
+                took,
+                steps,
+            );
         }
         messages.push(reply["message"].clone());
         let calls = reply["calls"].as_array().cloned().unwrap_or_default();
@@ -390,7 +452,10 @@ fn review(
                     false,
                 ),
                 (Some("report"), _) => match checked(given) {
-                    None => return (given.clone(), ran, took),
+                    None => {
+                        steps.push(step(&reply, &calls, &[json!({})]));
+                        return (given.clone(), ran, took, steps);
+                    }
                     Some(wrong) => (wrong.to_string(), false),
                 },
                 (Some("query"), _) | (Some("read_file"), Some(_)) if spent >= max_queries => (
@@ -428,6 +493,7 @@ fn review(
             results
                 .push(json!({"id": call["id"], "name": call["name"], "text": text, "error": !ok}));
         }
+        steps.push(step(&reply, &calls, &results));
         if calls.is_empty() {
             if reply["stop"] == "length" || nudged >= 2 {
                 break;
@@ -438,7 +504,12 @@ fn review(
             messages.push(json!({"role": "user", "results": results}));
         }
     }
-    (json!({"error": "the model gave no report"}), ran, took)
+    (
+        json!({"error": "the model gave no report"}),
+        ran,
+        took,
+        steps,
+    )
 }
 
 /// A string as SQL writes one.
@@ -753,7 +824,16 @@ fn reviewed(alert: &Value) -> Value {
     // lake holds, the days after the alert among them.
     let Some(until) = until else {
         let error = json!({"error": "the alert has no time in UTC (`session.to`, `ts`) to end the table at"});
-        return record(alert, &node, error, &[], &Took::default(), began, false);
+        return record(
+            alert,
+            &node,
+            error,
+            &[],
+            &[],
+            &Took::default(),
+            began,
+            false,
+        );
     };
     let views = vec![(
         "records".to_string(),
@@ -811,11 +891,23 @@ fn reviewed(alert: &Value) -> Value {
     };
     let read: Option<&mut dyn FnMut(&str) -> (String, bool)> =
         if files { Some(&mut read) } else { None };
-    let (answer, ran, took) = match &held {
+    let trace = format!(
+        "{}|{}",
+        alert
+            .pointer("/session/id")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        alert
+            .pointer("/session/window")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    );
+    let (answer, ran, took, steps) = match &held {
         Err(e) => (
             json!({"error": format!("reading the lake: {e}")}),
             Vec::new(),
             Took::default(),
+            Vec::new(),
         ),
         Ok(held) => review(
             alert,
@@ -833,23 +925,29 @@ fn reviewed(alert: &Value) -> Value {
             },
             read,
             |request| {
+                // the runtime tells a traced conversation's turns as they
+                // happen, under the alert's session and window
+                let mut request = request.clone();
+                request["trace"] = json!(trace);
                 let reply = model::chat(&node, &request.to_string())?;
                 serde_json::from_str(&reply).map_err(|e| format!("the model's reply: {e}"))
             },
         ),
     };
     let early = held.is_ok_and(|held| held["whole"] != true);
-    record(alert, &node, answer, &ran, &took, began, early)
+    record(alert, &node, answer, &ran, &steps, &took, began, early)
 }
 
 /// The record that goes on: the alert's session and verdict with its
-/// review, the SQL the model ran and what the review took. `early` marks a
+/// review, the SQL the model ran, its turns (`steps`: what it thought, what
+/// it asked and what came back, cut) and what the review took. `early` marks a
 /// review that began before the lake had the alert's last records.
 fn record(
     alert: &Value,
     node: &str,
     review: Value,
     ran: &[String],
+    steps: &[Value],
     took: &Took,
     began: u64,
     early: bool,
@@ -873,6 +971,9 @@ fn record(
         out.insert("early".into(), json!(true));
     }
     out.insert("queries".into(), json!(ran));
+    if !steps.is_empty() {
+        out.insert("steps".into(), json!(steps));
+    }
     out.insert("took".into(), took);
     out.insert("model".into(), json!(node));
     Value::Object(out)
@@ -962,7 +1063,7 @@ mod tests {
     #[test]
     fn queries_then_a_report() {
         let mut asked = Vec::new();
-        let (answer, ran, took) = review(
+        let (answer, ran, took, _) = review(
             &alert(),
             &held(),
             20,
@@ -987,6 +1088,58 @@ mod tests {
             (Some(3), Some(30))
         );
         assert_eq!(took["cache_read_tokens"], 12);
+    }
+
+    /// What a review's record keeps of how it went: each turn's reasoning
+    /// and words, its calls and the start of what each was given back.
+    #[test]
+    fn the_steps_are_each_turn_s_thinking_its_calls_and_what_came_back() {
+        let mut turns = vec![
+            json!({"thinking": "The key read is the lead: who read it?", "text": "",
+                   "calls": [{"id": 1, "name": "query", "arguments": {"sql": "SELECT 1"}},
+                             {"id": 2, "name": "query", "arguments": {"sql": "SELECT nope"}}]}),
+            json!({"thinking": "", "text": "It was npm's own script.",
+                   "calls": [{"id": 3, "name": "report",
+                              "arguments": {"finding": "npm read its own token.", "verdict": "benign"}}]}),
+        ]
+        .into_iter();
+        let (answer, _, _, steps) = review(
+            &alert(),
+            &held(),
+            20,
+            false,
+            |sql| match sql {
+                "SELECT 1" => ("x".repeat(STEP_LIMIT + 7), true),
+                _ => ("error: no column nope".into(), false),
+            },
+            None,
+            |_| {
+                let mut turn = turns.next().unwrap();
+                turn["message"] = json!({"role": "assistant", "content": []});
+                turn["stop"] = json!("tool_use");
+                Ok(turn)
+            },
+        );
+        assert_eq!(answer["verdict"], "benign");
+        assert_eq!(steps.len(), 2, "{steps:?}");
+        assert_eq!(
+            steps[0]["thinking"],
+            "The key read is the lead: who read it?"
+        );
+        assert!(steps[0].get("said").is_none());
+        let asked = &steps[0]["calls"];
+        assert_eq!(
+            (&asked[0]["tool"], &asked[0]["sql"]),
+            (&json!("query"), &json!("SELECT 1"))
+        );
+        let result = asked[0]["result"].as_str().unwrap();
+        assert!(result.ends_with("[cut: 7 more characters]"), "{result}");
+        assert!(asked[0].get("failed").is_none());
+        assert_eq!(asked[1]["result"], "error: no column nope");
+        assert_eq!(asked[1]["failed"], true);
+        // the report is the review, which the record holds whole
+        assert_eq!(steps[1]["said"], "It was npm's own script.");
+        assert_eq!(steps[1]["calls"], json!([{"tool": "report"}]));
     }
 
     #[test]
@@ -1029,7 +1182,7 @@ mod tests {
 
     #[test]
     fn a_report_with_no_such_verdict_is_sent_back() {
-        let (answer, _, took) = review(
+        let (answer, _, took, _) = review(
             &alert(),
             &held(),
             20,
@@ -1051,7 +1204,7 @@ mod tests {
             vec![("query", json!({"sql": "SELECT 1"})), report("benign")],
             vec![report("malicious")],
         ]);
-        let (answer, ran, _) = review(
+        let (answer, ran, _, _) = review(
             &alert(),
             &held(),
             20,
@@ -1074,7 +1227,7 @@ mod tests {
     /// the queries allowed is spent.
     #[test]
     fn a_tool_that_is_not_one_is_not_run() {
-        let (answer, ran, _) = review(
+        let (answer, ran, _, _) = review(
             &alert(),
             &held(),
             1,
@@ -1104,7 +1257,7 @@ mod tests {
     fn queries_past_the_limit_are_not_run() {
         let mut run = 0;
         let query = || ("query", json!({"sql": "SELECT 1"}));
-        let (answer, ran, _) = review(
+        let (answer, ran, _, _) = review(
             &alert(),
             &held(),
             2,
@@ -1125,7 +1278,7 @@ mod tests {
 
     #[test]
     fn an_answer_in_prose_is_asked_for_as_a_report_and_never_reporting_is_an_error() {
-        let (answer, _, _) = review(
+        let (answer, _, _, _) = review(
             &alert(),
             &held(),
             20,
@@ -1135,7 +1288,7 @@ mod tests {
             model(vec![vec![], vec![report("benign")]]),
         );
         assert_eq!(answer["verdict"], "benign");
-        let (answer, _, took) = review(
+        let (answer, _, took, _) = review(
             &alert(),
             &held(),
             20,
@@ -1150,7 +1303,7 @@ mod tests {
 
     #[test]
     fn a_model_that_fails_is_the_error_and_the_alert_stands() {
-        let (answer, ran, _) = review(
+        let (answer, ran, _, _) = review(
             &alert(),
             &held(),
             20,
@@ -1497,7 +1650,7 @@ mod tests {
         ]);
         let mut read = |path: &str| (format!("{path}: 2 bytes\n\n{{}}"), true);
         let mut refused = |_: &str| ("not read: the log gives no reason".to_string(), false);
-        let (_, _, took) = review(
+        let (_, _, took, _) = review(
             &alert(),
             &held(),
             1,
@@ -1514,7 +1667,7 @@ mod tests {
             took.files.is_empty(),
             "a file that was not read is not listed"
         );
-        let (answer, ran, took) = review(
+        let (answer, ran, took, _) = review(
             &alert(),
             &held(),
             2,
