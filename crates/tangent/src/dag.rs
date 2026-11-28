@@ -225,6 +225,7 @@ impl DagRuntime {
                 expire_after: Duration::from_millis(p.expire_after_ms),
                 max_age: p.max_age_ms.map(Duration::from_millis),
                 history: p.history,
+                probe_every: group::PROBE_EVERY,
             };
             let (grouper, task) = group::spawn(
                 Arc::clone(name),
@@ -1067,6 +1068,7 @@ mod tests {
                 expire_after: Duration::from_secs(1800),
                 max_age: None,
                 history: 0,
+                probe_every: group::PROBE_EVERY,
             },
             Arc::new(Slow(Arc::clone(&through), walk)),
             store,

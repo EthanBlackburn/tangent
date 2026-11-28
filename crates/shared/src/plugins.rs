@@ -70,10 +70,11 @@ pub struct PluginConfig {
     /// How many times in all a call is made whose last request of a model
     /// or of the lake went unanswered for a reason another time may not
     /// have: the model was not reached or would not serve the key, a query
-    /// ran out of time. Its records are kept in the state store and go
-    /// through the plugin again a minute later, and what the failed call
-    /// wrote is left out; the last try's output goes on whatever it is. 1,
-    /// the default, is once. More needs a state store the run can write.
+    /// ran out of time. A grouped plugin's group goes back to be gathered,
+    /// and is run again with what has joined its key since; an ungrouped
+    /// plugin's records are kept in the state store and go through it a
+    /// minute later. What the failed call wrote is left out; the last
+    /// try's output goes on whatever it is. 1, the default, is once.
     #[serde(default = "default_attempts")]
     pub attempts: usize,
 
