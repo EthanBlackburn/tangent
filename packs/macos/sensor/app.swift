@@ -1922,15 +1922,18 @@ private struct HealthStage: View {
                     }
                     if !s.usage.isEmpty {
                         let u = s.usage
-                        group("Tokens and cost · this run") {
+                        let measured = u["measured_hours"]
+                        let none = measured == nil ? "not yet" : "no listed price"
+                        group(measured.map { String(format: "Tokens and cost · from the last %.1f h measured", $0) }
+                            ?? "Tokens and cost · five minutes are measured first") {
                             row("Output speed", ["judge", "reviewer"].compactMap { node in
                                 u["speed.\(node)"].map { "\(node) \(Int($0.rounded())) tok/s" }
                             }.joined(separator: "  ·  "))
                             row("Tokens per activity", u["tokens_per_activity"].map(counted) ?? "–")
-                            row("Cost per activity", u["cost_per_activity"].map(dollars) ?? "no listed price")
-                            row("Cost per day", u["cost_per_day"].map(dollars) ?? "no listed price")
+                            row("Cost per activity", u["cost_per_activity"].map(dollars) ?? none)
+                            row("Cost per day", u["cost_per_day"].map(dollars) ?? none)
                         }
-                        group("Activity · at this run's rate") {
+                        group("Activity") {
                             row("Per second", u["activities_per_second"].map { String(format: "%.2f", $0) } ?? "–")
                             row("Per day", u["activities_per_day"].map(counted) ?? "–")
                         }

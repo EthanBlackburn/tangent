@@ -461,8 +461,12 @@ pub struct Follow {
     /// The seconds from each alert of this run being flagged to its
     /// review's verdict, its wait for a reviewer included.
     reviewed: Vec<f64>,
-    /// When this run began to follow: what its rates are over.
+    /// When the ledger was last added to.
     began: Instant,
+    /// What the models were asked and what it cost, by the hour.
+    ledger: status::Ledger,
+    /// The run's cost, tokens and sessions checked as last added to it.
+    counted: (f64, f64, f64),
     /// The same for the alerts the review being read settles.
     settled: Vec<f64>,
     /// What each model last said of its credentials: the judge's, then the
@@ -514,6 +518,8 @@ impl Follow {
             new_alerts: Vec::new(),
             reviewed: Vec::new(),
             began: Instant::now(),
+            ledger: status::Ledger::open(dir),
+            counted: (0.0, 0.0, 0.0),
             settled: Vec::new(),
             judge_auth: None,
             review_auth: None,
@@ -713,14 +719,27 @@ impl Follow {
         }
         if let Some(status) = &self.status {
             // the judge's from the runtime's own count of its requests
-            status.set_usage(status::usage(
-                &[
-                    ("judge", tangent_runtime::inference_totals("judge")),
-                    ("reviewer", tangent_runtime::inference_totals("reviewer")),
-                ],
-                self.judged,
+            let nodes = [
+                ("judge", tangent_runtime::inference_totals("judge")),
+                ("reviewer", tangent_runtime::inference_totals("reviewer")),
+            ];
+            // what was spent and checked since the last time, to the hour
+            let now = (
+                nodes.iter().map(|(_, t)| t.cost).sum::<f64>(),
+                nodes.iter().map(|(_, t)| t.tokens.all()).sum::<u64>() as f64,
+                self.judged as f64,
+            );
+            let hour = status::hour_now();
+            self.ledger.add(
+                hour,
+                now.0 - self.counted.0,
+                now.1 - self.counted.1,
+                now.2 - self.counted.2,
                 self.began.elapsed().as_secs_f64(),
-            ));
+            );
+            self.counted = now;
+            self.began = Instant::now();
+            status.set_usage(status::usage(&nodes, &self.ledger.day(hour)));
             status.set_timing(
                 status::percentiles(&tangent_runtime::inference_recent("judge")),
                 status::percentiles(&self.reviewed),

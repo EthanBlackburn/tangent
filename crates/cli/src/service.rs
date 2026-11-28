@@ -599,12 +599,20 @@ fn health_lines(
         let unpriced = || "unknown: a model has no listed price".to_string();
         lines.push((
             "Cost per activity",
-            n("/cost_per_activity").map_or_else(unpriced, dollars),
+            match (n("/cost_per_activity"), n("/measured_hours")) {
+                (Some(v), _) => dollars(v),
+                (None, None) => "not yet".to_string(),
+                _ => unpriced(),
+            },
             false,
         ));
         lines.push((
             "Cost per day",
-            n("/cost_per_day").map_or_else(unpriced, |v| format!("{} at this run's rate", dollars(v))),
+            match (n("/cost_per_day"), n("/measured_hours")) {
+                (Some(v), Some(h)) => format!("{} from the last {h:.1} h measured", dollars(v)),
+                (None, None) => "not yet: five minutes are measured first".to_string(),
+                _ => unpriced(),
+            },
             false,
         ));
         if let (Some(second), Some(day)) = (n("/activities_per_second"), n("/activities_per_day")) {
@@ -1392,7 +1400,7 @@ mod tests {
 
         let used = snap(&|v| {
             v["usage"] = json!({"output_tokens_per_second": {"judge": 84.6}, "tokens_per_activity": 5234.0,
-                "cost_per_activity": 0.0041, "cost_per_day": 2.4,
+                "cost_per_activity": 0.0041, "cost_per_day": 2.4, "measured_hours": 6.25,
                 "activities_per_second": 0.118, "activities_per_day": 10195.0})
         });
         let (_, lines) = health_lines(Some(&used), true, true);
@@ -1400,7 +1408,7 @@ mod tests {
         assert_eq!(said("Output speed"), "judge 85 tok/s");
         assert_eq!(said("Tokens per activity"), "5.2k");
         assert_eq!(said("Cost per activity"), "$0.0041");
-        assert_eq!(said("Cost per day"), "$2.40 at this run's rate");
+        assert_eq!(said("Cost per day"), "$2.40 from the last 6.2 h measured");
         assert_eq!(said("Activities"), "0.12/s · 10.2k/day");
     }
 
