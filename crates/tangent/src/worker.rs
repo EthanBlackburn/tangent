@@ -16,7 +16,7 @@ use wasmtime::component::{Component, Resource};
 
 use crate::group::{Dispatch, Group};
 use crate::inference::{lines, Nodes};
-use crate::pending::Pending;
+use crate::pending::{Forget, Pending};
 use crate::router::{RefCountAck, Router};
 use crate::stop::Stop;
 use crate::wasm::host::JsonLogView;
@@ -137,6 +137,110 @@ pub struct Worker {
     /// None in a replay, and in a run that only reads its state: there they
     /// go nowhere, and are not acked.
     pending: Option<Arc<Pending>>,
+    /// The way back for what is held for a model that was not reached; none
+    /// where nothing is kept.
+    again: Option<Arc<Again>>,
+}
+
+/// How long records held for a model that was not reached (`unreached:
+/// hold`) wait before they go back to its node, and how often a model that
+/// is down is tried.
+const ASKS_AGAIN_EVERY: Duration = Duration::from_secs(60);
+
+/// The way back for records an inference node holds because its model was
+/// not reached (`unreached: hold`). The worker that held them sends them to
+/// their node again after a while, as a group through the workers' queues:
+/// they wait there as any group does, and a model that is still down holds
+/// them again. They are kept where a stop's are meanwhile, so a start in
+/// between hands them back too.
+pub(crate) struct Again {
+    pending: Arc<Pending>,
+    nodes: Nodes,
+    /// The workers' queues of whole groups. Weak: a queue closes when its
+    /// pool is done with it, whatever still waits here.
+    queues: Vec<mpsc::WeakSender<(Group, Done)>>,
+    rr: AtomicUsize,
+    in_flight: Arc<AtomicUsize>,
+    stop: Stop,
+    every: Duration,
+}
+
+impl Again {
+    /// Sends what is saved under `key` back through inference node `name`,
+    /// in `every` from now: or later, while its model is down and another
+    /// request is the one trying it. A run that stops first leaves the
+    /// records saved for the next start.
+    fn later(self: &Arc<Self>, name: &Arc<str>, key: String) {
+        let (again, name) = (Arc::clone(self), Arc::clone(name));
+        tokio::spawn(async move {
+            loop {
+                let slept = tokio::time::sleep(again.every);
+                if again.stop.unless_finishing(slept).await.is_none() {
+                    return;
+                }
+                let Some(node) = again.nodes.get(&name) else {
+                    return;
+                };
+                if !node.takes_again(again.every) {
+                    continue;
+                }
+                let saved = match again.pending.one(&key).await {
+                    Ok(Some(saved)) => saved,
+                    // forgotten: a start's hand-back took it through
+                    Ok(None) => return,
+                    Err(e) => {
+                        tracing::warn!(node = %name, "what is held for the model could not be read: {e:#}");
+                        continue;
+                    }
+                };
+                let group = Group {
+                    node: saved.node,
+                    records: saved.records,
+                    context: 0,
+                    done: Arc::new(Forget {
+                        pending: Arc::clone(&again.pending),
+                        key,
+                    }),
+                    saved: true,
+                };
+                let queues: Vec<_> = again.queues.iter().filter_map(|q| q.upgrade()).collect();
+                let start = again.rr.fetch_add(1, Ordering::Relaxed);
+                if let Err(e) = send_group(&queues, start, &again.in_flight, group).await {
+                    tracing::warn!(node = %name, "held records could not reach a worker, and stay held: {e:#}");
+                }
+                return;
+            }
+        });
+    }
+}
+
+/// A whole group to one of the workers' queues, the first with room from
+/// `start` on, counted in flight until its walk is done with it or it is
+/// dropped on the way.
+async fn send_group(
+    queues: &[mpsc::Sender<(Group, Done)>],
+    start: usize,
+    in_flight: &Arc<AtomicUsize>,
+    group: Group,
+) -> Result<()> {
+    let n = queues.len();
+    if n == 0 {
+        bail!("worker pool is closed");
+    }
+    let records = group.records.len();
+    in_flight.fetch_add(records, Ordering::AcqRel);
+    let mut job = (group, Done(Arc::clone(in_flight), records));
+    let start = start % n;
+    for i in 0..n {
+        match queues[(start + i) % n].try_send(job) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Full(j)) | Err(TrySendError::Closed(j)) => job = j,
+        }
+    }
+    if queues[start].send(job).await.is_err() {
+        bail!("all workers unavailable");
+    }
+    Ok(())
 }
 
 /// The records in a node's output frames.
@@ -363,7 +467,7 @@ impl Worker {
                                 // The stop kept a turn from the model: what
                                 // the plugin took waits for the next start.
                                 Some(cut) if self.pending.is_some() => {
-                                    if !save(&self.pending, to, &cut).await {
+                                    if save(&self.pending, to, &cut).await.is_none() {
                                         return Ok(());
                                     }
                                     Vec::new()
@@ -377,8 +481,13 @@ impl Worker {
                             run_inference(&self.inference, name, &views, &self.stop).await?;
                         // Not sent, or ended: saved for the next start, or
                         // with nowhere to save the walk ends here, unacked.
-                        if !unsent.is_empty() && !save(&self.pending, to, &unsent).await {
-                            return Ok(());
+                        // Held for a model that was not reached, they go
+                        // back to the node in a while.
+                        if !unsent.is_empty() {
+                            let Some(key) = save(&self.pending, to, &unsent).await else {
+                                return Ok(());
+                            };
+                            self.ask_again(name, key);
                         }
                         out
                     }
@@ -434,8 +543,11 @@ impl Worker {
             NodeRef::Inference { name } => {
                 let (out, unsent) =
                     run_inference(&self.inference, name, &g.records, &self.stop).await?;
-                if !unsent.is_empty() && !save(&self.pending, &g.node, &unsent).await {
-                    return Ok(());
+                if !unsent.is_empty() {
+                    let Some(key) = save(&self.pending, &g.node, &unsent).await else {
+                        return Ok(());
+                    };
+                    self.ask_again(name, key);
                 }
                 out
             }
@@ -447,6 +559,15 @@ impl Worker {
             VecDeque::from([(g.node, Hop::Frames(out))])
         };
         self.walk(queue, vec![g.done]).await
+    }
+
+    /// Records just saved under `key` for inference node `name` go back to
+    /// it in a while, unless it is the stop that kept them from the model:
+    /// those wait for the next start.
+    fn ask_again(&self, name: &Arc<str>, key: String) {
+        if let (Some(again), false) = (&self.again, self.stop.finishing()) {
+            again.later(name, key);
+        }
     }
 
     /// The records plugin `name`'s probe takes, each marked in `taken`.
@@ -577,18 +698,21 @@ impl Worker {
     }
 }
 
-/// Records kept from a model by the stop, saved for `node` until the next
-/// start. False when there is nowhere to save them, or the save failed: the
-/// walk that held them ends, and its source is not acked. A free function
-/// for the reason [`run_inference`] is one.
-async fn save(pending: &Option<Arc<Pending>>, node: &NodeRef, records: &[JsonLogView]) -> bool {
-    let Some(pending) = pending else {
-        return false;
-    };
+/// Records kept from a model, by the stop or because it was not reached,
+/// saved for `node` until they are handed back: the key they are under.
+/// None when there is nowhere to save them, or the save failed: the walk
+/// that held them ends, and its source is not acked. A free function for
+/// the reason [`run_inference`] is one.
+async fn save(
+    pending: &Option<Arc<Pending>>,
+    node: &NodeRef,
+    records: &[JsonLogView],
+) -> Option<String> {
+    let pending = pending.as_ref()?;
     match pending.save(node, records).await {
-        Ok(()) => {
-            tracing::info!(?node, records = records.len(), "saved for the next start");
-            true
+        Ok(key) => {
+            tracing::info!(?node, records = records.len(), "saved to be handed back");
+            key
         }
         Err(e) => {
             tracing::error!(
@@ -596,7 +720,7 @@ async fn save(pending: &Option<Arc<Pending>>, node: &NodeRef, records: &[JsonLog
                 records = records.len(),
                 "could not be saved, and are left out: {e:#}"
             );
-            false
+            None
         }
     }
 }
@@ -718,11 +842,29 @@ impl WorkerPool {
         let in_flight = router.in_flight_counter();
 
         let ch_capacity = 4096;
-        for (i, (engine, comps)) in engines.into_iter().zip(components).enumerate() {
-            let (tx, rx) = mpsc::channel::<Record>(ch_capacity);
-            senders.push(tx);
+        // Every worker's queue of groups first: what a worker holds for a
+        // model goes back through any of them.
+        let mut group_queues = Vec::with_capacity(size);
+        for _ in 0..engines.len() {
             let (group_tx, groups) = mpsc::channel::<(Group, Done)>(16);
             group_senders.push(group_tx);
+            group_queues.push(groups);
+        }
+        let again = pending.as_ref().map(|pending| {
+            Arc::new(Again {
+                pending: Arc::clone(pending),
+                nodes: Arc::clone(&inference),
+                queues: group_senders.iter().map(mpsc::Sender::downgrade).collect(),
+                rr: AtomicUsize::new(0),
+                in_flight: Arc::clone(&in_flight),
+                stop: stop.clone(),
+                every: ASKS_AGAIN_EVERY,
+            })
+        });
+        let engines = engines.into_iter().zip(components).zip(group_queues);
+        for (i, ((engine, comps), groups)) in engines.enumerate() {
+            let (tx, rx) = mpsc::channel::<Record>(ch_capacity);
+            senders.push(tx);
 
             let mut mappers = Mappers::load_all(&engine, &comps).await?;
             if let Some(first) = mappers.mappers.first_mut() {
@@ -761,6 +903,7 @@ impl WorkerPool {
                 in_flight: Arc::clone(&in_flight),
                 stop: stop.clone(),
                 pending: pending.clone(),
+                again: again.clone(),
             };
             let h = tokio::spawn(async move {
                 if let Err(e) = worker.run().await {
@@ -832,26 +975,8 @@ impl WorkerPool {
 #[async_trait]
 impl Dispatch for WorkerPool {
     async fn dispatch(&self, group: Group) -> Result<()> {
-        let n = self.group_senders.len();
-        if n == 0 {
-            bail!("worker pool is closed");
-        }
-        // Counted until the group's walk is done with it, or the group is
-        // dropped on the way: a worker gone with groups in its queue.
-        let records = group.records.len();
-        self.in_flight.fetch_add(records, Ordering::AcqRel);
-        let mut job = (group, Done(Arc::clone(&self.in_flight), records));
-        let start = self.rr.fetch_add(1, Ordering::Relaxed) % n;
-        for i in 0..n {
-            match self.group_senders[(start + i) % n].try_send(job) {
-                Ok(()) => return Ok(()),
-                Err(TrySendError::Full(j)) | Err(TrySendError::Closed(j)) => job = j,
-            }
-        }
-        if self.group_senders[start].send(job).await.is_err() {
-            bail!("all workers unavailable");
-        }
-        Ok(())
+        let start = self.rr.fetch_add(1, Ordering::Relaxed);
+        send_group(&self.group_senders, start, &self.in_flight, group).await
     }
 }
 
@@ -872,7 +997,7 @@ impl WorkerPool {
 mod tests {
     use super::*;
     use crate::inference::stub;
-    use crate::pending::{Forget, Saved};
+    use crate::pending::Saved;
     use crate::sinks::manager::{Sink, SinkManager, SinkWrite};
     use crate::state::StateStore;
     use crate::wasm::engine::WasmEngine;
@@ -1007,6 +1132,7 @@ mod tests {
             in_flight: Arc::clone(&in_flight),
             stop: Stop::default(),
             pending: None,
+            again: None,
         };
         let handle = tokio::spawn(worker.run());
 
@@ -1183,6 +1309,7 @@ mod tests {
             in_flight: Arc::clone(&in_flight),
             stop: stop.clone(),
             pending: None,
+            again: None,
         };
         let handle = tokio::spawn(worker.run());
 
@@ -1248,17 +1375,6 @@ mod tests {
     /// then it is judged, reaches the sink and is forgotten.
     #[tokio::test]
     async fn a_record_held_for_a_model_is_asked_again_until_it_answers() {
-        struct ToWorker(mpsc::Sender<(Group, Done)>, Arc<Router>);
-        #[async_trait::async_trait]
-        impl crate::group::Dispatch for ToWorker {
-            async fn dispatch(&self, group: Group) -> Result<()> {
-                let n = group.records.len();
-                self.1.in_flight_counter().fetch_add(n, Ordering::AcqRel);
-                let done = Done(self.1.in_flight_counter(), n);
-                self.0.send((group, done)).await.ok().context("the worker is gone")
-            }
-        }
-
         let dir = stub::dir("held");
         let source = NodeRef::Source {
             name: Arc::from("actors"),
@@ -1289,9 +1405,19 @@ mod tests {
         nodes["judge"].keep(true);
         let (groups_tx, groups) = mpsc::channel(4);
         let (tx, rx) = mpsc::channel(4);
-        let running = tokio::spawn(
-            worker(&router, Arc::clone(&nodes), &stop, &pending, rx, groups).run(),
-        );
+        // the worker's own way back for what it holds, as a run gives it
+        let again = Arc::new(Again {
+            pending: Arc::clone(&pending),
+            nodes: Arc::clone(&nodes),
+            queues: vec![groups_tx.downgrade()],
+            rr: AtomicUsize::new(0),
+            in_flight: router.in_flight_counter(),
+            stop: stop.clone(),
+            every: Duration::from_millis(40),
+        });
+        let mut held = worker(&router, Arc::clone(&nodes), &stop, &pending, rx, groups);
+        held.again = Some(again);
+        let running = tokio::spawn(held.run());
         let ack = Arc::new(CountingAck::default());
         router.in_flight_counter().fetch_add(1, Ordering::AcqRel);
         tx.send(Record {
@@ -1308,16 +1434,11 @@ mod tests {
         })
         .await
         .expect("the record is held");
-        assert!(nodes["judge"].down());
-        assert!(sink.writes.lock().await.is_empty(), "no error goes on in its place");
-
-        let again = crate::dag::ask_again(
-            Arc::clone(&nodes),
-            Arc::clone(&pending),
-            Arc::new(ToWorker(groups_tx.clone(), Arc::clone(&router))),
-            stop.clone(),
-            Duration::from_millis(40),
+        assert!(
+            sink.writes.lock().await.is_empty(),
+            "no error goes on in its place"
         );
+
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let judged = !sink.writes.lock().await.is_empty();
@@ -1329,7 +1450,6 @@ mod tests {
         })
         .await
         .expect("it is judged once the model answers");
-        again.abort();
         assert_eq!(seen.lock().await.len(), 3, "asked once, and twice again");
         assert!(!nodes["judge"].down());
         let writes = sink.writes.lock().await;
@@ -1342,7 +1462,6 @@ mod tests {
         assert_eq!(lines[0]["judge"]["flag"], true, "{lines:?}");
         drop(writes);
         drop((tx, groups_tx));
-        let _ = again.await;
         running.await.unwrap().unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1382,6 +1501,7 @@ mod tests {
             in_flight: router.in_flight_counter(),
             stop: stop.clone(),
             pending: Some(Arc::clone(pending)),
+            again: None,
         }
     }
 
@@ -1468,7 +1588,6 @@ mod tests {
                 done: Arc::new(Forget {
                     pending: Arc::clone(&pending),
                     key,
-                    out: None,
                 }),
                 saved: true,
             };
@@ -1638,6 +1757,7 @@ mod tests {
             in_flight: Arc::clone(&in_flight),
             stop: Stop::default(),
             pending: None,
+            again: None,
         };
         let handle = tokio::spawn(worker.run());
 

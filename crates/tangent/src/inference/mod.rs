@@ -238,7 +238,8 @@ impl InferenceNode {
     /// model's places is left unsent, and the ones out are waited for.
     /// Tells the node the run keeps what it holds ([`Self::holds`]).
     pub fn keep(&self, keeps: bool) {
-        self.keeps.store(keeps, std::sync::atomic::Ordering::Relaxed);
+        self.keeps
+            .store(keeps, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether records the model could not be asked about are held to be
@@ -251,6 +252,12 @@ impl InferenceNode {
     /// Whether its model's last request went unanswered.
     pub fn down(&self) -> bool {
         self.model.down()
+    }
+
+    /// Whether held records may go back to it now: all of them once its
+    /// model answers, and while it is down one request in `every`.
+    pub fn takes_again(&self, every: std::time::Duration) -> bool {
+        !self.model.down() || self.model.probe(every)
     }
 
     pub async fn annotate_unsent(&self, records: Vec<Value>) -> Vec<Option<Value>> {
@@ -1687,8 +1694,23 @@ mod tests {
         let out = holds.annotate_unsent(vec![json!({"id": 1})]).await;
         assert!(out[0].is_some(), "nowhere to keep it: {out:?}");
         holds.keep(true);
-        let out = holds.annotate_unsent(vec![json!({"id": 1}), json!({"id": 2})]).await;
-        assert_eq!(out, [None, None], "held, with no error in the answer's place");
+        let out = holds
+            .annotate_unsent(vec![json!({"id": 1}), json!({"id": 2})])
+            .await;
+        assert_eq!(
+            out,
+            [None, None],
+            "held, with no error in the answer's place"
+        );
+        // down, it takes back one request in a while, and not the rest
+        let every = std::time::Duration::from_secs(60);
+        assert!(holds.down());
+        assert!(holds.takes_again(every), "the one that tries it");
+        assert!(!holds.takes_again(every), "the rest wait behind it");
+        assert!(
+            holds.takes_again(std::time::Duration::ZERO),
+            "and once the while is over"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

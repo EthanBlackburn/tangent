@@ -34,6 +34,8 @@ pub struct Model {
     /// Whether its last request ended [`Unreached`]. What waits for it is
     /// then asked again one request at a time, not all at once.
     down: std::sync::atomic::AtomicBool,
+    /// When it was last tried while down ([`Self::probe`]).
+    probed: parking_lot::Mutex<Option<std::time::Instant>>,
 }
 
 /// A request that got no answer to read, for a reason another time may not
@@ -216,12 +218,25 @@ impl Model {
             places,
             stop,
             down: std::sync::atomic::AtomicBool::new(false),
+            probed: parking_lot::Mutex::new(None),
         })
     }
 
     /// Whether the last request to it ended [`Unreached`].
     pub fn down(&self) -> bool {
         self.down.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether the caller is the one to try a model that is down: true once
+    /// in `every`, so an outage of hours is a request each `every` and not
+    /// one for each record that waits.
+    pub fn probe(&self, every: Duration) -> bool {
+        let mut probed = self.probed.lock();
+        if probed.is_some_and(|at| at.elapsed() < every) {
+            return false;
+        }
+        *probed = Some(std::time::Instant::now());
+        true
     }
 
     pub fn stop(&self) -> &Stop {

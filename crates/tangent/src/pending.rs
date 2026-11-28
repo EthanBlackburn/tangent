@@ -50,10 +50,11 @@ impl Pending {
     }
 
     /// Keeps `records` for `node`, a plugin or an inference node, until the
-    /// next start. They never expire.
-    pub async fn save(&self, node: &NodeRef, records: &[JsonLogView]) -> Result<()> {
+    /// next start, under the key given back: none for no records. They
+    /// never expire.
+    pub async fn save(&self, node: &NodeRef, records: &[JsonLogView]) -> Result<Option<String>> {
         if records.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let (kind, name) = match node {
             NodeRef::Plugin { name } => ("plugin", name),
@@ -67,7 +68,21 @@ impl Pending {
         // In the order saved, which is the order read back.
         let key = format!("{now:013}-{:08}", self.seq.fetch_add(1, Ordering::Relaxed));
         let value = StateValue::Json(json!({"kind": kind, "name": **name, "records": lines}));
-        self.store.set(PENDING_NS, &key, &value, Some(0)).await
+        self.store.set(PENDING_NS, &key, &value, Some(0)).await?;
+        Ok(Some(key))
+    }
+
+    /// What is saved under `key`: none once it is forgotten.
+    pub async fn one(&self, key: &str) -> Result<Option<Saved>> {
+        let Some(value) = self.store.get(PENDING_NS, key).await? else {
+            return Ok(None);
+        };
+        let (node, records) = read(&value)?;
+        Ok(Some(Saved {
+            key: key.to_string(),
+            node,
+            records,
+        }))
     }
 
     /// Everything saved, oldest first. An entry that cannot be read is left
@@ -123,10 +138,6 @@ fn read(value: &StateValue) -> Result<(NodeRef, Vec<JsonLogView>)> {
 pub struct Forget {
     pub pending: Arc<Pending>,
     pub key: String,
-    /// Held for as long as the records are on their way through the node:
-    /// whoever handed them back sees by it that they are still out, and
-    /// does not hand them back twice.
-    pub out: Option<Arc<()>>,
 }
 
 #[async_trait]
@@ -158,9 +169,14 @@ mod tests {
         let review = NodeRef::Plugin {
             name: Arc::from("review"),
         };
-        pending.save(&judge, &[rec(1), rec(2)]).await.unwrap();
+        let first = pending.save(&judge, &[rec(1), rec(2)]).await.unwrap();
         pending.save(&review, &[rec(3)]).await.unwrap();
-        pending.save(&judge, &[]).await.unwrap();
+        assert_eq!(pending.save(&judge, &[]).await.unwrap(), None);
+        // read back alone by the key it was saved under
+        let first = first.expect("its key");
+        let one = pending.one(&first).await.unwrap().expect("saved");
+        assert_eq!((one.node, one.records.len()), (judge.clone(), 2));
+        assert!(pending.one("no such key").await.unwrap().is_none());
 
         let saved = pending.saved().await.unwrap();
         let read: Vec<(NodeRef, Vec<String>)> = saved
