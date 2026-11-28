@@ -41,6 +41,11 @@ impl Stop {
         self.ending.cancelled().await;
     }
 
+    /// `call`'s result, or none if the run began to stop first.
+    pub async fn unless_finishing<F: Future>(&self, call: F) -> Option<F::Output> {
+        self.finishing.run_until_cancelled(call).await
+    }
+
     /// `call`'s result, or none if the requests were ended first.
     pub async fn unless_ended<F: Future>(&self, call: F) -> Option<F::Output> {
         self.ending.run_until_cancelled(call).await

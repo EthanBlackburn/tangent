@@ -31,6 +31,57 @@ pub struct Model {
     /// The run's stop: once it is finishing, a request sent is not sent
     /// again, and the nodes send no new one.
     stop: Stop,
+    /// Whether its last request ended [`Unreached`]. What waits for it is
+    /// then asked again one request at a time, not all at once.
+    down: std::sync::atomic::AtomicBool,
+    /// When it was last tried while down ([`Self::probe`]).
+    probed: parking_lot::Mutex<Option<std::time::Instant>>,
+}
+
+/// A request that got no answer to read, for a reason another time may not
+/// have: the model was not reached in any of its tries, or would not serve
+/// the key it was asked with.
+#[derive(Debug)]
+pub struct Unreached(pub String);
+
+impl std::fmt::Display for Unreached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unreached {}
+
+/// Whether a provider's error is a refusal of the key or the account, and
+/// not of the request: a 401 or a 403, a key it does not know, a sign-in
+/// that has run out, an account with nothing to pay with. The same request
+/// is served once that is mended.
+pub fn refuses_the_key(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    [
+        "401",
+        "403",
+        "unauthorized",
+        "forbidden",
+        "authentication",
+        "invalid x-api-key",
+        "invalid_api_key",
+        "incorrect api key",
+        "api key not valid",
+        "expiredtoken",
+        "token has expired",
+        "no credentials",
+        "unrecognizedclient",
+        "invalidclienttokenid",
+        "accessdenied",
+        "credit balance is too low",
+        "insufficient_quota",
+        "payment_instrument",
+        // Bedrock's client, of credentials it could not load
+        "verify internet connection or aws keys",
+    ]
+    .iter()
+    .any(|needle| e.contains(needle))
 }
 
 /// A model's places, and who waits for one. A place that comes free goes to
@@ -166,7 +217,26 @@ impl Model {
             fallback,
             places,
             stop,
+            down: std::sync::atomic::AtomicBool::new(false),
+            probed: parking_lot::Mutex::new(None),
         })
+    }
+
+    /// Whether the last request to it ended [`Unreached`].
+    pub fn down(&self) -> bool {
+        self.down.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether the caller is the one to try a model that is down: true once
+    /// in `every`, so an outage of hours is a request each `every` and not
+    /// one for each record that waits.
+    pub fn probe(&self, every: Duration) -> bool {
+        let mut probed = self.probed.lock();
+        if probed.is_some_and(|at| at.elapsed() < every) {
+            return false;
+        }
+        *probed = Some(std::time::Instant::now());
+        true
     }
 
     pub fn stop(&self) -> &Stop {
@@ -241,13 +311,23 @@ impl Model {
             let timeout = Duration::from_millis(self.cfg.timeout_ms);
             let (e, again) = match tokio::time::timeout(timeout, client.call(request.clone())).await
             {
-                Ok(Ok(reply)) => return Ok(reply),
+                Ok(Ok(reply)) => {
+                    self.down.store(false, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(reply);
+                }
                 Ok(Err(e)) => (anyhow!("{e}"), e.is_retryable()),
                 Err(_) => (anyhow!("no reply within {} ms", self.cfg.timeout_ms), true),
             };
             // A run that is stopping waits for the requests it sent, and
             // sends none again.
             if !again || attempt > self.cfg.retries || self.stop.finishing() {
+                // One that would be answered another time is told apart
+                // from one the provider refuses for what it says.
+                let said = format!("{e:#}");
+                if again || refuses_the_key(&said) {
+                    self.down.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Err(anyhow::Error::new(Unreached(said)));
+                }
                 return Err(e);
             }
             let wait = Duration::from_secs(1 << (attempt - 1).min(6));
