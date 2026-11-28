@@ -458,9 +458,11 @@ pub struct Follow {
     notifier: Option<Notifier>,
     /// Upheld reviews collected since the last `status.json` flush.
     new_alerts: Vec<AlertSummary>,
-    /// The reviews that gave a verdict in this run, and the seconds they
-    /// took together.
-    reviewed: (u64, f64),
+    /// The seconds from each alert of this run being flagged to its
+    /// review's verdict, its wait for a reviewer included.
+    reviewed: Vec<f64>,
+    /// The same for the alerts the review being read settles.
+    settled: Vec<f64>,
     /// What each model last said of its credentials: the judge's, then the
     /// reviewer's. They are kept apart because they are two models, and one
     /// can be refused while the other is let in: the judge's clean call does
@@ -508,7 +510,8 @@ impl Follow {
             notes: Vec::new(),
             notifier,
             new_alerts: Vec::new(),
-            reviewed: (0, 0.0),
+            reviewed: Vec::new(),
+            settled: Vec::new(),
             judge_auth: None,
             review_auth: None,
             judge_answered: false,
@@ -541,6 +544,7 @@ impl Follow {
                     };
                     if hit {
                         matched.push(waiting.id);
+                        self.settled.push(waiting.since.elapsed().as_secs_f64());
                     } else {
                         rest.push(waiting);
                     }
@@ -674,13 +678,13 @@ impl Follow {
             } else {
                 self.review_auth = None;
             }
-            if let Some(took) = record.pointer("/took/seconds").and_then(Value::as_f64) {
-                if answered {
-                    self.reviewed.0 += 1;
-                    self.reviewed.1 += took;
-                }
-            }
+            self.settled.clear();
             let ids = self.resolve(&record);
+            // an alert of this run whose review gave a verdict: one from
+            // before it was not seen flagged, and has no time to count
+            if answered {
+                self.reviewed.extend(self.settled.drain(..));
+            }
             lines.extend(review(&record, &ids, self.style));
             self.notes.extend(note(&record, &self.dir));
             self.new_alerts
@@ -706,11 +710,9 @@ impl Follow {
         }
         if let Some(status) = &self.status {
             // the judge's from the runtime's own count of its requests
-            let judge = tangent_runtime::INFERENCE_SECONDS.with_label_values(&["judge"]);
-            let mean = |n: u64, sum: f64| (n > 0).then(|| sum / n as f64);
             status.set_timing(
-                mean(judge.get_sample_count(), judge.get_sample_sum()),
-                mean(self.reviewed.0, self.reviewed.1),
+                status::percentiles(&tangent_runtime::inference_recent("judge")),
+                status::percentiles(&self.reviewed),
             );
             let alerts = std::mem::take(&mut self.new_alerts);
             status.update(self.judged, self.flagged, self.pending.len() as u64, alerts);

@@ -46,6 +46,30 @@ impl Default for RuntimeOptions {
     }
 }
 
+/// How many of a node's requests [`inference_recent`] keeps.
+const RECENT: usize = 500;
+
+/// A model's request answered in `seconds`, counted for `node`.
+pub(crate) fn inference_took(node: &str, seconds: f64) {
+    INFERENCE_SECONDS.with_label_values(&[node]).observe(seconds);
+    let mut recent = INFERENCE_RECENT.lock();
+    let of = recent.entry(node.to_string()).or_default();
+    if of.len() == RECENT {
+        of.pop_front();
+    }
+    of.push_back(seconds);
+}
+
+/// The seconds each of `node`'s latest requests took in this process, the
+/// last [`RECENT`] of them.
+pub fn inference_recent(node: &str) -> Vec<f64> {
+    INFERENCE_RECENT
+        .lock()
+        .get(node)
+        .map(|of| of.iter().copied().collect())
+        .unwrap_or_default()
+}
+
 lazy_static::lazy_static! {
     pub static ref GUEST_LATENCY: HistogramVec = register_histogram_vec!(
         "tangent_guest_seconds",
@@ -63,6 +87,12 @@ lazy_static::lazy_static! {
         &["node"],
         vec![0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 60.0, 120.0, 300.0]
     ).unwrap();
+
+    /// Each node's latest requests' seconds, the newest last: what
+    /// [`inference_recent`] reads, for a median the histogram's buckets are
+    /// too wide to give.
+    static ref INFERENCE_RECENT: parking_lot::Mutex<std::collections::HashMap<String, std::collections::VecDeque<f64>>> =
+        parking_lot::Mutex::new(std::collections::HashMap::new());
 
     pub static ref GUEST_BYTES_TOTAL: IntCounter =
         register_int_counter!("tangent_guest_bytes_total", "Bytes fed to WASM guest").unwrap();

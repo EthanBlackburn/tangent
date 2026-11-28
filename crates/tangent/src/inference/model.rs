@@ -283,9 +283,7 @@ impl Model {
         let began = std::time::Instant::now();
         let reply = self.answer(node, request).await;
         if reply.is_ok() {
-            crate::INFERENCE_SECONDS
-                .with_label_values(&[node])
-                .observe(began.elapsed().as_secs_f64());
+            crate::inference_took(node, began.elapsed().as_secs_f64());
         }
         reply
     }

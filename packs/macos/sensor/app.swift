@@ -1905,9 +1905,9 @@ private struct HealthStage: View {
                         row("Flagged", "\(s.flagged)")
                         row("Being reviewed", "\(s.pending)")
                     }
-                    group("Speed") {
-                        row("First pass", s.judgeSeconds.map(spokenSeconds) ?? "–")
-                        row("Review", s.reviewSeconds.map(spokenSeconds) ?? "–")
+                    group("Speed · median, 95th percentile") {
+                        row("First pass", spread(s.judgeSeconds))
+                        row("Flagged to verdict", spread(s.reviewSeconds))
                     }
                 }
 
@@ -1923,6 +1923,10 @@ private struct HealthStage: View {
             .padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func spread(_ of: (p50: Double, p95: Double)?) -> String {
+        of.map { "\(spokenSeconds($0.p50))  ·  \(spokenSeconds($0.p95))" } ?? "–"
     }
 
     private func group<Rows: View>(_ title: String, @ViewBuilder _ rows: () -> Rows) -> some View {

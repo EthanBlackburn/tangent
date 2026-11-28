@@ -160,10 +160,12 @@ pub struct Snapshot {
     pub error: Option<String>,
     pub needs_fda: bool,
     pub auth_error: Option<String>,
-    /// How long the models take in this run, in seconds, each None until
-    /// there is one: the judge a request (the mean), a review whole.
-    pub judge_seconds: Option<f64>,
-    pub review_seconds: Option<f64>,
+    /// How long the models take in this run, in seconds, each the median
+    /// and the 95th percentile, None until there is one: the judge a
+    /// request, and an alert from flagged to its review's verdict, its wait
+    /// for a reviewer included.
+    pub judge_seconds: Option<(f64, f64)>,
+    pub review_seconds: Option<(f64, f64)>,
 }
 
 impl Snapshot {
@@ -184,8 +186,8 @@ impl Snapshot {
             "error": self.error,
             "needs_fda": self.needs_fda,
             "auth_error": self.auth_error,
-            "judge_seconds": self.judge_seconds,
-            "review_seconds": self.review_seconds,
+            "judge_seconds": self.judge_seconds.map(|(p50, p95)| json!({"p50": p50, "p95": p95})),
+            "review_seconds": self.review_seconds.map(|(p50, p95)| json!({"p50": p50, "p95": p95})),
         })
     }
 
@@ -218,10 +220,28 @@ impl Snapshot {
                 .get("auth_error")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-            judge_seconds: v.get("judge_seconds").and_then(Value::as_f64),
-            review_seconds: v.get("review_seconds").and_then(Value::as_f64),
+            judge_seconds: spread(v.get("judge_seconds")),
+            review_seconds: spread(v.get("review_seconds")),
         })
     }
+}
+
+/// A `{"p50", "p95"}` as its pair.
+fn spread(v: Option<&Value>) -> Option<(f64, f64)> {
+    let v = v?;
+    Some((v.get("p50")?.as_f64()?, v.get("p95")?.as_f64()?))
+}
+
+/// The median and the 95th percentile of `seconds`, each the nearest one
+/// there is, to a tenth of a second; None of none.
+pub fn percentiles(seconds: &[f64]) -> Option<(f64, f64)> {
+    let mut sorted = seconds.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let at = |p: f64| {
+        let rank = (p * sorted.len() as f64).ceil() as usize;
+        (sorted[rank.clamp(1, sorted.len()) - 1] * 10.0).round() / 10.0
+    };
+    (!sorted.is_empty()).then(|| (at(0.5), at(0.95)))
 }
 
 /// Shared handle used by `watch.rs` (`Ready` layer + lifecycle) and `follow.rs`
@@ -329,11 +349,9 @@ impl Tracker {
         write_atomic(&g.dir, &g.snapshot);
     }
 
-    /// How long the models take, to a tenth of a second: written when
-    /// either has changed.
-    pub fn set_timing(&self, judge: Option<f64>, review: Option<f64>) {
-        let tenth = |s: Option<f64>| s.map(|s| (s * 10.0).round() / 10.0);
-        let (judge, review) = (tenth(judge), tenth(review));
+    /// How long the models take ([`percentiles`]): written when either
+    /// has changed.
+    pub fn set_timing(&self, judge: Option<(f64, f64)>, review: Option<(f64, f64)>) {
         let mut g = self.inner.lock().unwrap();
         if (g.snapshot.judge_seconds, g.snapshot.review_seconds) == (judge, review) {
             return;
@@ -539,6 +557,14 @@ fn format_rfc3339(unix_secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_median_and_the_95th_are_seconds_there_were() {
+        assert_eq!(percentiles(&[]), None);
+        assert_eq!(percentiles(&[3.04]), Some((3.0, 3.0)));
+        let twenty: Vec<f64> = (1..=20).rev().map(f64::from).collect();
+        assert_eq!(percentiles(&twenty), Some((10.0, 19.0)));
+    }
 
     #[test]
     fn rfc3339_formats_known_epochs() {

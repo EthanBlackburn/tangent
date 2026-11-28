@@ -251,6 +251,15 @@ enum Commands {
         json: bool,
     },
 
+    /// Whether the background Mac watcher is working, and how fast: the
+    /// watcher, the sensor, the models, this run's counts and how long the
+    /// models take. Exits 1 when something needs attention.
+    Health {
+        /// Print machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Remove the background LaunchAgents, root sensor LaunchDaemon, and
     /// `/Applications/Tangent.app`. Keeps your logs and Parquet lake unless
     /// `--purge` is passed.
@@ -523,6 +532,11 @@ async fn main() -> Result<()> {
         }
         Commands::Down { all } => service::down(all).await?,
         Commands::Status { json } => service::show_status(json).await?,
+        Commands::Health { json } => {
+            if !service::health(json)? {
+                std::process::exit(1);
+            }
+        }
         Commands::Uninstall { purge } => service::uninstall(purge).await?,
 
         Commands::Simulate { attack } => simulate::run(attack)?,
